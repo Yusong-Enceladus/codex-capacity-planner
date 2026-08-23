@@ -2199,6 +2199,15 @@ function eventExpiresAtMs(eventValue) {
     : Math.max(eventAtMs + 12 * hour, deadlineAtMs + 6 * hour);
 }
 
+function shouldNotifyStartupEvent(eventValue, alreadySeen, startup, nowMs = Date.now()) {
+  if (!startup) return true;
+  if (alreadySeen) return false;
+  const eventAtMs = eventAnnouncedAtMs(eventValue);
+  if (eventAtMs === null || eventAtMs > nowMs + 2 * minute) return false;
+  const deadlineAtMs = millis(object(eventValue) && object(eventValue).deadlineAt);
+  return (deadlineAtMs !== null && deadlineAtMs > nowMs) || nowMs - eventAtMs <= 6 * hour;
+}
+
 function reconcileActiveEpisodeState(stateValue, feedValue, nowMs = Date.now(), optionsValue) {
   const state = object(stateValue);
   const active = object(state && state.activeEpisode);
@@ -3736,7 +3745,15 @@ function createRuntime(logic, initialState) {
 
     const feedEvent = latestExplicitFeedEvent(runtime.state.cache.feed);
     const processed = feedEvent
-      ? processEvent(feedEvent, { notify: !settings.startup, viaPush: settings.viaPush })
+      ? processEvent(feedEvent, {
+          notify: shouldNotifyStartupEvent(
+            feedEvent,
+            seen(feedEvent.id),
+            settings.startup === true,
+            Date.now(),
+          ),
+          viaPush: settings.viaPush,
+        })
       : { isNew: false, event: null };
     const processedEvent = processed.event;
     const signalReason = evaluateSignalNotification(settings.startup);
@@ -3758,8 +3775,14 @@ function createRuntime(logic, initialState) {
       let processedEvent = null;
       if (latest) {
         const feedEvent = latestExplicitFeedEvent(runtime.state.cache.feed);
-        processedEvent = processEvent(enrichEvent(latest, feedEvent), {
-          notify: !settings.startup,
+        const enriched = enrichEvent(latest, feedEvent);
+        processedEvent = processEvent(enriched, {
+          notify: shouldNotifyStartupEvent(
+            enriched,
+            seen(enriched.id),
+            settings.startup === true,
+            Date.now(),
+          ),
           viaPush: settings.viaPush,
         }).event;
       }
@@ -4192,6 +4215,7 @@ module.exports = {
   renewalObservationFromHistory,
   resetCause,
   seedShortLoadPrediction,
+  shouldNotifyStartupEvent,
   sessionCandidatesFromRows,
   sessionCycleStart,
   settleShortLoadPredictions,

@@ -29,6 +29,7 @@ const {
   sessionCandidatesFromRows,
   sessionCycleStart,
   settleShortLoadPredictions,
+  shouldNotifyStartupEvent,
   shortLoadShadowMetrics,
   trustedExplicitEvent,
   updateTargetTrajectory,
@@ -897,6 +898,26 @@ equal(
   normalizedExplicitReply.forcedResetEffect,
   "immediate",
   "an authenticated explicit reset reply must not remain a candidate hint",
+);
+equal(
+  shouldNotifyStartupEvent(
+    normalizedExplicitReply,
+    false,
+    true,
+    Date.parse("2026-08-23T08:10:00.000Z"),
+  ),
+  true,
+  "an unseen startup event with a future deadline must still notify once",
+);
+equal(
+  shouldNotifyStartupEvent(
+    normalizedExplicitReply,
+    true,
+    true,
+    Date.parse("2026-08-23T08:10:00.000Z"),
+  ),
+  false,
+  "an already-seen startup event must not notify again",
 );
 
 const landingEvent = { status: "global-announced", announcedAt: "2026-08-12T09:00:00Z" };

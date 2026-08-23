@@ -5,6 +5,13 @@ versioning once the first public release is tagged.
 
 ## Unreleased
 
+## 0.1.3 - 2026-08-23
+
+- Deliver one notification for a previously unseen explicit reset announcement
+  discovered at Monitor startup when its deadline is still actionable.
+- Publish future releases with the official GitHub CLI instead of a deprecated
+  third-party release Action runtime.
+
 ## 0.1.2 - 2026-08-23
 
 - Recognize an authenticated, explicit reset promise even when the hosted
