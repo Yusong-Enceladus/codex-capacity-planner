@@ -28,7 +28,9 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
             self.showStateGallery(page: galleryPage)
             return
         }
-        self.monitor.start()
+        if let startupError = self.monitor.start() {
+            self.store.setStartupError(startupError)
+        }
         self.menuController = MenuController(store: self.store)
         self.store.start()
     }

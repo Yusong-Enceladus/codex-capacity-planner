@@ -12,11 +12,11 @@ jobs:
   macos-app:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build ad-hoc signed app
         run: ./scripts/package-release.sh
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             outputs/release/Codex-Capacity-Planner-macOS.zip
@@ -25,3 +25,4 @@ jobs:
             This macOS build is ad-hoc signed and is not notarized with an Apple Developer ID.
             On first launch, Control-click the app and choose Open, or allow it under
             System Settings → Privacy & Security. Verify the download with SHA256SUMS.txt.
+            This build targets Apple Silicon (arm64) and bundles its Node.js runtime.

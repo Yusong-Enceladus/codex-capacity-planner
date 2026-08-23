@@ -324,9 +324,14 @@ function normalizedAccountState(value, id) {
 
 function normalizedResetCredit(value) {
   const source = object(value);
-  const id = text(source && source.id);
+  const rawID = text(source && source.id);
   const grantedAtMs = timestampMillis(source && (source.grantedAt || source.granted_at));
-  if (!id || grantedAtMs === null) return null;
+  if (!rawID || grantedAtMs === null) return null;
+  // Reset-credit identifiers are only correlation keys. Convert provider IDs
+  // to stable one-way aliases before they can enter runtime state or disk.
+  const id = /^credit-sha256:[0-9a-f]{64}$/.test(rawID)
+    ? rawID
+    : `credit-sha256:${crypto.createHash("sha256").update(rawID).digest("hex")}`;
   const expiresAtMs = timestampMillis(source.expiresAt || source.expires_at);
   const redeemStartedAtMs = timestampMillis(source.redeemStartedAt || source.redeem_started_at);
   const redeemedAtMs = timestampMillis(source.redeemedAt || source.redeemed_at);
@@ -365,6 +370,17 @@ function normalizedResetCreditInventory(value) {
         credit.status === "available" &&
         (millis(credit.expiresAt) === null || millis(credit.expiresAt) > referenceAtMs),
     ).length,
+  };
+}
+
+function publicResetCreditInventory(value) {
+  const inventory = normalizedResetCreditInventory(value);
+  if (!inventory) return null;
+  return {
+    reliable: inventory.reliable,
+    updatedAt: inventory.updatedAt,
+    availableCount: inventory.availableCount,
+    credits: inventory.credits.map(({ id: _id, ...credit }) => credit),
   };
 }
 
@@ -1902,7 +1918,7 @@ function safePublicState(state, runtime) {
     usageSnapshot: publicUsageSnapshot(account.usage && account.usage.latest),
     usagePace: publicUsagePace(account.usage && account.usage.pace),
     usageBehavior: publicUsageBehavior(account.usage && account.usage.behavior),
-    resetCredits: normalizedResetCreditInventory(account.resetCredits),
+    resetCredits: publicResetCreditInventory(account.resetCredits),
     personalResets: normalizedPersonalResets(account.personalResets).slice(-6),
     lastPersonalReset: object(account.lastPersonalReset) || null,
     deliveryState:
@@ -2081,7 +2097,34 @@ function inferDeadline(textValue, announcedAtMs) {
   if (numericMinutes) minutes = Number(numericMinutes[1]);
   else if (numericHours) minutes = Number(numericHours[1]) * 60;
   else if (/next hour|within (?:the )?hour|hour or so/.test(value)) minutes = 60;
-  return minutes === null ? null : announcedAtMs + minutes * minute;
+  if (minutes !== null) return announcedAtMs + minutes * minute;
+
+  // Tibo commonly gives a calendar promise in a follow-up reply, for example
+  // "around 14pm PST tomorrow". Honor the stated fixed-zone abbreviation so
+  // the deadline remains deterministic and does not depend on this Mac's zone.
+  const tomorrowAt = value.match(
+    /(?:around\s+|at\s+)?(\d{1,2})(?::(\d{2}))?\s*(?:am|pm)?\s*(pst|pdt|utc)\s+tomorrow/,
+  );
+  if (tomorrowAt) {
+    let clockHour = Number(tomorrowAt[1]);
+    const clockMinute = Number(tomorrowAt[2] || 0);
+    const meridiem = value.slice(tomorrowAt.index, tomorrowAt.index + tomorrowAt[0].length)
+      .match(/\b(am|pm)\b/);
+    if (meridiem && meridiem[1] === "pm" && clockHour < 12) clockHour += 12;
+    if (meridiem && meridiem[1] === "am" && clockHour === 12) clockHour = 0;
+    if (clockHour <= 23 && clockMinute <= 59) {
+      const offsetHours = tomorrowAt[3] === "pst" ? -8 : tomorrowAt[3] === "pdt" ? -7 : 0;
+      const local = new Date(announcedAtMs + offsetHours * hour);
+      return Date.UTC(
+        local.getUTCFullYear(),
+        local.getUTCMonth(),
+        local.getUTCDate() + 1,
+        clockHour,
+        clockMinute,
+      ) - offsetHours * hour;
+    }
+  }
+  return null;
 }
 
 function eventID(value) {
@@ -2205,7 +2248,10 @@ function normalizeFeedEvent(value) {
   const announcedAtMs = millis(announcedAt);
   if (announcedAtMs === null) return null;
   const window = object(event.official_window) || object(event.window) || {};
-  const summary = text(event.localized_summary) || text(event.summary) || text(event.text);
+  const originalSummary = text(event.summary) || text(event.text);
+  const localizedSummary = text(event.localized_summary);
+  const summary = localizedSummary || originalSummary;
+  const inferredDeadline = inferDeadline(`${originalSummary} ${localizedSummary}`, announcedAtMs);
   const id = explicitEventID(event);
   const normalized = {
     id,
@@ -2214,7 +2260,7 @@ function normalizeFeedEvent(value) {
     deadlineAt:
       text(window.end_at) ||
       text(event.deadline_at) ||
-      (inferDeadline(summary, announcedAtMs) ? iso(inferDeadline(summary, announcedAtMs)) : null),
+      (inferredDeadline ? iso(inferredDeadline) : null),
     windowLabel: text(window.localized_label) || text(window.label),
     summary: text(event.summary) || summary,
     localizedSummary: text(event.localized_summary) || "",
@@ -2224,6 +2270,20 @@ function normalizeFeedEvent(value) {
     ...resetEventEffects(event),
   };
   return trustedExplicitEvent(normalized) ? normalized : null;
+}
+
+function locallyExplicitResetAnnouncement(value) {
+  const event = object(value) || {};
+  const type = text(event.type).toLowerCase();
+  const group = text(event.group).toLowerCase();
+  if (type !== "reset" && group !== "reset") return false;
+  const words = `${text(event.summary)} ${text(event.text)} ${text(event.localized_summary)}`
+    .toLowerCase();
+  return Boolean(
+    /\breset\b[^.]{0,100}\b(?:will|tomorrow|today|tonight|around|land|arriv|by\s+\d|at\s+\d)/.test(words) ||
+      /\b(?:will|shall|going to)\b[^.]{0,100}\breset\b/.test(words) ||
+      /重置[^。]{0,60}(?:明天|今天|今晚|将在|将于|到达|到账|大约)/.test(words),
+  );
 }
 
 function latestExplicitFeedEvent(feed) {
@@ -2238,8 +2298,11 @@ function latestExplicitFeedEvent(feed) {
       ["announced", "arriving", "available"].includes(
         normalizedBankedLifecycleState(item.banked_state || item.bankedState),
       );
+    const localExplicit = locallyExplicitResetAnnouncement(item);
     if (
-      (text(item.announcement_state).toLowerCase() === "announced" || isBankedLifecycle) &&
+      (text(item.announcement_state).toLowerCase() === "announced" ||
+        isBankedLifecycle ||
+        localExplicit) &&
       !terminalVerification(item.reset_verification_status) &&
       (text(item.type).toLowerCase() === "reset" ||
         text(item.group).toLowerCase() === "reset" ||
@@ -2663,16 +2726,18 @@ function resetCause(
   if (consumedCredit) {
     return { cause: "banked-redeem", evidence: `credit-consumed:${consumedCredit.id}` };
   }
+  const classification = object(classificationValue) || {};
+  // A paid-tier increase is directly observable and can coincide with the old
+  // cycle boundary. It therefore wins over the weaker timing-only inference.
+  if (classification.paidUpgrade === true) {
+    return { cause: "upgrade", evidence: `paid-plan-upgrade:${text(classification.planTransition)}` };
+  }
   if (
     Number.isFinite(previous.resetsAtMs) &&
     previous.updatedAtMs < previous.resetsAtMs + 10 * minute &&
     current.updatedAtMs >= previous.resetsAtMs - 10 * minute
   ) {
     return { cause: "automatic", evidence };
-  }
-  const classification = object(classificationValue) || {};
-  if (classification.paidUpgrade === true) {
-    return { cause: "upgrade", evidence: `paid-plan-upgrade:${text(classification.planTransition)}` };
   }
   const eventEvidence = personalLandingEvidence(previous, current, eventValue);
   if (eventEvidence) return { cause: "global-manual", evidence: eventEvidence };
@@ -3339,7 +3404,7 @@ function createRuntime(logic, initialState) {
                 resetsAt: parsed.resetsAt,
               },
               ...(parsed.resetCreditsPresent
-                ? { codexResetCredits: parsed.resetCredits }
+                ? { codexResetCredits: publicResetCreditInventory(account.resetCredits) }
                 : {}),
             },
           },

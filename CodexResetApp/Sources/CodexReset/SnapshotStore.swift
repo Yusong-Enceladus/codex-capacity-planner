@@ -17,6 +17,11 @@ final class SnapshotStore: ObservableObject {
         self.fetchedAt = snapshot == nil ? nil : Date()
     }
 
+    func setStartupError(_ message: String) {
+        guard self.snapshot == nil else { return }
+        self.errorMessage = message
+    }
+
     func start() {
         guard self.timer == nil else { return }
         Task { await self.refresh() }

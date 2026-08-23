@@ -6,6 +6,7 @@ cd "$app_root"
 swift build -c release
 
 bundle="$app_root/dist/Codex Capacity Planner.app"
+rm -rf "$bundle"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 cp "$app_root/.build/release/CodexReset" "$bundle/Contents/MacOS/CodexReset"
 cp "$app_root/Info.plist" "$bundle/Contents/Info.plist"
@@ -31,5 +32,13 @@ done
 mkdir -p "$bundle/Contents/Resources/receiver"
 cp "$project_root"/receiver/* "$bundle/Contents/Resources/receiver/"
 cp "$project_root/CodexBar-upstream/.build/release/CodexBarCLI" "$bundle/Contents/Resources/CodexBarCLI"
+node_runtime=$("$project_root/scripts/fetch-node-runtime.sh")
+cp "$node_runtime/bin/node" "$bundle/Contents/Resources/node"
+chmod 0755 "$bundle/Contents/Resources/node"
+mkdir -p "$bundle/Contents/Resources/Legal"
+cp "$project_root/LICENSE" "$bundle/Contents/Resources/Legal/LICENSE"
+cp "$project_root/NOTICE" "$bundle/Contents/Resources/Legal/NOTICE"
+cp "$project_root/CodexBar-upstream/LICENSE" "$bundle/Contents/Resources/Legal/CodexBar-LICENSE"
+cp "$node_runtime/LICENSE" "$bundle/Contents/Resources/Legal/Node.js-LICENSE"
 codesign --force --deep --sign - "$bundle"
 print -r -- "$bundle"

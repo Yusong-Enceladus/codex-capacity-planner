@@ -521,6 +521,48 @@ check(multiAccountModel.decision, "multiple accounts must keep the active accoun
 equal(multiAccountModel.usage.usedPercent, 35);
 equal(multiAccountModel.accounts.length, 2);
 equal(multiAccountModel.devicePlan.accountCount, 2);
+equal(
+  multiAccountModel.devicePlan.shouldSwitch,
+  false,
+  "unknown cross-account capacities must not be ranked by incomparable percentages",
+);
+const unknownCapacityScreenshotModel = build(
+  [
+    {
+      ...usagePayload[0],
+      account: "current-20x@example.test",
+      cacheAccountKey: "codex:stored:current-20x",
+      accountActive: true,
+      accountLive: true,
+      usage: {
+        ...usagePayload[0].usage,
+        identity: { loginMethod: "pro" },
+        secondary: { ...usagePayload[0].usage.secondary, usedPercent: 71 },
+      },
+    },
+    {
+      ...usagePayload[0],
+      account: "other-5x@example.test",
+      cacheAccountKey: "codex:stored:other-5x",
+      accountActive: false,
+      accountLive: false,
+      usage: {
+        ...usagePayload[0].usage,
+        identity: { loginMethod: "plus" },
+        secondary: { ...usagePayload[0].usage.secondary, usedPercent: 69 },
+      },
+    },
+  ],
+  forecastFixture(),
+  null,
+  now,
+  null,
+);
+equal(
+  unknownCapacityScreenshotModel.actions.accountAction,
+  "stay",
+  "a usable 20x account at 71% used must not switch to a 5x account at 69% used without learned capacities",
+);
 check(
   !/多个 Codex 账户/.test(multiAccountModel.blocker || ""),
   "multiple accounts must no longer be a global blocker",
@@ -824,7 +866,38 @@ const xPost = parseXProfile(xHTML)[0];
 equal(xPost.id, tiboEvent.id);
 equal(xPost.deadlineAt, "2026-08-13T02:01:37.000Z");
 equal(inferDeadline("should land over next 30 minutes", now), now + 30 * 60 * 1000);
+equal(
+  inferDeadline(
+    "Reset will land around 14pm PST tomorrow.",
+    Date.parse("2026-08-23T06:29:05.000Z"),
+  ),
+  Date.parse("2026-08-23T22:00:00.000Z"),
+  "a calendar promise in a Tibo reply must produce a concrete deadline",
+);
 equal(inferDeadline("it has been reset", now), null, "past tense without a window stays immediate");
+
+const explicitReplyWithoutAnnouncementState = {
+  id: "2091412393368945027",
+  url: "https://x.com/thsottiaux/status/2091412393368945027",
+  type: "reset",
+  group: "reset",
+  summary: "Reset will land around 14pm PST tomorrow.",
+  localized_summary: "重置将在明天大约 14:00 太平洋标准时间到达。",
+  announced_at: "2026-08-23T06:29:05.000Z",
+  announcement_state: "none",
+  reset_verification_status: "pending",
+  is_reply: true,
+};
+const normalizedExplicitReply = latestExplicitFeedEvent({
+  events: [explicitReplyWithoutAnnouncementState],
+});
+equal(normalizedExplicitReply.id, explicitReplyWithoutAnnouncementState.id);
+equal(normalizedExplicitReply.deadlineAt, "2026-08-23T22:00:00.000Z");
+equal(
+  normalizedExplicitReply.forcedResetEffect,
+  "immediate",
+  "an authenticated explicit reset reply must not remain a candidate hint",
+);
 
 const landingEvent = { status: "global-announced", announcedAt: "2026-08-12T09:00:00Z" };
 const usageBeforeLanding = {
@@ -953,6 +1026,22 @@ equal(
   ).cause,
   "upgrade",
   "an observed quota refresh following a higher paid tier must be attributed to the upgrade",
+);
+equal(
+  resetCause(
+    { ...usageBeforeLanding, resetsAtMs: now + minute },
+    {
+      ...usageBeforeLanding,
+      usedPercent: 3,
+      resetsAtMs: now + 7 * day,
+      updatedAtMs: now + 2 * minute,
+    },
+    null,
+    null,
+    { paidUpgrade: true, planTransition: "free->pro20x" },
+  ).cause,
+  "upgrade",
+  "a paid upgrade at the old natural boundary must not be misclassified as automatic",
 );
 equal(
   resetCause(
@@ -1449,7 +1538,7 @@ const rankedSessions = sessionCandidatesFromRows(
     {
       id: "thread-paused",
       display_title: "Paused research task",
-      cwd: "/Users/example/private-project",
+      cwd: "/synthetic-home/private-project",
       tokens_used: 500,
       created_at_ms: now - 10 * hour,
       recency_at_ms: now - 2 * hour,
@@ -1458,7 +1547,7 @@ const rankedSessions = sessionCandidatesFromRows(
     {
       id: "thread-pinned",
       display_title: "Pinned implementation task",
-      cwd: "/Users/example/implementation",
+      cwd: "/synthetic-home/implementation",
       tokens_used: 260,
       created_at_ms: now - 9 * hour,
       recency_at_ms: now - hour,
@@ -1467,7 +1556,7 @@ const rankedSessions = sessionCandidatesFromRows(
     {
       id: "thread-recent",
       display_title: "Recent ordinary task",
-      cwd: "/Users/example/ordinary",
+      cwd: "/synthetic-home/ordinary",
       tokens_used: 100,
       created_at_ms: now - 30 * minute,
       recency_at_ms: now - 5 * minute,
@@ -1476,7 +1565,7 @@ const rankedSessions = sessionCandidatesFromRows(
     {
       id: "thread-complete",
       display_title: "Completed task",
-      cwd: "/Users/example/completed",
+      cwd: "/synthetic-home/completed",
       tokens_used: 900,
       created_at_ms: now - 8 * hour,
       recency_at_ms: now - minute,
@@ -1555,10 +1644,38 @@ check(
   "the provider should receive only a title and project basename for a resumable candidate",
 );
 check(!publicStateJSON.includes("thread-paused"), "thread IDs must stay private to the monitor");
-check(!publicStateJSON.includes("/Users/example"), "full project paths must stay private to the monitor");
+check(!publicStateJSON.includes("/synthetic-home"), "full project paths must stay private to the monitor");
 equal(publicState.usage, undefined, "raw usage samples must stay private to the monitor");
 equal(publicState.usageSnapshot.samples, undefined, "raw usage history must not enter the fallback snapshot");
 check(!publicStateJSON.includes("must-not-leak"), "the capability token must not enter public state");
+
+const resetCreditPrivacyRuntime = createRuntime(
+  { buildModel() { return null; }, pickUsage() { return null; } },
+  {
+    accountStates: {
+      "account-a": {
+        id: "account-a",
+        present: true,
+        resetCredits: {
+          reliable: true,
+          updatedAt: "2026-08-12T08:59:00Z",
+          credits: [{
+            id: "provider-reset-credit-secret",
+            status: "available",
+            grantedAt: "2026-08-12T08:55:00Z",
+            expiresAt: "2026-09-02T08:59:00Z",
+          }],
+        },
+      },
+    },
+  },
+);
+const resetCreditPublicJSON = JSON.stringify(resetCreditPrivacyRuntime.publicReceiverState());
+const resetCreditPersistedJSON = JSON.stringify(resetCreditPrivacyRuntime.runtime.state);
+check(!resetCreditPublicJSON.includes("provider-reset-credit-secret"), "public state must omit raw reset-credit IDs");
+check(!resetCreditPublicJSON.includes("credit-sha256:"), "public state must omit reset-credit aliases too");
+check(!resetCreditPersistedJSON.includes("provider-reset-credit-secret"), "persisted state must never contain raw reset-credit IDs");
+check(resetCreditPersistedJSON.includes("credit-sha256:"), "persisted state may retain only a one-way reset-credit alias");
 
 let failShortLoad = false;
 const resilientShortLoadRuntime = createRuntime(

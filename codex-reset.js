@@ -1550,22 +1550,42 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
         accountUsage.usedPercent < 99 &&
         (!accountUsage.shortWindow || accountUsage.shortWindow.usedPercent < 99),
       requiredWorkHours,
+      // Cross-account percentages are not comparable. Until this account has
+      // a learned API-equivalent capacity, it cannot outrank an available
+      // current account merely because its percentage gap is larger.
       urgency:
-        accountDecision && accountDecision.additionalTotal > 0
-          ? (fullCapacityUSD === null
-              ? accountDecision.additionalTotal
-              : fullCapacityUSD * accountDecision.additionalTotal / 100) /
+        accountDecision && accountDecision.additionalTotal > 0 && fullCapacityUSD !== null
+          ? (fullCapacityUSD * accountDecision.additionalTotal / 100) /
             Math.max(0.25, accountDecision.horizonHours)
-          : 0,
+          : null,
     };
   });
-  const rankedAccounts = accountPlans
-    .filter((item) => item.decision && item.usable)
-    .slice()
-    .sort((left, right) => right.urgency - left.urgency);
-  const recommendedAccount = rankedAccounts[0] || null;
   const activeAccount = accountPlans.find((item) => item.live) || null;
   const selectedAccount = accountPlans.find((item) => item.selected) || null;
+  const rankedAccounts = accountPlans
+    .filter((item) => item.decision && item.usable && Number.isFinite(item.urgency))
+    .slice()
+    .sort((left, right) => right.urgency - left.urgency);
+  const blockedFallback = activeAccount && !activeAccount.usable
+    ? accountPlans
+        .filter((item) => item.id !== activeAccount.id && item.decision && item.usable)
+        .slice()
+        .sort((left, right) => {
+          if (left.remainingCapacityUSD !== null || right.remainingCapacityUSD !== null) {
+            return (right.remainingCapacityUSD ?? -Infinity) - (left.remainingCapacityUSD ?? -Infinity);
+          }
+          return (100 - right.usage.usedPercent) - (100 - left.usage.usedPercent);
+        })[0] || null
+    : null;
+  const capacityPriority = rankedAccounts[0] || null;
+  const recommendedAccount = blockedFallback || capacityPriority;
+  const switchReason = blockedFallback
+    ? "current-blocked"
+    : activeAccount && capacityPriority && activeAccount.id !== capacityPriority.id &&
+        Number.isFinite(activeAccount.urgency) &&
+        capacityPriority.urgency > Math.max(0.05, activeAccount.urgency) * 1.2
+      ? "capacity-at-risk"
+      : null;
   const devicePlan = {
     accountCount: accountPlans.length,
     readyCount: accountPlans.filter((item) => item.decision).length,
@@ -1575,14 +1595,8 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
     activeAccountId: activeAccount && activeAccount.id,
     selectedAccountId: selectedAccount && selectedAccount.id,
     recommendedAccountId: recommendedAccount && recommendedAccount.id,
-    shouldSwitch: Boolean(
-      accountPlans.length > 1 &&
-      activeAccount &&
-      recommendedAccount &&
-      activeAccount.id !== recommendedAccount.id &&
-      (!activeAccount.usable ||
-        recommendedAccount.urgency > Math.max(0.05, activeAccount.urgency) * 1.2),
-    ),
+    shouldSwitch: Boolean(accountPlans.length > 1 && switchReason),
+    switchReason,
   };
   const subscriptionAdvice = accountPlans
     .map((candidate) => {
@@ -2013,7 +2027,9 @@ defineProvider({
         : null;
       if (recommended) {
         recommendationValue = `切到 ${recommended.label} · ${recommended.planLabel} 继续工作`;
-        recommendationSecondary = `当前账号已阻塞或该账号更应先用；切号只需重新登录，不计为工作中断，也不会自动执行`;
+        recommendationSecondary = model.devicePlan.switchReason === "current-blocked"
+          ? "当前账号额度或短窗口已经阻塞；该账号仍可工作。切号只需重新登录，不会自动执行"
+          : "按本机学习到的 API 等价容量，该账号在更早免费刷新前有更多真实容量会被清零；不会自动切号";
       } else if (model.bankedPlan && model.bankedPlan.status === "interruption-now") {
         recommendationValue = `所有账号都已阻塞，使用 ${model.bankedPlan.accountLabel || "当前账号"} 的重置券`;
         recommendationSecondary = "免费账户容量与免费刷新均不可立即使用；此时兑换是恢复工作的下一环，只提示、不自动兑换";

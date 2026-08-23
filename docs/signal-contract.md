@@ -61,7 +61,12 @@ and an optional official window.
 
 Production clients accept explicit announcements only when the event ID and
 original URL agree and the source is one of the trusted feed, API, or verified
-push paths. A public announcement and personal delivery are separate states.
+push paths. If the service returns a verified Tibo event whose type/group and
+text explicitly promise a reset but its lifecycle field is delayed or
+inconsistent, clients may promote that event locally; a mere hint may never be
+promoted this way. Authoritative replies count as announcements, and a later
+reply may refine the deadline of the same public promise. A public announcement
+and personal delivery are separate states.
 
 ## Privacy
 

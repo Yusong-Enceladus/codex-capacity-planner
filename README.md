@@ -10,6 +10,8 @@ Codex Capacity Planner 是一个本地优先的 Codex 工作容量决策系统�
 `Codex-Capacity-Planner-macOS.zip`，解压后把 App 移到“应用程序”。下载版使用 ad-hoc
 签名，没有 Apple Developer ID 公证；首次打开若被系统拦截，请在 Finder 中按住
 Control 点按应用并选择“打开”，或在“系统设置 → 隐私与安全性”中选择“仍要打开”。
+当前下载版面向 Apple Silicon（arm64）Mac，并已内置运行 Monitor 所需的 Node.js，
+用户无需另外安装 Node.js。Intel Mac 可从源码构建对应架构版本。
 
 也可以从源码构建：
 
@@ -186,7 +188,10 @@ CodexBar CLI (127.0.0.1:18764) ───────个人额度事实源
 - 独立 App 会启动或复用 18765 上已有的 Monitor；CodexBar provider 也读取同一个地址。
 - 同一用户会话只应运行一个 Monitor。个人 LaunchAgent 配置和本机绝对路径不进入版本控制。
 
-外部信号服务默认是 `https://codex-reset.com`。Monitor 可通过 `CODEX_RESET_SIGNAL_BASE_URL` 替换为兼容服务；CodexBar provider 可在同名设置中配置。服务首次不可用时系统退回只基于本机自然刷新和个人用量的规划，不会让整个卡片失效。
+外部信号服务默认是 `https://codex-reset.com`。该网站是独立第三方服务，不由 Codex
+Capacity Planner 项目或本仓库维护者运营。Monitor 可通过
+`CODEX_RESET_SIGNAL_BASE_URL` 替换为兼容服务；CodexBar provider 可在同名设置中配置。
+服务首次不可用时系统退回只基于本机自然刷新和个人用量的规划，不会让整个卡片失效。
 
 ## 隐私边界
 

@@ -13,10 +13,8 @@ for required_file in $required_files; do
 done
 
 owned_paths="README.md CodexResetApp codex-reset.js codex-reset-monitor.js codex-reset-behavior.js codex-reset-short-load.js codex-reset-workload-eval.js codex-reset.test.js receiver docs scripts patches"
-
-private_user_path='/Users/'"bronya"
+absolute_user_path='/Users'"/"
 temporary_item_path='Temporary'"Items/"
-migration_task_id='019feec4-ace5-7b63-'"8a27-764dc8446ca6"
 
 if rg -n --hidden \
   -g '!CodexResetApp/.build/**' \
@@ -24,7 +22,7 @@ if rg -n --hidden \
   -g '!CodexResetApp/qa/**' \
   -g '!CodexResetApp/design-qa.md' \
   -g '!**/*.png' -g '!**/*.jpg' \
-  "$private_user_path|$temporary_item_path|$migration_task_id" \
+  "$absolute_user_path|$temporary_item_path" \
   $owned_paths; then
   echo "public-source check found a machine-specific or migration-only value" >&2
   exit 1
