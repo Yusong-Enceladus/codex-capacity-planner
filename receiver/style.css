@@ -1,0 +1,79 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
+  background: #100d15;
+  color: #f5f1fa;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background:
+    radial-gradient(circle at 50% 12%, rgba(167, 139, 250, 0.2), transparent 40%),
+    #100d15;
+}
+
+main {
+  width: min(620px, 100%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 26px;
+  padding: 28px;
+  background: rgba(25, 20, 34, 0.9);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.38);
+}
+
+.mark {
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  border-radius: 18px;
+  color: white;
+  font-size: 29px;
+  background: linear-gradient(145deg, #b59aff, #8064d9);
+  box-shadow: 0 14px 34px rgba(167, 139, 250, 0.3);
+}
+
+h1 { margin: 20px 0 8px; font-size: 28px; letter-spacing: -0.03em; }
+.lead { margin: 0; color: #bcb3c8; line-height: 1.6; }
+
+.status {
+  margin: 24px 0;
+  padding: 18px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.status-line { display: flex; gap: 10px; align-items: center; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: #8c8297; }
+.dot.ok { background: #5dd39e; box-shadow: 0 0 16px rgba(93, 211, 158, 0.55); }
+.dot.warn { background: #f4bd63; }
+#status-title { font-weight: 680; }
+#status-detail { margin: 8px 0 0 19px; color: #a9a0b5; font-size: 14px; line-height: 1.5; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+button {
+  appearance: none;
+  border: 0;
+  border-radius: 13px;
+  padding: 11px 16px;
+  font: inherit;
+  font-weight: 680;
+  cursor: pointer;
+  color: #17121e;
+  background: #b9a3ff;
+}
+
+button.secondary { color: #e9e1f2; background: rgba(255, 255, 255, 0.08); }
+button:disabled { opacity: 0.45; cursor: default; }
+.facts { display: grid; gap: 10px; margin-top: 24px; color: #a9a0b5; font-size: 14px; }
+.fact { display: grid; grid-template-columns: 16px 1fr; gap: 9px; line-height: 1.5; }
+.fact span:first-child { color: #c5b3ff; }
+a { color: #c9b9ff; }
+.error { color: #ff9eaa !important; }

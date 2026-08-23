@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a reproducible problem using synthetic or redacted data.
+body:
+  - type: markdown
+    attributes:
+      value: Do not attach credentials, raw provider responses, local databases, account emails, reset-credit IDs, private task names, or unredacted screenshots.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Observed outcome
+      description: What did the app show or do?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected outcome
+      description: What should it have shown or done?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Synthetic reproduction
+      description: Provide minimized, fabricated values and the relevant time ordering.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version and macOS
+    validations:
+      required: true

@@ -1,0 +1,3105 @@
+From 6f6105b73bcf48bad51f13194e5f84f94d7a1a1f Mon Sep 17 00:00:00 2001
+From: Yusong-Enceladus <175666848+Yusong-Enceladus@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 22:36:49 -0700
+Subject: [PATCH] Add Codex Capacity Planner provider presentation
+
+---
+ Sources/CodexBar/AlternatingTimeText.swift    |  65 +++
+ Sources/CodexBar/MenuBarLayoutEditor.swift    |   2 +-
+ Sources/CodexBar/ProviderBrandIcon.swift      |   9 +
+ .../ProviderSubmenuDetailsContent.swift       |  65 +++
+ .../CodexBar/Resources/CodexResetCardIcon.png | Bin 0 -> 45074 bytes
+ .../CodexBar/StatusItemController+Menu.swift  |   5 +-
+ .../StatusItemController+UserPlugins.swift    | 497 +++++++++++++++++-
+ Sources/CodexBarCLI/CLIPayloads.swift         |  13 +
+ Sources/CodexBarCLI/CLIUsageCommand.swift     |  10 +
+ .../Plugins/ProviderPluginManifest.swift      |  34 ++
+ .../ProviderPluginSnapshotMapper.swift        | 208 +++++++-
+ .../ProviderDecisionProgress.swift            | 131 +++++
+ .../CodexBarCore/ProviderDetailSection.swift  |  25 +-
+ .../ProviderSubmenuDetailSection.swift        | 201 +++++++
+ .../Resources/Plugins/codexbar-plugin.d.ts    |  40 ++
+ Sources/CodexBarCore/UsageFetcher.swift       |  27 +
+ .../CLIAccountMetadataTests.swift             |  28 +
+ .../ProviderArchitectureGatekeeperTests.swift |  10 +-
+ .../ProviderDetailSectionTests.swift          |  10 +-
+ .../ProviderPluginRuntimeTests.swift          | 131 +++++
+ .../ProviderSubmenuDetailSectionTests.swift   |  70 +++
+ .../UserProviderPluginTests.swift             |  48 ++
+ UPSTREAM.md                                   |  12 +
+ 23 files changed, 1619 insertions(+), 22 deletions(-)
+ create mode 100644 Sources/CodexBar/AlternatingTimeText.swift
+ create mode 100644 Sources/CodexBar/ProviderSubmenuDetailsContent.swift
+ create mode 100644 Sources/CodexBar/Resources/CodexResetCardIcon.png
+ create mode 100644 Sources/CodexBarCore/ProviderDecisionProgress.swift
+ create mode 100644 Sources/CodexBarCore/ProviderSubmenuDetailSection.swift
+ create mode 100644 Tests/CodexBarTests/CLIAccountMetadataTests.swift
+ create mode 100644 Tests/CodexBarTests/ProviderSubmenuDetailSectionTests.swift
+ create mode 100644 UPSTREAM.md
+
+diff --git a/Sources/CodexBar/AlternatingTimeText.swift b/Sources/CodexBar/AlternatingTimeText.swift
+new file mode 100644
+index 0000000..0bd2d1c
+--- /dev/null
++++ b/Sources/CodexBar/AlternatingTimeText.swift
+@@ -0,0 +1,65 @@
++import Foundation
++import SwiftUI
++
++enum AlternatingDisplay {
++    static let interval: TimeInterval = 10
++
++    static func usesAlternate(at date: Date) -> Bool {
++        Int(floor(date.timeIntervalSince1970 / self.interval)).isMultiple(of: 2) == false
++    }
++
++    static func relativeText(until target: Date, now: Date) -> String {
++        let remaining = target.timeIntervalSince(now)
++        if remaining <= 0 { return "等待刷新确认" }
++        let hour: TimeInterval = 60 * 60
++        let day: TimeInterval = 24 * hour
++        let totalMinutes = max(1, Int(remaining / 60))
++        if totalMinutes < 60 { return "\(totalMinutes) 分钟后" }
++        let totalHours = max(1, Int(remaining / hour))
++        if totalHours < 24 { return "\(totalHours) 小时后" }
++        let days = Int(remaining / day)
++        let hours = Int((remaining - Double(days) * day) / hour)
++        return hours == 0 ? "\(days) 天后" : "\(days) 天 \(hours) 小时后"
++    }
++
++    static func date(from value: String?) -> Date? {
++        guard let value else { return nil }
++        let fractional = ISO8601DateFormatter()
++        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        if let date = fractional.date(from: value) { return date }
++        return ISO8601DateFormatter().date(from: value)
++    }
++}
++
++struct AlternatingTimeText: View {
++    let primary: String
++    var alternate: String?
++    var relativeTimeAt: String?
++    var relativeTimePrefix: String?
++
++    init(
++        primary: String,
++        alternate: String? = nil,
++        relativeTimeAt: String? = nil,
++        relativeTimePrefix: String? = nil)
++    {
++        self.primary = primary
++        self.alternate = alternate
++        self.relativeTimeAt = relativeTimeAt
++        self.relativeTimePrefix = relativeTimePrefix
++    }
++
++    var body: some View {
++        TimelineView(.periodic(from: Date(timeIntervalSince1970: 0), by: AlternatingDisplay.interval)) { timeline in
++            Text(self.value(at: timeline.date))
++        }
++    }
++
++    private func value(at now: Date) -> String {
++        guard AlternatingDisplay.usesAlternate(at: now) else { return self.primary }
++        if let target = AlternatingDisplay.date(from: self.relativeTimeAt) {
++            return (self.relativeTimePrefix ?? "") + AlternatingDisplay.relativeText(until: target, now: now)
++        }
++        return self.alternate ?? self.primary
++    }
++}
+diff --git a/Sources/CodexBar/MenuBarLayoutEditor.swift b/Sources/CodexBar/MenuBarLayoutEditor.swift
+index b7e2985..6ac7226 100644
+--- a/Sources/CodexBar/MenuBarLayoutEditor.swift
++++ b/Sources/CodexBar/MenuBarLayoutEditor.swift
+@@ -412,7 +412,6 @@ struct MenuBarLayoutEditor: View {
+                             title: token.editorLabel(provider: self.persistenceProvider),
+                             systemImage: token.editorSystemImage,
+                             isSelected: self.selectedPosition == position)
+-                            .draggable(MenuBarLayoutDragItem.placed(token, at: position, in: self.layout))
+                     }
+                     .buttonStyle(.plain)
+                     .focusable()
+@@ -420,6 +419,7 @@ struct MenuBarLayoutEditor: View {
+                         self.selectedPosition = position
+                         return .handled
+                     }
++                    .draggable(MenuBarLayoutDragItem.placed(token, at: position, in: self.layout))
+                     .dropDestination(for: MenuBarLayoutDragItem.self) { items, _ in
+                         self.insert(items.first, at: position)
+                     }
+diff --git a/Sources/CodexBar/ProviderBrandIcon.swift b/Sources/CodexBar/ProviderBrandIcon.swift
+index 844e467..70f22d7 100644
+--- a/Sources/CodexBar/ProviderBrandIcon.swift
++++ b/Sources/CodexBar/ProviderBrandIcon.swift
+@@ -42,6 +42,15 @@ enum ProviderBrandIcon {
+         return image
+     }
+ 
++    static func image(named baseName: String, withExtension fileExtension: String) -> NSImage? {
++        guard let bundle = self.resourceBundle,
++              let url = bundle.url(forResource: baseName, withExtension: fileExtension)
++        else {
++            return nil
++        }
++        return NSImage(contentsOf: url)
++    }
++
+     static func resetCacheForTesting() {
+         self.cache.removeAll()
+     }
+diff --git a/Sources/CodexBar/ProviderSubmenuDetailsContent.swift b/Sources/CodexBar/ProviderSubmenuDetailsContent.swift
+new file mode 100644
+index 0000000..cc09742
+--- /dev/null
++++ b/Sources/CodexBar/ProviderSubmenuDetailsContent.swift
+@@ -0,0 +1,65 @@
++import CodexBarCore
++import SwiftUI
++
++struct ProviderSubmenuDetailsContent: View {
++    let sections: [ProviderSubmenuDetailSection]
++    let width: CGFloat
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 14) {
++            ForEach(Array(self.sections.enumerated()), id: \.offset) { sectionIndex, section in
++                if sectionIndex > 0 {
++                    Divider()
++                }
++                self.section(section)
++            }
++        }
++        .padding(.horizontal, 14)
++        .padding(.vertical, 12)
++        .frame(width: self.width, alignment: .leading)
++        .textSelection(.enabled)
++    }
++
++    private func section(_ section: ProviderSubmenuDetailSection) -> some View {
++        VStack(alignment: .leading, spacing: 9) {
++            if let title = section.title {
++                Text(title)
++                    .font(.caption.weight(.semibold))
++                    .foregroundStyle(.secondary)
++                    .textCase(.uppercase)
++            }
++            ForEach(Array(section.rows.enumerated()), id: \.offset) { rowIndex, row in
++                if rowIndex > 0 {
++                    Divider().opacity(0.55)
++                }
++                VStack(alignment: .leading, spacing: 3) {
++                    HStack(spacing: 5) {
++                        Text(row.label)
++                            .font(.caption.weight(.semibold))
++                            .foregroundStyle(.secondary)
++                        if row.link != nil {
++                            Image(systemName: "arrow.up.right.square")
++                                .font(.caption2)
++                                .foregroundStyle(.tertiary)
++                        }
++                    }
++                    AlternatingTimeText(
++                        primary: row.value,
++                        alternate: row.alternateValue,
++                        relativeTimeAt: row.relativeTimeAt,
++                        relativeTimePrefix: row.relativeTimePrefix)
++                        .font(.caption)
++                        .foregroundStyle(.primary)
++                        .fixedSize(horizontal: false, vertical: true)
++                    if let secondaryValue = row.secondaryValue {
++                        Text(secondaryValue)
++                            .font(.caption2)
++                            .foregroundStyle(.secondary)
++                            .fixedSize(horizontal: false, vertical: true)
++                    }
++                }
++                .frame(maxWidth: .infinity, alignment: .leading)
++            }
++        }
++    }
++}
+diff --git a/Sources/CodexBar/Resources/CodexResetCardIcon.png b/Sources/CodexBar/Resources/CodexResetCardIcon.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..0b6d2ef46238e324d9e74bbfacae8be732d9f8f1
+GIT binary patch
+literal 45074
+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
+z+BCtjkEnGgY|6{On%0A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
+
+literal 0
+HcmV?d00001
+
+diff --git a/Sources/CodexBar/StatusItemController+Menu.swift b/Sources/CodexBar/StatusItemController+Menu.swift
+index 3278130..e10ba48 100644
+--- a/Sources/CodexBar/StatusItemController+Menu.swift
++++ b/Sources/CodexBar/StatusItemController+Menu.swift
+@@ -784,7 +784,10 @@ extension StatusItemController {
+                 addedOpenAIWebItems: addedOpenAIWebItems)
+             self.addUsageHistoryClusterIfNeeded(to: menu, context: context)
+         }
+-        self.addUserPluginMenuCards(to: menu, width: context.menuWidth)
++        self.addUserPluginMenuCards(
++            to: menu,
++            width: context.menuWidth,
++            currentProvider: switcherSelection == .overview ? nil : context.currentProvider)
+     }
+ 
+     func addActionableSections(
+diff --git a/Sources/CodexBar/StatusItemController+UserPlugins.swift b/Sources/CodexBar/StatusItemController+UserPlugins.swift
+index 9e51e75..7f61e08 100644
+--- a/Sources/CodexBar/StatusItemController+UserPlugins.swift
++++ b/Sources/CodexBar/StatusItemController+UserPlugins.swift
+@@ -4,8 +4,11 @@ import CodexBarCore
+ import SwiftUI
+ 
+ extension StatusItemController {
+-    func addUserPluginMenuCards(to menu: NSMenu, width: CGFloat) {
+-        let plugins = UserProviderPluginRegistry.all.filter { self.settings.isPluginEnabled($0.manifest.id) }
++    func addUserPluginMenuCards(to menu: NSMenu, width: CGFloat, currentProvider: UsageProvider?) {
++        let plugins = UserProviderPluginRegistry.all.filter {
++            self.settings.isPluginEnabled($0.manifest.id) &&
++                $0.manifest.appearsInMenu(for: currentProvider)
++        }
+         guard !plugins.isEmpty else { return }
+         if menu.items.last?.isSeparatorItem != true {
+             menu.addItem(.separator())
+@@ -13,6 +16,12 @@ extension StatusItemController {
+         for (index, plugin) in plugins.enumerated() {
+             let snapshot = self.store.snapshots[plugin.manifest.id]
+             let error = self.store.errors[plugin.manifest.id]
++            let detailsSubmenu = snapshot.flatMap {
++                self.makeUserPluginDetailsSubmenu(
++                    plugin: plugin,
++                    sections: $0.submenuDetails,
++                    parentWidth: width)
++            }
+             let view = UserPluginMenuCardView(
+                 plugin: plugin,
+                 snapshot: snapshot,
+@@ -29,6 +38,7 @@ extension StatusItemController {
+                 width: width,
+                 heightCacheScope: plugin.manifest.id.rawValue,
+                 heightCacheFingerprint: UserPluginMenuCardView.fingerprint(snapshot: snapshot, error: error),
++                submenu: detailsSubmenu,
+                 containsInteractiveControls: true))
+             if index < plugins.count - 1 {
+                 menu.addItem(.separator())
+@@ -36,6 +46,225 @@ extension StatusItemController {
+         }
+         menu.addItem(.separator())
+     }
++
++    private func makeUserPluginDetailsSubmenu(
++        plugin: UserProviderPlugin,
++        sections: [ProviderSubmenuDetailSection],
++        parentWidth: CGFloat) -> NSMenu?
++    {
++        guard !sections.isEmpty else { return nil }
++        let width = min(420, max(360, parentWidth))
++        if plugin.manifest.id.rawValue == "codex-reset-forecast" {
++            return self.makeCodexResetDetailsNavigation(sections: sections, width: width)
++        }
++        let submenu = NSMenu()
++        submenu.autoenablesItems = false
++        submenu.minimumWidth = width
++
++        if self.menuCardRenderingEnabledForController {
++            let detailsView = ProviderSubmenuDetailsContent(sections: sections, width: width)
++            let hosting = MenuHostingView(rootView: detailsView)
++            hosting.frame = NSRect(
++                origin: .zero,
++                size: NSSize(width: width, height: self.hostedSubviewFittingHeight(for: hosting, width: width)))
++            let detailsItem = NSMenuItem()
++            detailsItem.view = hosting
++            detailsItem.isEnabled = false
++            detailsItem.representedObject = "pluginSubmenuDetails:\(plugin.manifest.id.rawValue)"
++            submenu.addItem(detailsItem)
++        }
++
++        var seenURLs = Set<String>()
++        let links = sections.flatMap(\.rows).compactMap(\.link).filter { link in
++            seenURLs.insert(link.url.absoluteString).inserted
++        }
++        if !links.isEmpty, !submenu.items.isEmpty {
++            submenu.addItem(.separator())
++        }
++        for link in links {
++            let item = NSMenuItem(
++                title: link.label,
++                action: #selector(self.openUserPluginSubmenuLink(_:)),
++                keyEquivalent: "")
++            item.target = self
++            item.representedObject = link.url.absoluteString
++            item.toolTip = link.url.absoluteString
++            if let image = NSImage(systemSymbolName: "arrow.up.right.square", accessibilityDescription: nil) {
++                image.isTemplate = true
++                image.size = NSSize(width: 16, height: 16)
++                item.image = image
++            }
++            submenu.addItem(item)
++        }
++        return submenu.items.isEmpty ? nil : submenu
++    }
++
++    private func makeCodexResetDetailsNavigation(
++        sections: [ProviderSubmenuDetailSection],
++        width: CGFloat) -> NSMenu
++    {
++        let menu = NSMenu()
++        menu.autoenablesItems = false
++        menu.minimumWidth = width
++        for section in sections {
++            let title = section.title ?? "详情"
++            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
++            item.image = NSImage(
++                systemSymbolName: Self.codexResetDetailsSymbol(for: title),
++                accessibilityDescription: nil)
++            item.submenu = self.makeCodexResetDetailSectionMenu(section, width: width)
++            item.isEnabled = true
++            menu.addItem(item)
++        }
++        return menu
++    }
++
++    private func makeCodexResetDetailSectionMenu(
++        _ section: ProviderSubmenuDetailSection,
++        width: CGFloat) -> NSMenu
++    {
++        let menu = NSMenu()
++        menu.autoenablesItems = false
++        menu.minimumWidth = width
++        let title = section.title ?? "详情"
++        let grouped = Dictionary(grouping: section.rows) { $0.group ?? "all" }
++        let summaryKey = title == "为什么这样建议" ? "summary" : "current"
++        let summaryRows = grouped[summaryKey] ?? (grouped.count == 1 ? section.rows : [])
++        if !summaryRows.isEmpty,
++           let summary = try? ProviderSubmenuDetailSection(title: title, rows: summaryRows)
++        {
++            self.addCodexResetDetailContent(summary, to: menu, width: width)
++        }
++
++        let groupOrder = title == "为什么这样建议"
++            ? ["calculation", "work", "data"]
++            : ["assets", "history", "official"]
++        for key in groupOrder {
++            guard let rows = grouped[key], !rows.isEmpty,
++                  let groupedSection = try? ProviderSubmenuDetailSection(
++                      title: Self.codexResetDetailGroupTitle(key),
++                      rows: rows)
++            else { continue }
++            if !menu.items.isEmpty, menu.items.last?.isSeparatorItem != true {
++                menu.addItem(.separator())
++            }
++            let item = NSMenuItem(
++                title: Self.codexResetDetailGroupTitle(key),
++                action: nil,
++                keyEquivalent: "")
++            item.image = NSImage(
++                systemSymbolName: Self.codexResetDetailGroupSymbol(key),
++                accessibilityDescription: nil)
++            item.submenu = self.makeCodexResetDetailLeafMenu(groupedSection, width: width)
++            item.isEnabled = true
++            menu.addItem(item)
++        }
++        if menu.items.isEmpty {
++            self.addCodexResetDetailContent(section, to: menu, width: width)
++        }
++        self.addCodexResetLinks(
++            grouped.count == 1 ? section.rows : summaryRows,
++            to: menu)
++        return menu
++    }
++
++    private func makeCodexResetDetailLeafMenu(
++        _ section: ProviderSubmenuDetailSection,
++        width: CGFloat) -> NSMenu
++    {
++        let menu = NSMenu()
++        menu.autoenablesItems = false
++        menu.minimumWidth = width
++        self.addCodexResetDetailContent(section, to: menu, width: width)
++        self.addCodexResetLinks(section.rows, to: menu)
++        return menu
++    }
++
++    private func addCodexResetDetailContent(
++        _ section: ProviderSubmenuDetailSection,
++        to menu: NSMenu,
++        width: CGFloat)
++    {
++        guard self.menuCardRenderingEnabledForController else { return }
++        let detailsView = ProviderSubmenuDetailsContent(sections: [section], width: width)
++        let hosting = MenuHostingView(rootView: detailsView)
++        hosting.frame = NSRect(
++            origin: .zero,
++            size: NSSize(width: width, height: self.hostedSubviewFittingHeight(for: hosting, width: width)))
++        let detailsItem = NSMenuItem()
++        detailsItem.view = hosting
++        detailsItem.isEnabled = false
++        menu.addItem(detailsItem)
++    }
++
++    private func addCodexResetLinks(
++        _ rows: [ProviderSubmenuDetailSection.Row],
++        to menu: NSMenu)
++    {
++        var seenURLs = Set<String>()
++        let links = rows.compactMap(\.link).filter { link in
++            seenURLs.insert(link.url.absoluteString).inserted
++        }
++        if !links.isEmpty, !menu.items.isEmpty { menu.addItem(.separator()) }
++        for link in links {
++            let item = NSMenuItem(
++                title: link.label,
++                action: #selector(self.openUserPluginSubmenuLink(_:)),
++                keyEquivalent: "")
++            item.target = self
++            item.representedObject = link.url.absoluteString
++            item.toolTip = link.url.absoluteString
++            item.image = NSImage(
++                systemSymbolName: "arrow.up.right.square",
++                accessibilityDescription: nil)
++            menu.addItem(item)
++        }
++    }
++
++    private static func codexResetDetailGroupTitle(_ key: String) -> String {
++        switch key {
++        case "calculation": "使用与目标"
++        case "work": "建议任务"
++        case "data": "计算与数据"
++        case "assets": "可用重置"
++        case "history": "重置历史"
++        case "official": "官方消息"
++        default: "更多信息"
++        }
++    }
++
++    private static func codexResetDetailGroupSymbol(_ key: String) -> String {
++        switch key {
++        case "calculation": "scope"
++        case "work": "play.circle"
++        case "data": "waveform.path.ecg"
++        case "assets": "ticket"
++        case "history": "clock.arrow.circlepath"
++        case "official": "megaphone"
++        default: "ellipsis.circle"
++        }
++    }
++
++    private static func codexResetDetailsSymbol(for title: String) -> String {
++        switch title {
++        case "可继续的任务": "play.circle"
++        case "账户": "person.2"
++        case "为什么这样建议": "chart.line.uptrend.xyaxis"
++        case "重置": "clock.arrow.circlepath"
++        default: "list.bullet.rectangle"
++        }
++    }
++
++    @objc private func openUserPluginSubmenuLink(_ sender: NSMenuItem) {
++        guard let rawURL = sender.representedObject as? String,
++              let url = URL(string: rawURL),
++              url.scheme?.lowercased() == "https",
++              url.host?.isEmpty == false,
++              url.user == nil,
++              url.password == nil
++        else { return }
++        NSWorkspace.shared.open(url)
++    }
+ }
+ 
+ struct UserPluginQuotaPresentation: Equatable {
+@@ -51,6 +280,120 @@ struct UserPluginQuotaPresentation: Equatable {
+     }
+ }
+ 
++private struct ProviderDecisionProgressBar: View {
++    static let targetColor = Color(red: 1, green: 0, blue: 0)
++    static let projectionColor = Color.cyan
++    static let markerWidth: CGFloat = 3
++    static let markerHeight: CGFloat = 10
++
++    let progress: ProviderDecisionProgress
++    let tint: Color
++
++    var body: some View {
++        ZStack {
++            UsageProgressBar(
++                percent: self.progress.currentPercent,
++                tint: self.tint,
++                accessibilityLabel: self.progress.title)
++                .accessibilityHidden(true)
++
++            GeometryReader { geometry in
++                let offsets = self.markerOffsets(width: geometry.size.width)
++                if let lower = self.progress.projectedLowerPercent,
++                   let upper = self.progress.projectedUpperPercent
++                {
++                    self.projectionRange(
++                        lowerPercent: lower,
++                        upperPercent: upper,
++                        width: geometry.size.width,
++                        height: geometry.size.height)
++                }
++                self.marker(
++                    percent: self.progress.targetPercent,
++                    xOffset: offsets.target,
++                    color: Self.targetColor,
++                    width: geometry.size.width,
++                    height: geometry.size.height)
++
++                if let projectedPercent = self.progress.projectedPercent {
++                    self.marker(
++                        percent: projectedPercent,
++                        xOffset: offsets.projection,
++                        color: Self.projectionColor,
++                        width: geometry.size.width,
++                        height: geometry.size.height)
++                }
++            }
++        }
++        .frame(height: 10)
++        .accessibilityElement(children: .ignore)
++        .accessibilityLabel(self.progress.title)
++        .accessibilityValue(self.accessibilityValue)
++    }
++
++    private func projectionRange(
++        lowerPercent: Double,
++        upperPercent: Double,
++        width: CGFloat,
++        height: CGFloat) -> some View
++    {
++        let lowerX = width * min(100, max(0, lowerPercent)) / 100
++        let upperX = width * min(100, max(0, upperPercent)) / 100
++        let rangeWidth = max(3, upperX - lowerX)
++        return Capsule()
++            .fill(Self.projectionColor.opacity(0.22))
++            .overlay {
++                Capsule().stroke(Self.projectionColor.opacity(0.7), lineWidth: 0.75)
++            }
++            .frame(width: rangeWidth, height: 6)
++            .position(x: (lowerX + upperX) / 2, y: height / 2)
++            .accessibilityHidden(true)
++    }
++
++    private func marker(
++        percent: Double,
++        xOffset: CGFloat,
++        color: Color,
++        width: CGFloat,
++        height: CGFloat) -> some View
++    {
++        let clamped = min(100, max(0, percent))
++        let x = min(max(width * clamped / 100 + xOffset, 2.5), max(2.5, width - 2.5))
++        return Capsule()
++            .fill(color)
++            .frame(width: Self.markerWidth, height: Self.markerHeight)
++            .position(x: x, y: height / 2)
++            .accessibilityHidden(true)
++    }
++
++    private func markerOffsets(width: CGFloat) -> (target: CGFloat, projection: CGFloat) {
++        guard let projectedPercent = self.progress.projectedPercent else { return (0, 0) }
++        let targetX = width * min(100, max(0, self.progress.targetPercent)) / 100
++        let projectionX = width * min(100, max(0, projectedPercent)) / 100
++        return abs(targetX - projectionX) < 6 ? (-2, 2) : (0, 0)
++    }
++
++    private var accessibilityValue: String {
++        [
++            self.progress.currentLabel,
++            self.progress.targetLabel,
++            self.progress.projectedLabel,
++        ]
++            .compactMap(\.self)
++            .joined(separator: "；")
++    }
++
++    static func legend(color: Color, text: String) -> some View {
++        HStack(spacing: 4) {
++            Capsule()
++                .fill(color)
++                .frame(width: Self.markerWidth, height: Self.markerHeight)
++                .accessibilityHidden(true)
++            Text(text)
++        }
++    }
++}
++
+ private struct UserPluginMenuCardView: View {
+     let plugin: UserProviderPlugin
+     let snapshot: UsageSnapshot?
+@@ -63,14 +406,10 @@ private struct UserPluginMenuCardView: View {
+     var body: some View {
+         VStack(alignment: .leading, spacing: 9) {
+             HStack(spacing: 8) {
+-                Text(self.plugin.manifest.icon.monogram)
+-                    .font(.caption.bold())
+-                    .foregroundStyle(.white)
+-                    .frame(width: 26, height: 26)
+-                    .background(self.tint, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
++                self.pluginIcon
+                 VStack(alignment: .leading, spacing: 1) {
+                     Text(self.plugin.manifest.name).font(.headline)
+-                    Text(self.plugin.fileURL.lastPathComponent)
++                    Text(self.headerSubtitle)
+                         .font(.caption2)
+                         .foregroundStyle(.secondary)
+                 }
+@@ -98,7 +437,15 @@ private struct UserPluginMenuCardView: View {
+                     }
+                     .font(.caption)
+                 }
+-                if !snapshot.details.isEmpty {
++                if self.isCodexReset, !snapshot.details.isEmpty {
++                    Divider()
++                    CodexResetDecisionContent(sections: snapshot.details, tint: self.tint)
++                }
++                if let progress = snapshot.decisionProgress {
++                    Divider()
++                    self.decisionProgress(progress)
++                }
++                if !self.isCodexReset, !snapshot.details.isEmpty {
+                     Divider()
+                     ProviderDetailSectionsContent(sections: snapshot.details, chartColor: self.tint)
+                 }
+@@ -116,6 +463,30 @@ private struct UserPluginMenuCardView: View {
+         .frame(width: self.width, alignment: .leading)
+     }
+ 
++    private func decisionProgress(_ progress: ProviderDecisionProgress) -> some View {
++        VStack(alignment: .leading, spacing: 5) {
++            AlternatingTimeText(primary: progress.title, alternate: progress.alternateTitle)
++                .font(.caption.bold())
++            ProviderDecisionProgressBar(progress: progress, tint: self.tint)
++            HStack(alignment: .firstTextBaseline, spacing: 8) {
++                Text(progress.currentLabel)
++                Spacer(minLength: 8)
++                ProviderDecisionProgressBar.legend(
++                    color: ProviderDecisionProgressBar.targetColor,
++                    text: progress.targetLabel)
++            }
++            .font(.caption2)
++            .monospacedDigit()
++            if let projectedLabel = progress.projectedLabel {
++                ProviderDecisionProgressBar.legend(
++                    color: ProviderDecisionProgressBar.projectionColor,
++                    text: projectedLabel)
++                    .font(.caption2)
++                    .monospacedDigit()
++            }
++        }
++    }
++
+     @ViewBuilder
+     private func identity(_ identity: ProviderIdentitySnapshot) -> some View {
+         if identity.accountEmail != nil || identity.accountOrganization != nil || identity.loginMethod != nil
+@@ -171,12 +542,120 @@ private struct UserPluginMenuCardView: View {
+             blue: Double(value & 0xFF) / 255)
+     }
+ 
++    @ViewBuilder
++    private var pluginIcon: some View {
++        if self.isCodexReset,
++           let image = ProviderBrandIcon.image(named: "CodexResetCardIcon", withExtension: "png")
++        {
++            Image(nsImage: image)
++                .resizable()
++                .interpolation(.high)
++                .scaledToFit()
++                .frame(width: 26, height: 26)
++                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
++        } else {
++            Text(self.plugin.manifest.icon.monogram)
++                .font(.caption.bold())
++                .foregroundStyle(.white)
++                .frame(width: 26, height: 26)
++                .background(self.tint, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
++        }
++    }
++
++    private var isCodexReset: Bool {
++        self.plugin.manifest.id.rawValue == "codex-reset-forecast"
++    }
++
++    private var headerSubtitle: String {
++        if self.isRefreshing {
++            return "\(L("Refreshing"))…"
++        }
++        if let snapshot {
++            return UsageFormatter.updatedString(from: snapshot.updatedAt)
++        }
++        return self.plugin.fileURL.lastPathComponent
++    }
++
+     static func fingerprint(snapshot: UsageSnapshot?, error: String?) -> String {
+         [
+             snapshot?.updatedAt.timeIntervalSinceReferenceDate.description ?? "none",
++            snapshot?.decisionProgress?.currentPercent.description ?? "no-progress",
++            snapshot?.decisionProgress?.targetPercent.description ?? "no-target",
++            snapshot?.decisionProgress?.projectedPercent?.description ?? "no-projection",
++            snapshot?.decisionProgress?.projectedLowerPercent?.description ?? "no-projection-lower",
++            snapshot?.decisionProgress?.projectedUpperPercent?.description ?? "no-projection-upper",
+             String(snapshot?.details.count ?? 0),
+             error ?? "",
+         ].joined(separator: "|")
+     }
+ }
++
++private struct CodexResetDecisionContent: View {
++    let sections: [ProviderDetailSection]
++    let tint: Color
++
++    private var rows: [ProviderDetailSection.Row] {
++        self.sections.flatMap(\.rows)
++    }
++
++    var body: some View {
++        if let action = self.rows.first {
++            VStack(alignment: .leading, spacing: 8) {
++                VStack(alignment: .leading, spacing: 3) {
++                    Text(action.label)
++                        .font(.caption2.weight(.semibold))
++                        .foregroundStyle(self.tint)
++                    AlternatingTimeText(
++                        primary: action.value,
++                        alternate: action.alternateValue,
++                        relativeTimeAt: action.relativeTimeAt,
++                        relativeTimePrefix: action.relativeTimePrefix)
++                        .font(.subheadline.weight(.semibold))
++                        .lineLimit(2)
++                        .fixedSize(horizontal: false, vertical: true)
++                    if let secondary = action.secondaryValue {
++                        Text(secondary)
++                            .font(.caption2)
++                            .foregroundStyle(.secondary)
++                            .lineLimit(2)
++                            .fixedSize(horizontal: false, vertical: true)
++                    }
++                }
++                .padding(.horizontal, 10)
++                .padding(.vertical, 8)
++                .frame(maxWidth: .infinity, alignment: .leading)
++                .background(
++                    self.tint.opacity(0.11),
++                    in: RoundedRectangle(cornerRadius: 7, style: .continuous))
++                .accessibilityElement(children: .combine)
++
++                if self.rows.count > 1 {
++                    LazyVGrid(
++                        columns: [GridItem(.flexible()), GridItem(.flexible())],
++                        alignment: .leading,
++                        spacing: 7)
++                    {
++                        ForEach(Array(self.rows.dropFirst().enumerated()), id: \.offset) { _, row in
++                            VStack(alignment: .leading, spacing: 2) {
++                                Text(row.label)
++                                    .font(.caption2)
++                                    .foregroundStyle(.secondary)
++                                AlternatingTimeText(
++                                    primary: row.value,
++                                    alternate: row.alternateValue,
++                                    relativeTimeAt: row.relativeTimeAt,
++                                    relativeTimePrefix: row.relativeTimePrefix)
++                                    .font(.caption.weight(.medium))
++                                    .lineLimit(2)
++                                    .fixedSize(horizontal: false, vertical: true)
++                            }
++                            .frame(maxWidth: .infinity, minHeight: 40, alignment: .topLeading)
++                            .accessibilityElement(children: .combine)
++                        }
++                    }
++                }
++            }
++        }
++    }
++}
+ #endif
+diff --git a/Sources/CodexBarCLI/CLIPayloads.swift b/Sources/CodexBarCLI/CLIPayloads.swift
+index 2d39d54..4246eb9 100644
+--- a/Sources/CodexBarCLI/CLIPayloads.swift
++++ b/Sources/CodexBarCLI/CLIPayloads.swift
+@@ -8,6 +8,8 @@ struct ProviderPayload: Encodable {
+     let provider: String
+     let account: String?
+     let cacheAccountKey: String?
++    let accountActive: Bool?
++    let accountLive: Bool?
+     let version: String?
+     let source: String
+     let status: ProviderStatusPayload?
+@@ -22,6 +24,9 @@ struct ProviderPayload: Encodable {
+     private enum CodingKeys: String, CodingKey {
+         case provider
+         case account
++        case cacheAccountKey
++        case accountActive
++        case accountLive
+         case version
+         case source
+         case status
+@@ -38,6 +43,8 @@ struct ProviderPayload: Encodable {
+         provider: UsageProvider,
+         account: String?,
+         cacheAccountKey: String? = nil,
++        accountActive: Bool? = nil,
++        accountLive: Bool? = nil,
+         version: String?,
+         source: String,
+         status: ProviderStatusPayload?,
+@@ -52,6 +59,8 @@ struct ProviderPayload: Encodable {
+         self.provider = provider.rawValue
+         self.account = account
+         self.cacheAccountKey = cacheAccountKey
++        self.accountActive = accountActive
++        self.accountLive = accountLive
+         self.version = version
+         self.source = source
+         self.status = status
+@@ -68,6 +77,8 @@ struct ProviderPayload: Encodable {
+         providerID: String,
+         account: String?,
+         cacheAccountKey: String? = nil,
++        accountActive: Bool? = nil,
++        accountLive: Bool? = nil,
+         version: String?,
+         source: String,
+         status: ProviderStatusPayload?,
+@@ -82,6 +93,8 @@ struct ProviderPayload: Encodable {
+         self.provider = providerID
+         self.account = account
+         self.cacheAccountKey = cacheAccountKey
++        self.accountActive = accountActive
++        self.accountLive = accountLive
+         self.version = version
+         self.source = source
+         self.status = status
+diff --git a/Sources/CodexBarCLI/CLIUsageCommand.swift b/Sources/CodexBarCLI/CLIUsageCommand.swift
+index b7ea849..0eaa751 100644
+--- a/Sources/CodexBarCLI/CLIUsageCommand.swift
++++ b/Sources/CodexBarCLI/CLIUsageCommand.swift
+@@ -41,6 +41,8 @@ private struct UsageSuccessRenderInput {
+     let provider: UsageProvider
+     let accountLabel: String?
+     let cacheAccountKey: String?
++    let accountActive: Bool?
++    let accountLive: Bool?
+     let version: String?
+     let source: String
+     let status: ProviderStatusPayload?
+@@ -348,6 +350,8 @@ extension CodexBarCLI {
+         provider: UsageProvider,
+         accountLabel: String?,
+         cacheAccountKey: String?,
++        accountActive: Bool?,
++        accountLive: Bool?,
+         version: String?,
+         source: String,
+         status: ProviderStatusPayload?,
+@@ -362,6 +366,8 @@ extension CodexBarCLI {
+             provider: provider,
+             account: accountLabel,
+             cacheAccountKey: cacheAccountKey,
++            accountActive: accountActive,
++            accountLive: accountLive,
+             version: version,
+             source: source,
+             status: status,
+@@ -418,6 +424,8 @@ extension CodexBarCLI {
+                 provider: input.provider,
+                 accountLabel: input.accountLabel,
+                 cacheAccountKey: input.cacheAccountKey,
++                accountActive: input.accountActive,
++                accountLive: input.accountLive,
+                 version: input.version,
+                 source: input.source,
+                 status: input.status,
+@@ -539,6 +547,8 @@ extension CodexBarCLI {
+                     provider: provider,
+                     accountLabel: account?.label ?? codexVisibleAccount?.menuDisplayName,
+                     cacheAccountKey: cacheAccountKey,
++                    accountActive: codexVisibleAccount?.isActive,
++                    accountLive: codexVisibleAccount?.isLive,
+                     version: version,
+                     source: source,
+                     status: status,
+diff --git a/Sources/CodexBarCore/Plugins/ProviderPluginManifest.swift b/Sources/CodexBarCore/Plugins/ProviderPluginManifest.swift
+index e1e53be..b0e21e5 100644
+--- a/Sources/CodexBarCore/Plugins/ProviderPluginManifest.swift
++++ b/Sources/CodexBarCore/Plugins/ProviderPluginManifest.swift
+@@ -70,6 +70,7 @@ public struct ProviderPluginManifest: Sendable {
+     public let id: ProviderInstanceID
+     public let name: String
+     public let icon: ProviderPluginIcon
++    public let menuProviders: Set<UsageProvider>?
+     public let endpoints: Set<ProviderPluginEndpoint>
+     public let auth: ProviderPluginAuth?
+     public let settings: [ProviderPluginSetting]
+@@ -96,6 +97,33 @@ public struct ProviderPluginManifest: Sendable {
+         self.name = try Self.boundedString(definition, property: "name", maximumLength: 80)
+         self.icon = try Self.parseIcon(definition.property("icon"), fallbackName: self.name)
+ 
++        let menuProvidersValue = definition.property("menuProviders")
++        if let menuProvidersValue, !menuProvidersValue.isUndefined, !menuProvidersValue.isNull {
++            guard menuProvidersValue.isArray else {
++                throw ProviderPluginError.invalidManifest("'menuProviders' must be an array when present")
++            }
++            let count = Int(menuProvidersValue.property("length")?.int32Value() ?? 0)
++            guard (1...UsageProvider.allCases.count).contains(count) else {
++                throw ProviderPluginError.invalidManifest("'menuProviders' must not be empty")
++            }
++            var menuProviders: Set<UsageProvider> = []
++            for index in 0..<count {
++                guard let value = menuProvidersValue.element(at: index), value.isString,
++                      let provider = UsageProvider(rawValue: value.stringValue())
++                else {
++                    throw ProviderPluginError.invalidManifest(
++                        "menu provider at index \(index) must be a first-party provider id")
++                }
++                guard menuProviders.insert(provider).inserted else {
++                    throw ProviderPluginError.invalidManifest(
++                        "duplicate menu provider '\(provider.rawValue)'")
++                }
++            }
++            self.menuProviders = menuProviders
++        } else {
++            self.menuProviders = nil
++        }
++
+         let endpointValue = definition.property("endpoints")
+         guard let endpointValue, endpointValue.isArray else {
+             throw ProviderPluginError.invalidManifest("'endpoints' must be a non-empty array of HTTPS origins")
+@@ -252,6 +280,12 @@ public struct ProviderPluginManifest: Sendable {
+         self.cookieDomains = cookieDomains
+     }
+ 
++    public func appearsInMenu(for provider: UsageProvider?) -> Bool {
++        guard let menuProviders else { return true }
++        guard let provider else { return false }
++        return menuProviders.contains(provider)
++    }
++
+     private static func requiredString(_ object: any ProviderPluginValue, property: String) throws -> String {
+         guard let value = object.property(property), value.isString else {
+             throw ProviderPluginError.invalidManifest("'\(property)' must be a string")
+diff --git a/Sources/CodexBarCore/Plugins/ProviderPluginSnapshotMapper.swift b/Sources/CodexBarCore/Plugins/ProviderPluginSnapshotMapper.swift
+index 1dae014..9dd188b 100644
+--- a/Sources/CodexBarCore/Plugins/ProviderPluginSnapshotMapper.swift
++++ b/Sources/CodexBarCore/Plugins/ProviderPluginSnapshotMapper.swift
+@@ -17,14 +17,18 @@ enum ProviderPluginSnapshotMapper {
+         let tertiary = try self.window(value, property: "tertiary")
+         let extraRateWindows = try self.extraWindows(value)
+         let providerCost = try self.cost(value, now: now)
++        let decisionProgress = try self.decisionProgress(value)
+         let details = try self.details(value)
++        let submenuDetails = try self.submenuDetails(value)
+         let identity = try self.identity(value, provider: provider)
+         let subscriptionRenewsAt = try self.optionalDate(value, property: "subscriptionRenewsAt")
+         let subscriptionExpiresAt = try self.optionalDate(value, property: "subscriptionExpiresAt")
++        let updatedAt = try self.optionalDate(value, property: "updatedAt") ?? now
+         let dataConfidence = try self.dataConfidence(value)
+ 
+         guard primary != nil || secondary != nil || tertiary != nil || !(extraRateWindows?.isEmpty ?? true)
+             || providerCost != nil
++            || decisionProgress != nil
+             || !details.isEmpty
+             || self.hasMeaningfulIdentity(identity)
+         else {
+@@ -38,10 +42,12 @@ enum ProviderPluginSnapshotMapper {
+             tertiary: tertiary,
+             extraRateWindows: extraRateWindows,
+             providerCost: providerCost,
++            decisionProgress: decisionProgress,
+             details: details,
++            submenuDetails: submenuDetails,
+             subscriptionExpiresAt: subscriptionExpiresAt,
+             subscriptionRenewsAt: subscriptionRenewsAt,
+-            updatedAt: now,
++            updatedAt: updatedAt,
+             identity: identity,
+             dataConfidence: dataConfidence)
+     }
+@@ -52,6 +58,52 @@ enum ProviderPluginSnapshotMapper {
+             || identity.accountID != nil
+     }
+ 
++    private static func decisionProgress(
++        _ root: any ProviderPluginValue) throws -> ProviderDecisionProgress?
++    {
++        guard let value = root.property("decisionProgress"), !value.isUndefined, !value.isNull else {
++            return nil
++        }
++        guard value.isObject, !value.isArray else {
++            throw ProviderPluginError.invalidSnapshot("decisionProgress must be an object")
++        }
++        let path = "decisionProgress"
++        let currentPercent = try self.requiredFiniteNumber(value, property: "currentPercent", path: path)
++        let targetPercent = try self.requiredFiniteNumber(value, property: "targetPercent", path: path)
++        let projectedPercent = try self.optionalFiniteNumber(value, property: "projectedPercent", path: path)
++        let projectedLowerPercent = try self.optionalFiniteNumber(
++            value,
++            property: "projectedLowerPercent",
++            path: path)
++        let projectedUpperPercent = try self.optionalFiniteNumber(
++            value,
++            property: "projectedUpperPercent",
++            path: path)
++        guard (0...100).contains(currentPercent), (0...100).contains(targetPercent),
++              projectedPercent.map({ (0...100).contains($0) }) ?? true,
++              projectedLowerPercent.map({ (0...100).contains($0) }) ?? true,
++              projectedUpperPercent.map({ (0...100).contains($0) }) ?? true
++        else {
++            throw ProviderPluginError.invalidSnapshot(
++                "decisionProgress percentages must be between 0 and 100")
++        }
++        do {
++            return try ProviderDecisionProgress(
++                title: self.requiredDetailString(value, property: "title", path: path),
++                alternateTitle: self.optionalDetailString(value, property: "alternateTitle", path: path),
++                currentPercent: currentPercent,
++                targetPercent: targetPercent,
++                projectedPercent: projectedPercent,
++                projectedLowerPercent: projectedLowerPercent,
++                projectedUpperPercent: projectedUpperPercent,
++                currentLabel: self.requiredDetailString(value, property: "currentLabel", path: path),
++                targetLabel: self.requiredDetailString(value, property: "targetLabel", path: path),
++                projectedLabel: self.optionalDetailString(value, property: "projectedLabel", path: path))
++        } catch {
++            throw ProviderPluginError.invalidSnapshot(error.localizedDescription)
++        }
++    }
++
+     private static func dataConfidence(_ root: any ProviderPluginValue) throws -> UsageDataConfidence {
+         guard let value = root.property("dataConfidence"), !value.isUndefined, !value.isNull else {
+             return .unknown
+@@ -95,13 +147,165 @@ enum ProviderPluginSnapshotMapper {
+                 return try ProviderDetailSection.Row(
+                     label: self.requiredDetailString(row, property: "label", path: rowPath),
+                     value: self.requiredDetailString(row, property: "value", path: rowPath),
+-                    secondaryValue: self.optionalDetailString(row, property: "secondaryValue", path: rowPath))
++                    secondaryValue: self.optionalDetailString(row, property: "secondaryValue", path: rowPath),
++                    alternateValue: self.optionalDetailString(row, property: "alternateValue", path: rowPath),
++                    relativeTimeAt: self.optionalDetailString(row, property: "relativeTimeAt", path: rowPath),
++                    relativeTimePrefix: self.optionalDetailString(
++                        row,
++                        property: "relativeTimePrefix",
++                        path: rowPath))
+             }
+             let chart = try self.detailChart(section, path: path)
+             return try ProviderDetailSection(title: title, rows: rows, chart: chart)
+         }
+     }
+ 
++    private static func submenuDetails(
++        _ root: any ProviderPluginValue) throws -> [ProviderSubmenuDetailSection]
++    {
++        guard let value = root.property("submenuDetails"), !value.isUndefined, !value.isNull else { return [] }
++        guard value.isArray else {
++            throw ProviderPluginError.invalidSnapshot("submenuDetails must be an array")
++        }
++        let count = Int(value.property("length")?.int32Value() ?? 0)
++        guard count <= ProviderSubmenuDetailSection.maximumSectionsPerSnapshot else {
++            throw ProviderPluginError.invalidSnapshot(
++                "submenuDetails exceeds \(ProviderSubmenuDetailSection.maximumSectionsPerSnapshot) sections")
++        }
++        return try (0..<count).map { index in
++            guard let section = value.element(at: index), section.isObject, !section.isArray else {
++                throw ProviderPluginError.invalidSnapshot("submenuDetails[\(index)] must be an object")
++            }
++            let path = "submenuDetails[\(index)]"
++            let title = try self.optionalSubmenuString(
++                section,
++                property: "title",
++                path: path,
++                maximumLength: ProviderSubmenuDetailSection.maximumLabelLength)
++            guard let rowsValue = section.property("rows"), rowsValue.isArray else {
++                throw ProviderPluginError.invalidSnapshot("\(path).rows must be an array")
++            }
++            let rowCount = Int(rowsValue.property("length")?.int32Value() ?? 0)
++            guard rowCount <= ProviderSubmenuDetailSection.maximumRowsPerSection else {
++                throw ProviderPluginError.invalidSnapshot(
++                    "\(path).rows exceeds \(ProviderSubmenuDetailSection.maximumRowsPerSection) entries")
++            }
++            let rows = try (0..<rowCount).map { rowIndex in
++                guard let row = rowsValue.element(at: rowIndex), row.isObject, !row.isArray else {
++                    throw ProviderPluginError.invalidSnapshot("\(path).rows[\(rowIndex)] must be an object")
++                }
++                let rowPath = "\(path).rows[\(rowIndex)]"
++                return try ProviderSubmenuDetailSection.Row(
++                    label: self.requiredSubmenuString(
++                        row,
++                        property: "label",
++                        path: rowPath,
++                        maximumLength: ProviderSubmenuDetailSection.maximumLabelLength),
++                    value: self.requiredSubmenuString(
++                        row,
++                        property: "value",
++                        path: rowPath,
++                        maximumLength: ProviderSubmenuDetailSection.maximumValueLength),
++                    secondaryValue: self.optionalSubmenuString(
++                        row,
++                        property: "secondaryValue",
++                        path: rowPath,
++                        maximumLength: ProviderSubmenuDetailSection.maximumSecondaryValueLength),
++                    link: self.submenuLink(row, path: rowPath),
++                    group: self.optionalSubmenuString(
++                        row,
++                        property: "group",
++                        path: rowPath,
++                        maximumLength: ProviderSubmenuDetailSection.maximumLabelLength),
++                    alternateValue: self.optionalSubmenuString(
++                        row,
++                        property: "alternateValue",
++                        path: rowPath,
++                        maximumLength: ProviderSubmenuDetailSection.maximumValueLength),
++                    relativeTimeAt: self.optionalSubmenuString(
++                        row,
++                        property: "relativeTimeAt",
++                        path: rowPath,
++                        maximumLength: ProviderSubmenuDetailSection.maximumLabelLength),
++                    relativeTimePrefix: self.optionalSubmenuString(
++                        row,
++                        property: "relativeTimePrefix",
++                        path: rowPath,
++                        maximumLength: ProviderSubmenuDetailSection.maximumLabelLength))
++            }
++            return try ProviderSubmenuDetailSection(title: title, rows: rows)
++        }
++    }
++
++    private static func submenuLink(
++        _ row: any ProviderPluginValue,
++        path: String) throws -> ProviderSubmenuDetailSection.Link?
++    {
++        guard let link = row.property("link"), !link.isUndefined, !link.isNull else { return nil }
++        guard link.isObject, !link.isArray else {
++            throw ProviderPluginError.invalidSnapshot("\(path).link must be an object")
++        }
++        let linkPath = "\(path).link"
++        let label = try self.requiredSubmenuString(
++            link,
++            property: "label",
++            path: linkPath,
++            maximumLength: ProviderSubmenuDetailSection.maximumLinkLabelLength)
++        let rawURL = try self.requiredSubmenuString(
++            link,
++            property: "url",
++            path: linkPath,
++            maximumLength: ProviderSubmenuDetailSection.maximumLinkURLLength)
++        guard let url = URL(string: rawURL),
++              url.scheme?.lowercased() == "https",
++              url.host?.isEmpty == false,
++              url.user == nil,
++              url.password == nil
++        else {
++            throw ProviderPluginError.invalidSnapshot(
++                "\(linkPath).url must be an HTTPS URL without credentials")
++        }
++        return try ProviderSubmenuDetailSection.Link(label: label, url: url)
++    }
++
++    private static func requiredSubmenuString(
++        _ value: any ProviderPluginValue,
++        property: String,
++        path: String,
++        maximumLength: Int) throws -> String
++    {
++        guard let string = try self.optionalSubmenuString(
++            value,
++            property: property,
++            path: path,
++            maximumLength: maximumLength)
++        else {
++            throw ProviderPluginError.invalidSnapshot("\(path).\(property) is required")
++        }
++        return string
++    }
++
++    private static func optionalSubmenuString(
++        _ value: any ProviderPluginValue,
++        property: String,
++        path: String,
++        maximumLength: Int) throws -> String?
++    {
++        guard let propertyValue = value.property(property),
++              !propertyValue.isUndefined,
++              !propertyValue.isNull
++        else { return nil }
++        guard propertyValue.isString else {
++            throw ProviderPluginError.invalidSnapshot("\(path).\(property) must be a string")
++        }
++        let string = propertyValue.stringValue().trimmingCharacters(in: .whitespacesAndNewlines)
++        guard string.count <= maximumLength else {
++            throw ProviderPluginError.invalidSnapshot(
++                "\(path).\(property) exceeds \(maximumLength) characters")
++        }
++        return string.isEmpty ? nil : string
++    }
++
+     private static func detailChart(
+         _ section: any ProviderPluginValue,
+         path: String) throws -> ProviderDetailSection.Chart?
+diff --git a/Sources/CodexBarCore/ProviderDecisionProgress.swift b/Sources/CodexBarCore/ProviderDecisionProgress.swift
+new file mode 100644
+index 0000000..2981837
+--- /dev/null
++++ b/Sources/CodexBarCore/ProviderDecisionProgress.swift
+@@ -0,0 +1,131 @@
++import Foundation
++
++/// A compact, provider-defined decision bar. The fill is the observed value,
++/// the red marker is the target, and the optional blue marker and interval are
++/// the projected value and calibrated range at the same deadline.
++public struct ProviderDecisionProgress: Codable, Equatable, Sendable {
++    public static let maximumStringLength = 120
++
++    public let title: String
++    public let alternateTitle: String?
++    public let currentPercent: Double
++    public let targetPercent: Double
++    public let projectedPercent: Double?
++    public let projectedLowerPercent: Double?
++    public let projectedUpperPercent: Double?
++    public let currentLabel: String
++    public let targetLabel: String
++    public let projectedLabel: String?
++
++    public init(
++        title: String,
++        alternateTitle: String? = nil,
++        currentPercent: Double,
++        targetPercent: Double,
++        projectedPercent: Double? = nil,
++        projectedLowerPercent: Double? = nil,
++        projectedUpperPercent: Double? = nil,
++        currentLabel: String,
++        targetLabel: String,
++        projectedLabel: String? = nil) throws
++    {
++        self.title = try Self.requiredString(title, path: "title")
++        self.alternateTitle = try Self.optionalString(alternateTitle, path: "alternateTitle")
++        self.currentPercent = try Self.percent(currentPercent, path: "currentPercent")
++        self.targetPercent = try Self.percent(targetPercent, path: "targetPercent")
++        let projected = try projectedPercent.map { try Self.percent($0, path: "projectedPercent") }
++        let projectedLower = try projectedLowerPercent.map {
++            try Self.percent($0, path: "projectedLowerPercent")
++        }
++        let projectedUpper = try projectedUpperPercent.map {
++            try Self.percent($0, path: "projectedUpperPercent")
++        }
++        guard (projectedLower == nil) == (projectedUpper == nil) else {
++            throw ValidationError(
++                "projectedLowerPercent and projectedUpperPercent must be provided together")
++        }
++        if let projectedLower, let projectedUpper {
++            guard projectedLower <= projectedUpper else {
++                throw ValidationError("projectedLowerPercent must not exceed projectedUpperPercent")
++            }
++            if let projected, !(projectedLower...projectedUpper).contains(projected) {
++                throw ValidationError("projectedPercent must fall inside the projected range")
++            }
++        }
++        self.projectedPercent = projected
++        self.projectedLowerPercent = projectedLower
++        self.projectedUpperPercent = projectedUpper
++        self.currentLabel = try Self.requiredString(currentLabel, path: "currentLabel")
++        self.targetLabel = try Self.requiredString(targetLabel, path: "targetLabel")
++        self.projectedLabel = try Self.optionalString(projectedLabel, path: "projectedLabel")
++    }
++
++    private enum CodingKeys: String, CodingKey {
++        case title
++        case alternateTitle
++        case currentPercent
++        case targetPercent
++        case projectedPercent
++        case projectedLowerPercent
++        case projectedUpperPercent
++        case currentLabel
++        case targetLabel
++        case projectedLabel
++    }
++
++    public init(from decoder: Decoder) throws {
++        let container = try decoder.container(keyedBy: CodingKeys.self)
++        try self.init(
++            title: container.decode(String.self, forKey: .title),
++            alternateTitle: container.decodeIfPresent(String.self, forKey: .alternateTitle),
++            currentPercent: container.decode(Double.self, forKey: .currentPercent),
++            targetPercent: container.decode(Double.self, forKey: .targetPercent),
++            projectedPercent: container.decodeIfPresent(Double.self, forKey: .projectedPercent),
++            projectedLowerPercent: container.decodeIfPresent(
++                Double.self,
++                forKey: .projectedLowerPercent),
++            projectedUpperPercent: container.decodeIfPresent(
++                Double.self,
++                forKey: .projectedUpperPercent),
++            currentLabel: container.decode(String.self, forKey: .currentLabel),
++            targetLabel: container.decode(String.self, forKey: .targetLabel),
++            projectedLabel: container.decodeIfPresent(String.self, forKey: .projectedLabel))
++    }
++
++    public struct ValidationError: LocalizedError, Equatable, Sendable {
++        public let message: String
++        public var errorDescription: String? {
++            self.message
++        }
++
++        init(_ message: String) {
++            self.message = message
++        }
++    }
++
++    private static func percent(_ value: Double, path: String) throws -> Double {
++        guard value.isFinite, (0...100).contains(value) else {
++            throw ValidationError("\(path) must be between 0 and 100")
++        }
++        return value
++    }
++
++    private static func requiredString(_ value: String, path: String) throws -> String {
++        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !trimmed.isEmpty else { throw ValidationError("\(path) must not be empty") }
++        guard trimmed.count <= Self.maximumStringLength else {
++            throw ValidationError("\(path) exceeds \(Self.maximumStringLength) characters")
++        }
++        return trimmed
++    }
++
++    private static func optionalString(_ value: String?, path: String) throws -> String? {
++        guard let value else { return nil }
++        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
++        if trimmed.isEmpty { return nil }
++        guard trimmed.count <= Self.maximumStringLength else {
++            throw ValidationError("\(path) exceeds \(Self.maximumStringLength) characters")
++        }
++        return trimmed
++    }
++}
+diff --git a/Sources/CodexBarCore/ProviderDetailSection.swift b/Sources/CodexBarCore/ProviderDetailSection.swift
+index 9aa49a7..eac564c 100644
+--- a/Sources/CodexBarCore/ProviderDetailSection.swift
++++ b/Sources/CodexBarCore/ProviderDetailSection.swift
+@@ -10,17 +10,35 @@ public struct ProviderDetailSection: Codable, Equatable, Sendable {
+         public let label: String
+         public let value: String
+         public let secondaryValue: String?
++        public let alternateValue: String?
++        public let relativeTimeAt: String?
++        public let relativeTimePrefix: String?
+ 
+-        public init(label: String, value: String, secondaryValue: String? = nil) throws {
++        public init(
++            label: String,
++            value: String,
++            secondaryValue: String? = nil,
++            alternateValue: String? = nil,
++            relativeTimeAt: String? = nil,
++            relativeTimePrefix: String? = nil) throws
++        {
+             self.label = try ProviderDetailSection.requiredString(label, path: "row.label")
+             self.value = try ProviderDetailSection.requiredString(value, path: "row.value")
+             self.secondaryValue = try ProviderDetailSection.optionalString(secondaryValue, path: "row.secondaryValue")
++            self.alternateValue = try ProviderDetailSection.optionalString(alternateValue, path: "row.alternateValue")
++            self.relativeTimeAt = try ProviderDetailSection.optionalString(relativeTimeAt, path: "row.relativeTimeAt")
++            self.relativeTimePrefix = try ProviderDetailSection.optionalString(
++                relativeTimePrefix,
++                path: "row.relativeTimePrefix")
+         }
+ 
+         private enum CodingKeys: String, CodingKey {
+             case label
+             case value
+             case secondaryValue
++            case alternateValue
++            case relativeTimeAt
++            case relativeTimePrefix
+         }
+ 
+         public init(from decoder: Decoder) throws {
+@@ -28,7 +46,10 @@ public struct ProviderDetailSection: Codable, Equatable, Sendable {
+             try self.init(
+                 label: container.decode(String.self, forKey: .label),
+                 value: container.decode(String.self, forKey: .value),
+-                secondaryValue: container.decodeIfPresent(String.self, forKey: .secondaryValue))
++                secondaryValue: container.decodeIfPresent(String.self, forKey: .secondaryValue),
++                alternateValue: container.decodeIfPresent(String.self, forKey: .alternateValue),
++                relativeTimeAt: container.decodeIfPresent(String.self, forKey: .relativeTimeAt),
++                relativeTimePrefix: container.decodeIfPresent(String.self, forKey: .relativeTimePrefix))
+         }
+     }
+ 
+diff --git a/Sources/CodexBarCore/ProviderSubmenuDetailSection.swift b/Sources/CodexBarCore/ProviderSubmenuDetailSection.swift
+new file mode 100644
+index 0000000..915ed96
+--- /dev/null
++++ b/Sources/CodexBarCore/ProviderSubmenuDetailSection.swift
+@@ -0,0 +1,201 @@
++import Foundation
++
++/// Supplemental provider details rendered in a native side submenu.
++///
++/// Unlike `ProviderDetailSection`, submenu values may contain paragraph-length
++/// source text. The payload remains bounded so a plugin cannot create an
++/// unreasonably large menu or cached snapshot.
++public struct ProviderSubmenuDetailSection: Codable, Equatable, Sendable {
++    public static let maximumSectionsPerSnapshot = 8
++    public static let maximumRowsPerSection = 32
++    public static let maximumLabelLength = 120
++    public static let maximumValueLength = 2000
++    public static let maximumSecondaryValueLength = 500
++    public static let maximumLinkLabelLength = 120
++    public static let maximumLinkURLLength = 2048
++
++    public struct Link: Codable, Equatable, Sendable {
++        public let label: String
++        public let url: URL
++
++        public init(label: String, url: URL) throws {
++            self.label = try ProviderSubmenuDetailSection.requiredString(
++                label,
++                maximumLength: ProviderSubmenuDetailSection.maximumLinkLabelLength,
++                path: "link.label")
++            let absoluteString = url.absoluteString
++            guard absoluteString.count <= ProviderSubmenuDetailSection.maximumLinkURLLength else {
++                throw ValidationError(
++                    "link.url exceeds \(ProviderSubmenuDetailSection.maximumLinkURLLength) characters")
++            }
++            guard url.scheme?.lowercased() == "https",
++                  url.host?.isEmpty == false,
++                  url.user == nil,
++                  url.password == nil
++            else {
++                throw ValidationError("link.url must be an HTTPS URL without credentials")
++            }
++            self.url = url
++        }
++
++        private enum CodingKeys: String, CodingKey {
++            case label
++            case url
++        }
++
++        public init(from decoder: Decoder) throws {
++            let container = try decoder.container(keyedBy: CodingKeys.self)
++            try self.init(
++                label: container.decode(String.self, forKey: .label),
++                url: container.decode(URL.self, forKey: .url))
++        }
++    }
++
++    public struct Row: Codable, Equatable, Sendable {
++        public let label: String
++        public let value: String
++        public let secondaryValue: String?
++        public let link: Link?
++        public let group: String?
++        public let alternateValue: String?
++        public let relativeTimeAt: String?
++        public let relativeTimePrefix: String?
++
++        public init(
++            label: String,
++            value: String,
++            secondaryValue: String? = nil,
++            link: Link? = nil,
++            group: String? = nil,
++            alternateValue: String? = nil,
++            relativeTimeAt: String? = nil,
++            relativeTimePrefix: String? = nil) throws
++        {
++            self.label = try ProviderSubmenuDetailSection.requiredString(
++                label,
++                maximumLength: ProviderSubmenuDetailSection.maximumLabelLength,
++                path: "row.label")
++            self.value = try ProviderSubmenuDetailSection.requiredString(
++                value,
++                maximumLength: ProviderSubmenuDetailSection.maximumValueLength,
++                path: "row.value")
++            self.secondaryValue = try ProviderSubmenuDetailSection.optionalString(
++                secondaryValue,
++                maximumLength: ProviderSubmenuDetailSection.maximumSecondaryValueLength,
++                path: "row.secondaryValue")
++            self.link = link
++            self.group = try ProviderSubmenuDetailSection.optionalString(
++                group,
++                maximumLength: ProviderSubmenuDetailSection.maximumLabelLength,
++                path: "row.group")
++            self.alternateValue = try ProviderSubmenuDetailSection.optionalString(
++                alternateValue,
++                maximumLength: ProviderSubmenuDetailSection.maximumValueLength,
++                path: "row.alternateValue")
++            self.relativeTimeAt = try ProviderSubmenuDetailSection.optionalString(
++                relativeTimeAt,
++                maximumLength: ProviderSubmenuDetailSection.maximumLabelLength,
++                path: "row.relativeTimeAt")
++            self.relativeTimePrefix = try ProviderSubmenuDetailSection.optionalString(
++                relativeTimePrefix,
++                maximumLength: ProviderSubmenuDetailSection.maximumLabelLength,
++                path: "row.relativeTimePrefix")
++        }
++
++        private enum CodingKeys: String, CodingKey {
++            case label
++            case value
++            case secondaryValue
++            case link
++            case group
++            case alternateValue
++            case relativeTimeAt
++            case relativeTimePrefix
++        }
++
++        public init(from decoder: Decoder) throws {
++            let container = try decoder.container(keyedBy: CodingKeys.self)
++            try self.init(
++                label: container.decode(String.self, forKey: .label),
++                value: container.decode(String.self, forKey: .value),
++                secondaryValue: container.decodeIfPresent(String.self, forKey: .secondaryValue),
++                link: container.decodeIfPresent(Link.self, forKey: .link),
++                group: container.decodeIfPresent(String.self, forKey: .group),
++                alternateValue: container.decodeIfPresent(String.self, forKey: .alternateValue),
++                relativeTimeAt: container.decodeIfPresent(String.self, forKey: .relativeTimeAt),
++                relativeTimePrefix: container.decodeIfPresent(String.self, forKey: .relativeTimePrefix))
++        }
++    }
++
++    public struct ValidationError: LocalizedError, Equatable, Sendable {
++        public let message: String
++
++        public init(_ message: String) {
++            self.message = message
++        }
++
++        public var errorDescription: String? {
++            self.message
++        }
++    }
++
++    public let title: String?
++    public let rows: [Row]
++
++    public init(title: String? = nil, rows: [Row]) throws {
++        guard rows.count <= Self.maximumRowsPerSection else {
++            throw ValidationError("section.rows exceeds \(Self.maximumRowsPerSection) entries")
++        }
++        self.title = try Self.optionalString(
++            title,
++            maximumLength: Self.maximumLabelLength,
++            path: "section.title")
++        self.rows = rows
++    }
++
++    public static func validateSections(_ sections: [Self]) throws {
++        guard sections.count <= self.maximumSectionsPerSnapshot else {
++            throw ValidationError("snapshot.submenuDetails exceeds \(self.maximumSectionsPerSnapshot) sections")
++        }
++    }
++
++    private enum CodingKeys: String, CodingKey {
++        case title
++        case rows
++    }
++
++    public init(from decoder: Decoder) throws {
++        let container = try decoder.container(keyedBy: CodingKeys.self)
++        try self.init(
++            title: container.decodeIfPresent(String.self, forKey: .title),
++            rows: container.decode([Row].self, forKey: .rows))
++    }
++
++    private static func requiredString(
++        _ rawValue: String,
++        maximumLength: Int,
++        path: String) throws -> String
++    {
++        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !value.isEmpty else {
++            throw ValidationError("\(path) must not be empty")
++        }
++        guard value.count <= maximumLength else {
++            throw ValidationError("\(path) exceeds \(maximumLength) characters")
++        }
++        return value
++    }
++
++    private static func optionalString(
++        _ rawValue: String?,
++        maximumLength: Int,
++        path: String) throws -> String?
++    {
++        guard let rawValue else { return nil }
++        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard value.count <= maximumLength else {
++            throw ValidationError("\(path) exceeds \(maximumLength) characters")
++        }
++        return value.isEmpty ? nil : value
++    }
++}
+diff --git a/Sources/CodexBarCore/Resources/Plugins/codexbar-plugin.d.ts b/Sources/CodexBarCore/Resources/Plugins/codexbar-plugin.d.ts
+index 84600e6..98137c7 100644
+--- a/Sources/CodexBarCore/Resources/Plugins/codexbar-plugin.d.ts
++++ b/Sources/CodexBarCore/Resources/Plugins/codexbar-plugin.d.ts
+@@ -66,8 +66,42 @@ interface CodexBarDetailSection {
+   chart?: CodexBarDetailChart | null;
+ }
+ 
++interface CodexBarSubmenuDetailRow {
++  label: string;
++  /** Paragraph-length text; the native side submenu wraps it instead of truncating it. */
++  value: string;
++  secondaryValue?: string | null;
++  /** Optional user-initiated HTTPS destination rendered as a native menu command. */
++  link?: { label: string; url: string } | null;
++}
++
++interface CodexBarSubmenuDetailSection {
++  title?: string | null;
++  rows: CodexBarSubmenuDetailRow[];
++}
++
++interface CodexBarDecisionProgress {
++  /** Caption describing the shared deadline for the target and projection. */
++  title: string;
++  /** Observed fill, expressed in the same 0–100 orientation as both markers. */
++  currentPercent: number;
++  /** Red target marker. */
++  targetPercent: number;
++  /** Optional blue central projection marker at the same deadline. */
++  projectedPercent?: number | null;
++  /** Optional lower edge of the calibrated blue projection interval. */
++  projectedLowerPercent?: number | null;
++  /** Optional upper edge of the calibrated blue projection interval. */
++  projectedUpperPercent?: number | null;
++  currentLabel: string;
++  targetLabel: string;
++  projectedLabel?: string | null;
++}
++
+ interface CodexBarUsageSnapshot {
+   /** At least one rate window, cost, non-empty detail section, or non-empty identity field is required. */
++  /** Source-data timestamp. The menu uses it for "just updated" / relative freshness text. */
++  updatedAt?: Date | string | null;
+   primary?: CodexBarRateWindow | null;
+   secondary?: CodexBarRateWindow | null;
+   tertiary?: CodexBarRateWindow | null;
+@@ -77,7 +111,11 @@ interface CodexBarUsageSnapshot {
+   subscriptionRenewsAt?: Date | string | null;
+   subscriptionExpiresAt?: Date | string | null;
+   dataConfidence?: "exact" | "estimated" | "percentOnly" | "unknown";
++  /** Native decision bar: actual fill, target marker, and optional pace projection. */
++  decisionProgress?: CodexBarDecisionProgress | null;
+   details?: CodexBarDetailSection[] | null;
++  /** Supplemental details shown when the user hovers the provider card. */
++  submenuDetails?: CodexBarSubmenuDetailSection[] | null;
+ }
+ 
+ interface CodexBarHTTPRequestOptions {
+@@ -167,6 +205,8 @@ interface CodexBarProviderDefinition {
+   id: string;
+   name: string;
+   icon?: { monogram?: string; tint?: string };
++  /** Optional first-party provider tabs where this card appears. Omit to show it in every menu. */
++  menuProviders?: string[];
+   endpoints: CodexBarEndpoint[];
+   auth?: CodexBarAuth;
+   settings: CodexBarSetting[];
+diff --git a/Sources/CodexBarCore/UsageFetcher.swift b/Sources/CodexBarCore/UsageFetcher.swift
+index 389470e..b6e9db6 100644
+--- a/Sources/CodexBarCore/UsageFetcher.swift
++++ b/Sources/CodexBarCore/UsageFetcher.swift
+@@ -146,7 +146,9 @@ public struct UsageSnapshot: Codable, Sendable {
+     public let tertiary: RateWindow?
+     public let extraRateWindows: [NamedRateWindow]?
+     public let providerCost: ProviderCostSnapshot?
++    public let decisionProgress: ProviderDecisionProgress?
+     public let details: [ProviderDetailSection]
++    public let submenuDetails: [ProviderSubmenuDetailSection]
+     public let deepseekDetailedUsageState: DeepSeekDetailedUsageState
+     public let deepseekPlatformProfiles: [DeepSeekPlatformProfile]
+     public let opencodegoUsage: OpenCodeGoUsageSnapshot?
+@@ -171,7 +173,9 @@ public struct UsageSnapshot: Codable, Sendable {
+         case tertiary
+         case extraRateWindows
+         case providerCost
++        case decisionProgress
+         case details
++        case submenuDetails
+         case openAIAPIUsage
+         case codexResetCredits
+         case mistralUsage
+@@ -191,7 +195,9 @@ public struct UsageSnapshot: Codable, Sendable {
+         tertiary: RateWindow? = nil,
+         extraRateWindows: [NamedRateWindow]? = nil,
+         providerCost: ProviderCostSnapshot? = nil,
++        decisionProgress: ProviderDecisionProgress? = nil,
+         details: [ProviderDetailSection] = [],
++        submenuDetails: [ProviderSubmenuDetailSection] = [],
+         deepseekDetailedUsageState: DeepSeekDetailedUsageState = .notRequested,
+         deepseekPlatformProfiles: [DeepSeekPlatformProfile] = [],
+         opencodegoUsage: OpenCodeGoUsageSnapshot? = nil,
+@@ -210,12 +216,18 @@ public struct UsageSnapshot: Codable, Sendable {
+         precondition(
+             details.count <= ProviderDetailSection.maximumSectionsPerSnapshot,
+             "UsageSnapshot details exceeds \(ProviderDetailSection.maximumSectionsPerSnapshot) sections")
++        precondition(
++            submenuDetails.count <= ProviderSubmenuDetailSection.maximumSectionsPerSnapshot,
++            "UsageSnapshot submenuDetails exceeds " +
++                "\(ProviderSubmenuDetailSection.maximumSectionsPerSnapshot) sections")
+         self.primary = primary
+         self.secondary = secondary
+         self.tertiary = tertiary
+         self.extraRateWindows = extraRateWindows
+         self.providerCost = providerCost
++        self.decisionProgress = decisionProgress
+         self.details = details
++        self.submenuDetails = submenuDetails
+         self.deepseekDetailedUsageState = deepseekDetailedUsageState
+         self.deepseekPlatformProfiles = deepseekPlatformProfiles
+         self.opencodegoUsage = opencodegoUsage
+@@ -263,8 +275,15 @@ public struct UsageSnapshot: Codable, Sendable {
+         self.tertiary = try container.decodeIfPresent(RateWindow.self, forKey: .tertiary)
+         self.extraRateWindows = try container.decodeIfPresent([NamedRateWindow].self, forKey: .extraRateWindows)
+         self.providerCost = try container.decodeIfPresent(ProviderCostSnapshot.self, forKey: .providerCost)
++        self.decisionProgress = try container.decodeIfPresent(
++            ProviderDecisionProgress.self,
++            forKey: .decisionProgress)
+         self.details = try container.decodeIfPresent([ProviderDetailSection].self, forKey: .details) ?? []
+         try ProviderDetailSection.validateSections(self.details)
++        self.submenuDetails = try container.decodeIfPresent(
++            [ProviderSubmenuDetailSection].self,
++            forKey: .submenuDetails) ?? []
++        try ProviderSubmenuDetailSection.validateSections(self.submenuDetails)
+         self.deepseekDetailedUsageState = .notRequested // Live-only fetch state
+         self.deepseekPlatformProfiles = [] // Live-only browser profile catalog
+         self.opencodegoUsage = nil // Not persisted, fetched fresh each time
+@@ -310,9 +329,13 @@ public struct UsageSnapshot: Codable, Sendable {
+         try container.encode(self.tertiary, forKey: .tertiary)
+         try container.encodeIfPresent(self.extraRateWindows, forKey: .extraRateWindows)
+         try container.encodeIfPresent(self.providerCost, forKey: .providerCost)
++        try container.encodeIfPresent(self.decisionProgress, forKey: .decisionProgress)
+         if !self.details.isEmpty {
+             try container.encode(self.details, forKey: .details)
+         }
++        if !self.submenuDetails.isEmpty {
++            try container.encode(self.submenuDetails, forKey: .submenuDetails)
++        }
+         try container.encodeIfPresent(self.openAIAPIUsage, forKey: .openAIAPIUsage)
+         try container.encodeIfPresent(self.codexResetCredits, forKey: .codexResetCredits)
+         try container.encodeIfPresent(self.mistralUsage, forKey: .mistralUsage)
+@@ -464,7 +487,9 @@ public struct UsageSnapshot: Codable, Sendable {
+         secondary: Replacement<RateWindow?> = .unchanged,
+         tertiary: Replacement<RateWindow?> = .unchanged,
+         extraRateWindows: Replacement<[NamedRateWindow]?> = .unchanged,
++        decisionProgress: Replacement<ProviderDecisionProgress?> = .unchanged,
+         details: Replacement<[ProviderDetailSection]> = .unchanged,
++        submenuDetails: Replacement<[ProviderSubmenuDetailSection]> = .unchanged,
+         deepseekDetailedUsageState: Replacement<DeepSeekDetailedUsageState> = .unchanged,
+         deepseekPlatformProfiles: Replacement<[DeepSeekPlatformProfile]> = .unchanged,
+         codexResetCredits: Replacement<CodexRateLimitResetCreditsSnapshot?> = .unchanged,
+@@ -479,7 +504,9 @@ public struct UsageSnapshot: Codable, Sendable {
+             tertiary: tertiary.resolving(self.tertiary),
+             extraRateWindows: extraRateWindows.resolving(self.extraRateWindows),
+             providerCost: self.providerCost,
++            decisionProgress: decisionProgress.resolving(self.decisionProgress),
+             details: details.resolving(self.details),
++            submenuDetails: submenuDetails.resolving(self.submenuDetails),
+             deepseekDetailedUsageState: deepseekDetailedUsageState.resolving(self.deepseekDetailedUsageState),
+             deepseekPlatformProfiles: deepseekPlatformProfiles.resolving(self.deepseekPlatformProfiles),
+             opencodegoUsage: self.opencodegoUsage,
+diff --git a/Tests/CodexBarTests/CLIAccountMetadataTests.swift b/Tests/CodexBarTests/CLIAccountMetadataTests.swift
+new file mode 100644
+index 0000000..8d7129f
+--- /dev/null
++++ b/Tests/CodexBarTests/CLIAccountMetadataTests.swift
+@@ -0,0 +1,28 @@
++import Foundation
++import Testing
++@testable import CodexBarCLI
++
++struct CLIAccountMetadataTests {
++    @Test
++    func `serve JSON exposes stable account selection metadata`() throws {
++        let payload = ProviderPayload(
++            provider: .codex,
++            account: "fixture@example.test",
++            cacheAccountKey: "codex:stored:fixture",
++            accountActive: true,
++            accountLive: false,
++            version: nil,
++            source: "fixture",
++            status: nil,
++            usage: nil,
++            credits: nil,
++            antigravityPlanInfo: nil,
++            openaiDashboard: nil,
++            error: nil)
++        let data = try JSONEncoder().encode(payload)
++        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
++        #expect(json["cacheAccountKey"] as? String == "codex:stored:fixture")
++        #expect(json["accountActive"] as? Bool == true)
++        #expect(json["accountLive"] as? Bool == false)
++    }
++}
+diff --git a/Tests/CodexBarTests/ProviderArchitectureGatekeeperTests.swift b/Tests/CodexBarTests/ProviderArchitectureGatekeeperTests.swift
+index d3e04ed..67f8777 100644
+--- a/Tests/CodexBarTests/ProviderArchitectureGatekeeperTests.swift
++++ b/Tests/CodexBarTests/ProviderArchitectureGatekeeperTests.swift
+@@ -962,7 +962,7 @@ struct ProviderArchitectureGatekeeperTests {
+             reason: "The memory-pressure debug fixture installs its synthetic entry in the Codex cache slot."),
+         SuppressedProviderReference(
+             path: "Sources/CodexBar/StatusItemController+Menu.swift",
+-            line: 1087,
++            line: 1090,
+             anchor: "controller.refreshOpenMenuIfStillVisible(menu, provider: .codex)",
+             expectedProviderIDs: ["codex"],
+             reason: "This provider-specific app branch passes its already-selected identity to a shared helper."),
+@@ -1503,7 +1503,7 @@ struct ProviderArchitectureGatekeeperTests {
+             reason: "This tagged diagnostic payload encodes MiniMax details under the matching wire key."),
+         SuppressedProviderReference(
+             path: "Sources/CodexBarCore/UsageFetcher.swift",
+-            line: 1479,
++            line: 1506,
+             anchor: "providerID: .codex,",
+             expectedProviderIDs: ["codex"],
+             reason: "This provider-specific core branch passes its already-selected identity to a shared helper."),
+@@ -2476,7 +2476,7 @@ struct ProviderArchitectureGatekeeperTests {
+             reason: "This exact app-runtime bridge coordinates provider-owned state through the shared controller."),
+         AllowedProviderConstruct(
+             path: "Sources/CodexBar/StatusItemController+Menu.swift",
+-            line: 1120,
++            line: 1123,
+             anchor: "return .provider((self.resolvedMenuProvider(enabledProviders: enabledProviders) ?? .codex).instanceID)",
+             expectedProviderIDs: ["codex"],
+             expectedReferenceCount: 1,
+@@ -2484,7 +2484,7 @@ struct ProviderArchitectureGatekeeperTests {
+             reason: "This exact app-runtime bridge coordinates provider-owned state through the shared controller."),
+         AllowedProviderConstruct(
+             path: "Sources/CodexBar/StatusItemController+Menu.swift",
+-            line: 1133,
++            line: 1136,
+             anchor: "return self.store.enabledFirstPartyProvidersForDisplay().first ?? .codex",
+             expectedProviderIDs: ["codex"],
+             expectedReferenceCount: 1,
+@@ -3323,7 +3323,7 @@ struct ProviderArchitectureGatekeeperTests {
+             reason: "This exact CLI construct preserves the provider-specific command and output contract."),
+         AllowedProviderConstruct(
+             path: "Sources/CodexBarCLI/CLIUsageCommand.swift",
+-            line: 182,
++            line: 184,
+             anchor: "includeAllCodexAccounts: tokenSelection.allAccounts && providerList == [.codex],",
+             expectedProviderIDs: ["codex"],
+             expectedReferenceCount: 1,
+diff --git a/Tests/CodexBarTests/ProviderDetailSectionTests.swift b/Tests/CodexBarTests/ProviderDetailSectionTests.swift
+index 4cc8cbe..d4b1883 100644
+--- a/Tests/CodexBarTests/ProviderDetailSectionTests.swift
++++ b/Tests/CodexBarTests/ProviderDetailSectionTests.swift
+@@ -14,14 +14,20 @@ struct ProviderDetailSectionTests {
+         let row = try ProviderDetailSection.Row(
+             label: " Total ",
+             value: " $12.50 ",
+-            secondaryValue: " 120 requests ")
++            secondaryValue: " 120 requests ",
++            alternateValue: " 2 hours from now ",
++            relativeTimeAt: " 2026-08-28T02:48:00Z ",
++            relativeTimePrefix: " Resets in ")
+         let section = try ProviderDetailSection(title: " Billing ", rows: [row], chart: chart)
+ 
+         #expect(section.title == "Billing")
+         #expect(try section.rows == [ProviderDetailSection.Row(
+             label: "Total",
+             value: "$12.50",
+-            secondaryValue: "120 requests")])
++            secondaryValue: "120 requests",
++            alternateValue: "2 hours from now",
++            relativeTimeAt: "2026-08-28T02:48:00Z",
++            relativeTimePrefix: "Resets in")])
+         #expect(section.chart?.title == "Daily usage")
+         #expect(section.chart?.unit == "USD")
+         #expect(try section.chart?.points == [ProviderDetailSection.Chart.Point(label: "Monday", value: 12.5)])
+diff --git a/Tests/CodexBarTests/ProviderPluginRuntimeTests.swift b/Tests/CodexBarTests/ProviderPluginRuntimeTests.swift
+index 520c961..42b7e30 100644
+--- a/Tests/CodexBarTests/ProviderPluginRuntimeTests.swift
++++ b/Tests/CodexBarTests/ProviderPluginRuntimeTests.swift
+@@ -5,6 +5,7 @@ import FoundationNetworking
+ import Testing
+ @testable import CodexBarCore
+ 
++// swiftlint:disable:next type_body_length
+ struct ProviderPluginRuntimeTests {
+     @Test
+     func `automatic engine defaults to QuickJS`() {
+@@ -497,6 +498,29 @@ struct ProviderPluginRuntimeTests {
+         }
+     }
+ 
++    @Test
++    func `snapshot source timestamp controls displayed freshness`() async throws {
++        let sourceDate = Date(timeIntervalSince1970: 1_784_191_193)
++        let runtime = try ProviderPluginRuntime(source: Self.plugin(fetchBody: """
++        return { primary: { usedPercent: 1 }, updatedAt: "2026-07-16T08:39:53Z" };
++        """))
++
++        let snapshot = try await runtime.fetchUsage(secrets: ["TEST_KEY": "secret"])
++
++        #expect(snapshot.updatedAt == sourceDate)
++    }
++
++    @Test(arguments: [#""yesterday""#, "42"])
++    func `invalid snapshot source timestamp fails the snapshot`(value: String) async throws {
++        let runtime = try ProviderPluginRuntime(source: Self.plugin(fetchBody: """
++        return { primary: { usedPercent: 1 }, updatedAt: \(value) };
++        """))
++
++        await #expect(throws: ProviderPluginError.self) {
++            _ = try await runtime.fetchUsage(secrets: ["TEST_KEY": "secret"])
++        }
++    }
++
+     @Test
+     func `identity only snapshot preserves a successful sparse provider state`() async throws {
+         let runtime = try ProviderPluginRuntime(source: Self.plugin(fetchBody: """
+@@ -559,6 +583,113 @@ struct ProviderPluginRuntimeTests {
+         #expect(section.chart == expectedChart)
+     }
+ 
++    @Test
++    func `decision progress maps observed target and forecast range`() async throws {
++        let runtime = try ProviderPluginRuntime(source: Self.plugin(fetchBody: """
++        return {
++          decisionProgress: {
++            title: " By tomorrow ",
++            alternateTitle: " Next 24 hours ",
++            currentPercent: 10,
++            targetPercent: 47.5,
++            projectedPercent: 34,
++            projectedLowerPercent: 28,
++            projectedUpperPercent: 41,
++            currentLabel: " Used 10% ",
++            targetLabel: " Target 47.5% ",
++            projectedLabel: " At this pace 34% ",
++          },
++        };
++        """))
++
++        let snapshot = try await runtime.fetchUsage(secrets: ["TEST_KEY": "secret"])
++        let progress = try #require(snapshot.decisionProgress)
++        #expect(progress.title == "By tomorrow")
++        #expect(progress.alternateTitle == "Next 24 hours")
++        #expect(progress.currentPercent == 10)
++        #expect(progress.targetPercent == 47.5)
++        #expect(progress.projectedPercent == 34)
++        #expect(progress.projectedLowerPercent == 28)
++        #expect(progress.projectedUpperPercent == 41)
++        #expect(progress.currentLabel == "Used 10%")
++        #expect(progress.targetLabel == "Target 47.5%")
++        #expect(progress.projectedLabel == "At this pace 34%")
++    }
++
++    @Test(arguments: [
++        #"decisionProgress: []"#,
++        #"decisionProgress: {title: "x", currentPercent: -1, targetPercent: 20, currentLabel: "x", targetLabel: "y"}"#,
++        #"decisionProgress: {title: "x", currentPercent: 10, targetPercent: 101, currentLabel: "x", targetLabel: "y"}"#,
++        // swiftlint:disable:next line_length
++        #"decisionProgress: {title: "x", currentPercent: 10, targetPercent: 20, projectedPercent: NaN, currentLabel: "x", targetLabel: "y"}"#,
++        // swiftlint:disable:next line_length
++        #"decisionProgress: {title: "x", currentPercent: 10, targetPercent: 20, projectedLowerPercent: 12, currentLabel: "x", targetLabel: "y"}"#,
++        // swiftlint:disable:next line_length
++        #"decisionProgress: {title: "x", currentPercent: 10, targetPercent: 20, projectedLowerPercent: 30, projectedUpperPercent: 20, currentLabel: "x", targetLabel: "y"}"#,
++        // swiftlint:disable:next line_length
++        #"decisionProgress: {title: "x", currentPercent: 10, targetPercent: 20, projectedPercent: 40, projectedLowerPercent: 20, projectedUpperPercent: 30, currentLabel: "x", targetLabel: "y"}"#,
++    ])
++    func `invalid decision progress fails the fetch`(body: String) async throws {
++        let runtime = try ProviderPluginRuntime(source: Self.plugin(fetchBody: "return { \(body) };"))
++
++        await #expect(throws: ProviderPluginError.self) {
++            _ = try await runtime.fetchUsage(secrets: ["TEST_KEY": "secret"])
++        }
++    }
++
++    @Test
++    func `submenu details preserve wrapped text and validated source links`() async throws {
++        let runtime = try ProviderPluginRuntime(source: Self.plugin(fetchBody: """
++        return {
++          details: [{ rows: [{ label: "Signal", value: "Available" }] }],
++          submenuDetails: [{
++            title: " Tibo signal ",
++            rows: [{
++              label: " Full text ",
++              value: " A paragraph that remains complete in the side submenu. ",
++              secondaryValue: " Published today ",
++              alternateValue: " 2 days 3 hours from now ",
++              relativeTimeAt: " 2026-08-28T02:48:00Z ",
++              relativeTimePrefix: " Resets in ",
++              group: " official ",
++              link: { label: " Open source ", url: "https://example.com/post/42" },
++            }],
++          }],
++        };
++        """))
++
++        let snapshot = try await runtime.fetchUsage(secrets: ["TEST_KEY": "secret"])
++
++        let section = try #require(snapshot.submenuDetails.first)
++        let row = try #require(section.rows.first)
++        #expect(section.title == "Tibo signal")
++        #expect(row.label == "Full text")
++        #expect(row.value == "A paragraph that remains complete in the side submenu.")
++        #expect(row.secondaryValue == "Published today")
++        #expect(row.alternateValue == "2 days 3 hours from now")
++        #expect(row.relativeTimeAt == "2026-08-28T02:48:00Z")
++        #expect(row.relativeTimePrefix == "Resets in")
++        #expect(row.group == "official")
++        #expect(row.link?.label == "Open source")
++        #expect(row.link?.url.absoluteString == "https://example.com/post/42")
++    }
++
++    @Test(arguments: [
++        #"submenuDetails: {}"#,
++        #"submenuDetails: [{ rows: [{ label: "ok", value: 1 }] }]"#,
++        #"submenuDetails: [{ rows: [{ label: "ok", value: "value", link: { label: "Open", url: "http://example.com" } }] }]"#,
++        #"submenuDetails: [{ rows: Array.from({length: 33}, () => ({label: "x", value: "y"})) }]"#,
++    ])
++    func `present invalid submenu details fail the fetch`(body: String) async throws {
++        let runtime = try ProviderPluginRuntime(source: Self.plugin(fetchBody: """
++        return { details: [{ rows: [{ label: "Signal", value: "Available" }] }], \(body) };
++        """))
++
++        await #expect(throws: ProviderPluginError.self) {
++            _ = try await runtime.fetchUsage(secrets: ["TEST_KEY": "secret"])
++        }
++    }
++
+     @Test(arguments: [
+         #"details: {}"#,
+         #"details: [{ rows: [{ label: "ok", value: 1 }] }]"#,
+diff --git a/Tests/CodexBarTests/ProviderSubmenuDetailSectionTests.swift b/Tests/CodexBarTests/ProviderSubmenuDetailSectionTests.swift
+new file mode 100644
+index 0000000..de2446a
+--- /dev/null
++++ b/Tests/CodexBarTests/ProviderSubmenuDetailSectionTests.swift
+@@ -0,0 +1,70 @@
++import Foundation
++import Testing
++@testable import CodexBarCore
++
++struct ProviderSubmenuDetailSectionTests {
++    @Test
++    func `construction preserves long wrapped text and safe links`() throws {
++        let source = String(repeating: "A full source paragraph. ", count: 12)
++        let link = try ProviderSubmenuDetailSection.Link(
++            label: " Open source ",
++            url: #require(URL(string: "https://example.com/post/42")))
++        let row = try ProviderSubmenuDetailSection.Row(
++            label: " Source text ",
++            value: " \(source) ",
++            secondaryValue: " Published today ",
++            link: link,
++            alternateValue: " 2 days from now ",
++            relativeTimeAt: " 2026-08-28T02:48:00Z ",
++            relativeTimePrefix: " Resets in ")
++        let section = try ProviderSubmenuDetailSection(title: " Details ", rows: [row])
++
++        #expect(section.title == "Details")
++        #expect(section.rows.first?.label == "Source text")
++        #expect(section.rows.first?.value == source.trimmingCharacters(in: .whitespacesAndNewlines))
++        #expect(section.rows.first?.secondaryValue == "Published today")
++        #expect(section.rows.first?.alternateValue == "2 days from now")
++        #expect(section.rows.first?.relativeTimeAt == "2026-08-28T02:48:00Z")
++        #expect(section.rows.first?.relativeTimePrefix == "Resets in")
++        #expect(section.rows.first?.link?.label == "Open source")
++        #expect(section.rows.first?.link?.url.absoluteString == "https://example.com/post/42")
++    }
++
++    @Test(arguments: [
++        "http://example.com/post",
++        "https://user:password@example.com/post",
++        "javascript:alert(1)",
++    ])
++    func `links reject unsafe destinations`(rawURL: String) throws {
++        let url = try #require(URL(string: rawURL))
++
++        #expect(throws: ProviderSubmenuDetailSection.ValidationError.self) {
++            _ = try ProviderSubmenuDetailSection.Link(label: "Open", url: url)
++        }
++    }
++
++    @Test
++    func `snapshot round trip preserves submenu details`() throws {
++        let link = try ProviderSubmenuDetailSection.Link(
++            label: "Open source",
++            url: #require(URL(string: "https://example.com/post")))
++        let section = try ProviderSubmenuDetailSection(
++            title: "Signal",
++            rows: [ProviderSubmenuDetailSection.Row(
++                label: "Full text",
++                value: "Untruncated source text",
++                link: link)])
++        let snapshot = try UsageSnapshot(
++            primary: nil,
++            secondary: nil,
++            details: [ProviderDetailSection(rows: [ProviderDetailSection.Row(
++                label: "Signal",
++                value: "Available")])],
++            submenuDetails: [section],
++            updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
++        let data = try JSONEncoder().encode(snapshot)
++        let decoded = try JSONDecoder().decode(UsageSnapshot.self, from: data)
++
++        #expect(decoded.submenuDetails == [section])
++    }
++}
+diff --git a/Tests/CodexBarTests/UserProviderPluginTests.swift b/Tests/CodexBarTests/UserProviderPluginTests.swift
+index 01fa505..155bf23 100644
+--- a/Tests/CodexBarTests/UserProviderPluginTests.swift
++++ b/Tests/CodexBarTests/UserProviderPluginTests.swift
+@@ -24,6 +24,9 @@ struct UserProviderPluginTests {
+         #expect(plugin.manifest.id.rawValue == "acme-meter")
+         #expect(plugin.manifest.icon.monogram == "AM")
+         #expect(plugin.manifest.icon.tint == "#336699")
++        #expect(plugin.manifest.menuProviders == nil)
++        #expect(plugin.manifest.appearsInMenu(for: nil))
++        #expect(plugin.manifest.appearsInMenu(for: .deepseek))
+ 
+         let binding = try plugin.approvalBinding(settings: [:])
+         await #expect(throws: UserProviderPluginError.self) {
+@@ -47,6 +50,51 @@ struct UserProviderPluginTests {
+         #expect(transport.lastRequest?.value(forHTTPHeaderField: "Accept-Encoding") == "identity")
+     }
+ 
++    @Test
++    func `menu provider scope shows a plugin only in its declared first-party tabs`() throws {
++        let fixture = try Fixture()
++        defer { fixture.remove() }
++        let source = """
++        defineProvider({
++          id: "scoped-meter",
++          name: "Scoped Meter",
++          icon: { monogram: "SM", tint: "#336699" },
++          menuProviders: ["codex"],
++          endpoints: ["https://scoped.example"],
++          settings: [],
++          fetchUsage() { return { primary: { usedPercent: 42 } }; },
++        });
++        """
++        let plugin = try fixture.loader(transport: RecordingTransport(responseJSON: "{}"))
++            .load(fileURL: fixture.write(name: "scoped.js", source: source))
++
++        #expect(plugin.manifest.menuProviders == [.codex])
++        #expect(plugin.manifest.appearsInMenu(for: .codex))
++        #expect(!plugin.manifest.appearsInMenu(for: .deepseek))
++        #expect(!plugin.manifest.appearsInMenu(for: nil))
++    }
++
++    @Test
++    func `menu provider scope rejects unknown provider ids`() throws {
++        let fixture = try Fixture()
++        defer { fixture.remove() }
++        let source = """
++        defineProvider({
++          id: "bad-scope",
++          name: "Bad Scope",
++          menuProviders: ["not-a-provider"],
++          endpoints: ["https://scoped.example"],
++          settings: [],
++          fetchUsage() { return { primary: { usedPercent: 42 } }; },
++        });
++        """
++
++        #expect(throws: ProviderPluginError.self) {
++            _ = try fixture.loader(transport: RecordingTransport(responseJSON: "{}"))
++                .load(fileURL: fixture.write(name: "bad-scope.js", source: source))
++        }
++    }
++
+     @Test
+     func `http status capability keeps identity encoding and compressed response rejection`() async throws {
+         let fixture = try Fixture()
+diff --git a/UPSTREAM.md b/UPSTREAM.md
+new file mode 100644
+index 0000000..3adfc64
+--- /dev/null
++++ b/UPSTREAM.md
+@@ -0,0 +1,12 @@
++# Upstream provenance
++
++- Project: CodexBar
++- Upstream repository: <https://github.com/steipete/CodexBar>
++- Base tag: `v0.49.3`
++- Base commit: `fc57a317cee4a8f84962c62c45e4502085f6fc79`
++- License: MIT, preserved in [LICENSE](LICENSE)
++
++This branch contains local modifications for Codex Capacity Planner provider details,
++shared decision-progress presentation, reset-credit state, and synchronized
++menu content. Its history was reconstructed from the exact upstream tag so the
++Codex Capacity Planner commit can be reviewed and future upstream merges remain explicit.
+-- 
+2.50.1 (Apple Git-155)

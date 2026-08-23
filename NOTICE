@@ -1,0 +1,16 @@
+Codex Capacity Planner
+Copyright (c) 2026 Codex Capacity Planner contributors
+
+The build bootstrap materializes a modified copy of CodexBar 0.49.3 in
+`CodexBar-upstream/`, based on upstream tag `v0.49.3` at commit
+`fc57a317cee4a8f84962c62c45e4502085f6fc79`. CodexBar is copyright (c) 2026
+Peter Steinberger and is distributed under the MIT License. The bootstrap
+fetches its original repository and license before applying the reviewable
+patch under `patches/codexbar/`.
+
+Codex Capacity Planner is an independent community project. It is not affiliated with or
+endorsed by OpenAI. Codex, ChatGPT, OpenAI, and related marks belong to their
+respective owners.
+
+Public event summaries and links remain attributable to their original public
+sources. Their inclusion does not transfer ownership of the source content.

@@ -1,0 +1,27 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  macos-app:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ad-hoc signed app
+        run: ./scripts/package-release.sh
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            outputs/release/Codex-Capacity-Planner-macOS.zip
+            outputs/release/SHA256SUMS.txt
+          body: |
+            This macOS build is ad-hoc signed and is not notarized with an Apple Developer ID.
+            On first launch, Control-click the app and choose Open, or allow it under
+            System Settings → Privacy & Security. Verify the download with SHA256SUMS.txt.

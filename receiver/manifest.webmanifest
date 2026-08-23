@@ -1,0 +1,8 @@
+{
+  "name": "Codex Capacity Planner 本机接收器",
+  "short_name": "Capacity Planner",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#100d15",
+  "theme_color": "#17131f"
+}

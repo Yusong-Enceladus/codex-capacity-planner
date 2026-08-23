@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: ./scripts/check-public-tree.sh
+      - run: ./scripts/scan-public-content.sh
+      - run: node --check codex-reset.js
+      - run: node --check codex-reset-monitor.js
+      - run: node --check codex-reset-behavior.js
+      - run: node --check codex-reset-short-load.js
+      - run: node --check codex-reset-workload-eval.js
+      - run: node codex-reset.test.js
+
+  macos-app:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift test --package-path CodexResetApp

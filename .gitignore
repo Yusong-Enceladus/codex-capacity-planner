@@ -1,0 +1,35 @@
+.DS_Store
+outputs/
+work/
+*.log
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.mobileprovision
+*.key
+
+# Local runtime state and secrets must never enter the workspace.
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*state*.json
+*capability*.json
+
+# Rebuildable pinned CodexBar fork and Swift artifacts.
+/CodexBar-upstream/
+CodexResetApp/.build/
+CodexResetApp/dist/
+
+# Machine-specific launchd files are generated from public templates.
+com.codexbar.*.plist
+
+# Local visual QA may contain real account state. Publish only recreated,
+# synthetic screenshots under docs/assets/.
+audit/
+design-qa-artifacts/
+design-exploration/
+design-qa.md
+CodexResetApp/qa/
+CodexResetApp/design-qa.md

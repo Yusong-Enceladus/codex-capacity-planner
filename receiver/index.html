@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#17131f" />
+    <title>Codex Capacity Planner 本机接收器</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main>
+      <div class="mark" aria-hidden="true">✦</div>
+      <h1>Codex Capacity Planner 本机接收器</h1>
+      <p class="lead">订阅网站已经验证的重置 Push；个人额度与推荐用量始终留在这台 Mac 上计算。</p>
+      <section class="status" aria-live="polite">
+        <div class="status-line">
+          <span id="status-dot" class="dot"></span>
+          <span id="status-title">正在检查…</span>
+        </div>
+        <p id="status-detail">正在读取本机服务状态。</p>
+      </section>
+      <div class="actions">
+        <button id="subscribe" type="button">启用低延迟通知</button>
+        <button id="unsubscribe" class="secondary" type="button" hidden>取消 Push</button>
+        <button id="refresh" class="secondary" type="button">刷新状态</button>
+      </div>
+      <div class="facts">
+        <div class="fact"><span>✓</span><span>页面关闭后，浏览器的 Service Worker 仍可接收 Push。</span></div>
+        <div class="fact"><span>✓</span><span>Push 漏掉时由 Atom 与站点 API 自动补漏，不轮询 X。</span></div>
+        <div class="fact"><span>✓</span><span>只把浏览器生成的 Push endpoint 发给 codex-reset.com；不会上传个人额度。</span></div>
+      </div>
+    </main>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
