@@ -37,12 +37,21 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
 
     private func showStateGallery(page: String) {
         NSApplication.shared.setActivationPolicy(.regular)
-        let controller = NSHostingController(rootView: ResetStateGallery(page: page))
+        let isReadmeGallery = page.hasPrefix("readme-")
+        let rootView = isReadmeGallery
+            ? AnyView(ResetReadmeGallery(page: page))
+            : AnyView(ResetStateGallery(page: page))
+        let controller = NSHostingController(rootView: rootView)
         let window = NSWindow(contentViewController: controller)
-        window.title = "Codex Capacity Planner 状态机 · \(page)"
+        window.title = isReadmeGallery
+            ? "Codex Capacity Planner"
+            : "Codex Capacity Planner 状态机 · \(page)"
         window.styleMask = [.titled, .closable, .resizable]
         window.appearance = NSAppearance(named: .darkAqua)
-        window.setContentSize(NSSize(width: 1440, height: 900))
+        window.setContentSize(
+            isReadmeGallery
+                ? ResetReadmeGallery.preferredSize(for: page)
+                : NSSize(width: 1440, height: 900))
         window.center()
         window.makeKeyAndOrderFront(nil)
         self.galleryWindow = window
