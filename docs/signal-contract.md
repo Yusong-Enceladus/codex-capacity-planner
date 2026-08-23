@@ -69,12 +69,14 @@ reply may refine the deadline of the same public promise. A public announcement
 and personal delivery are separate states.
 
 If the public text contains an approximate time with an explicit timezone, the
-client preserves the original phrase, converts it to the display timezone, and
-uses that same instant for the target trajectory, countdown, capacity-at-risk
-calculation, and notification. If no time is stated, the client omits the time
-row and does not manufacture a deadline. Each rendered public message keeps its
-own source link immediately adjacent; links from multiple posts are never
-pooled into an unlabeled footer.
+client preserves the original phrase and converts its stated center to one
+canonical display instant. That same instant drives the target trajectory,
+countdown, capacity-at-risk calculation, capacity chain, and notification; the
+original range remains internal risk context rather than a second conflicting
+deadline. “Within” windows retain their stated end as the deadline. If no time
+is stated, the client omits the time row and does not manufacture a deadline.
+Each rendered public message keeps its own source link immediately adjacent;
+links from multiple posts are never pooled into an unlabeled footer.
 
 ## Privacy
 

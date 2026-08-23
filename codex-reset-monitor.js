@@ -1213,7 +1213,7 @@ function updateTargetTrajectory(previousValue, modelValue, nowMs) {
 
 function ensureState(value) {
   const state = object(value) || {};
-  state.version = 15;
+  state.version = 16;
   state.costMeter = {
     lastRowID: Number.isFinite(state.costMeter && state.costMeter.lastRowID)
       ? state.costMeter.lastRowID
@@ -1227,6 +1227,9 @@ function ensureState(value) {
   state.events.seenIds = Array.isArray(state.events.seenIds) ? state.events.seenIds.slice(-32) : [];
   state.events.notifiedSignalIds = Array.isArray(state.events.notifiedSignalIds)
     ? state.events.notifiedSignalIds.slice(-32)
+    : [];
+  state.events.notifiedForcedEventIds = Array.isArray(state.events.notifiedForcedEventIds)
+    ? state.events.notifiedForcedEventIds.map(text).filter(Boolean).slice(-32)
     : [];
   state.events.closedIds = Array.isArray(state.events.closedIds)
     ? state.events.closedIds.map(text).filter(Boolean).slice(-64)
@@ -1261,6 +1264,23 @@ function ensureState(value) {
   state.behaviorNotification =
     object(state.behaviorNotification) || object(state.paceNotification) || {};
   state.creditNotification = object(state.creditNotification) || {};
+  const notificationDelivery = object(state.notificationDelivery) || {};
+  state.notificationDelivery = {
+    lastAttemptAt: millis(notificationDelivery.lastAttemptAt) === null
+      ? null
+      : iso(millis(notificationDelivery.lastAttemptAt)),
+    lastSuccessAt: millis(notificationDelivery.lastSuccessAt) === null
+      ? null
+      : iso(millis(notificationDelivery.lastSuccessAt)),
+    lastFailureAt: millis(notificationDelivery.lastFailureAt) === null
+      ? null
+      : iso(millis(notificationDelivery.lastFailureAt)),
+    lastReason: text(notificationDelivery.lastReason) || null,
+    lastStatus: ["sent", "failed", "suppressed"].includes(text(notificationDelivery.lastStatus))
+      ? text(notificationDelivery.lastStatus)
+      : null,
+    lastErrorKind: text(notificationDelivery.lastErrorKind) || null,
+  };
   state.targetTrajectory = normalizedTargetTrajectory(state.targetTrajectory);
   state.bankedCampaign = normalizedBankedCampaign(state.bankedCampaign);
   delete state.decisionPlan;
@@ -2064,6 +2084,14 @@ function safePublicState(state, runtime) {
       lastErrorAt: state.health.lastErrorAt || null,
       lastErrorKind: state.health.lastErrorKind || null,
     },
+    notificationDelivery: {
+      lastAttemptAt: state.notificationDelivery.lastAttemptAt,
+      lastSuccessAt: state.notificationDelivery.lastSuccessAt,
+      lastFailureAt: state.notificationDelivery.lastFailureAt,
+      lastReason: state.notificationDelivery.lastReason,
+      lastStatus: state.notificationDelivery.lastStatus,
+      lastErrorKind: state.notificationDelivery.lastErrorKind,
+    },
     activeEpisode: publicEpisode,
     bankedCampaign,
     // Compatibility alias for an older installed provider during an atomic app
@@ -2591,15 +2619,15 @@ function notificationCopy(model, reason) {
     const plan = model && model.bankedPlan;
     return {
       subtitle: "现在进入较优兑换窗口",
-      body: plan && Number.isFinite(plan.quotaEdge)
-        ? `当前净额度边际约 ${plan.quotaEdge.toFixed(1)} 个百分点；请在 Codex 中手动确认兑换。`
-        : "现在兑换的预期价值已超过继续等待；请在 Codex 中手动确认。",
+      body: plan && Number.isFinite(plan.expectedAdditionalWorkUSD)
+        ? `所有账号当前均无可用容量，未来 24 小时没有非券刷新；兑换预计可多承接约 $${plan.expectedAdditionalWorkUSD.toFixed(0)} API 等价工作。请在 Codex 中手动确认。`
+        : "统一容量链确认现在兑换优于继续持有；请在 Codex 中手动确认。",
     };
   }
   if (reason === "banked-window") {
     return {
       subtitle: "重置券的较优窗口提前了",
-      body: "新的额度或负载证据让较优兑换节点进入未来 24 小时；系统仍只建议，不会自动兑换。",
+      body: "统一容量链已同时核对其他账号、下一次非券刷新和真实工作需求；安全兑换节点进入未来 24 小时。系统仍只建议，不会自动兑换。",
     };
   }
   if (reason === "banked-redeemed") {
@@ -2692,15 +2720,19 @@ function notificationCopy(model, reason) {
     };
   }
   if (decision) {
+    const creditSuffix =
+      model && model.bankedPlan && model.bankedPlan.status === "free-reset-first"
+        ? " 明确强制刷新先到，现有重置券保持不动；到账后会重新规划。"
+        : "";
     return {
       subtitle: "全局已明确重置",
       body: decision.immediate
         ? `你的额度尚未观察到到账；现在可优先使用剩余约 ${whole(
             decision.additionalTotal,
-          )}% 周额度。${resumeSuggestion}`
+          )}% 周额度。${resumeSuggestion}${creditSuffix}`
         : `你的额度尚未观察到到账；到 ${utc8(decision.deadlineMs)} 前可优先使用剩余约 ${whole(
             decision.additionalTotal,
-          )}% 周额度。${resumeSuggestion}`,
+          )}% 周额度。${resumeSuggestion}${creditSuffix}`,
     };
   }
   return {
@@ -3013,6 +3045,33 @@ function createRuntime(logic, initialState) {
     }
   }
 
+  function deliverNativeNotification(reason, subtitle, body) {
+    const attemptedAt = Date.now();
+    runtime.state.notificationDelivery = {
+      ...runtime.state.notificationDelivery,
+      lastAttemptAt: iso(attemptedAt),
+      lastReason: text(reason) || "unspecified",
+      lastStatus: dryRun ? "suppressed" : "sent",
+      lastErrorKind: null,
+    };
+    try {
+      const sender =
+        typeof runtime.logic.sendNativeNotification === "function"
+          ? runtime.logic.sendNativeNotification
+          : sendNativeNotification;
+      if (!dryRun) sender(subtitle, body);
+      if (!dryRun) runtime.state.notificationDelivery.lastSuccessAt = iso(Date.now());
+      save();
+      return true;
+    } catch (error) {
+      runtime.state.notificationDelivery.lastStatus = "failed";
+      runtime.state.notificationDelivery.lastFailureAt = iso(Date.now());
+      runtime.state.notificationDelivery.lastErrorKind = text(error && error.code) || "osascript";
+      save();
+      throw error;
+    }
+  }
+
   function healthSuccess(name) {
     runtime.state.health[`last${name}SuccessAt`] = iso(Date.now());
   }
@@ -3236,6 +3295,38 @@ function createRuntime(logic, initialState) {
     ].slice(-32);
   }
 
+  function rememberForcedNotification(id) {
+    const normalized = text(id);
+    if (!normalized) return;
+    runtime.state.events.notifiedForcedEventIds = [
+      ...runtime.state.events.notifiedForcedEventIds.filter((value) => value !== normalized),
+      normalized,
+    ].slice(-32);
+  }
+
+  function recoverMissedExplicitNotification() {
+    const active = object(runtime.state.activeEpisode);
+    const id = explicitEventID(active);
+    const nowMs = Date.now();
+    if (
+      !active ||
+      !id ||
+      runtime.state.events.notifiedForcedEventIds.includes(id) ||
+      !trustedExplicitEvent(active) ||
+      eventSettledByState(runtime.state, active)
+    ) {
+      return false;
+    }
+    const expiresAtMs = eventExpiresAtMs(active);
+    if (expiresAtMs !== null && nowMs > expiresAtMs) return false;
+    const copy = notificationCopy(currentModel(nowMs), "global");
+    deliverNativeNotification("global-catch-up", copy.subtitle, copy.body);
+    rememberForcedNotification(id);
+    runtime.state.activeEpisode.globalNotifiedAt = iso(nowMs);
+    save();
+    return true;
+  }
+
   function processEvent(event, options) {
     if (!event || !event.id) return { isNew: false, event: null };
     if (!trustedExplicitEvent(event)) {
@@ -3316,7 +3407,7 @@ function createRuntime(logic, initialState) {
       runtime.state.events.lastBankedEventId = event.id;
       if (!sameCampaign && settings.notify && !settings.viaPush) {
         const copy = notificationCopy(null, "banked-announced");
-        sendNativeNotification(copy.subtitle, copy.body);
+        deliverNativeNotification("banked-announced", copy.subtitle, copy.body);
       }
       }
     }
@@ -3360,6 +3451,7 @@ function createRuntime(logic, initialState) {
       return { isNew: false, event: null };
     }
     const isNew = !seen(event.id);
+    let externallyNotified = settings.viaPush === true;
     if (isSame) {
       runtime.state.activeEpisode = {
         ...previous,
@@ -3376,6 +3468,7 @@ function createRuntime(logic, initialState) {
       const pendingPushAtMs = millis(runtime.state.events.pendingPushAt);
       const coveredByRecentPush =
         pendingPushAtMs !== null && nowMs - pendingPushAtMs >= 0 && nowMs - pendingPushAtMs <= 30 * minute;
+      externallyNotified = externallyNotified || coveredByRecentPush;
       runtime.state.activeEpisode = {
         ...event,
         status: "awaiting-personal",
@@ -3394,13 +3487,15 @@ function createRuntime(logic, initialState) {
       runtime.state.events.lastForcedEventAt = iso(eventAtMs);
       if (coveredByRecentPush) runtime.state.events.pendingPushAt = null;
     }
+    if (externallyNotified) rememberForcedNotification(event.id);
     remember(event.id);
     save();
 
     if (isNew && settings.notify && !settings.viaPush) {
       const model = currentModel(nowMs);
       const copy = notificationCopy(model, "global");
-      sendNativeNotification(copy.subtitle, copy.body);
+      deliverNativeNotification("global", copy.subtitle, copy.body);
+      rememberForcedNotification(event.id);
       runtime.state.activeEpisode.globalNotifiedAt = iso(nowMs);
       save();
     }
@@ -3648,7 +3743,11 @@ function createRuntime(logic, initialState) {
             !settings.startup
           ) {
             const copy = notificationCopy(null, "banked-arrived");
-            sendNativeNotification(copy.subtitle, `${compactAccountLabel(account.label)}：${copy.body}`);
+            deliverNativeNotification(
+              "banked-arrived",
+              copy.subtitle,
+              `${compactAccountLabel(account.label)}：${copy.body}`,
+            );
             campaign.notifiedDeliveredAccountIds.push(id);
           }
           runtime.state.bankedCampaign = campaign;
@@ -3681,7 +3780,8 @@ function createRuntime(logic, initialState) {
         if (["account-low", "global-shift"].includes(anomalyStatus) && anomalyStatus !== previousStatus) {
           if (!settings.startup) {
             const ratio = Number(anomaly.ratio);
-            sendNativeNotification(
+            deliverNativeNotification(
+              `capacity-${anomalyStatus}`,
               anomalyStatus === "account-low" ? "该账号有效容量疑似偏低" : "近期整体有效容量疑似变化",
               `${compactAccountLabel(account.label)}：$${Math.round(account.capacityEstimate.estimateUSD)} API 等价${Number.isFinite(ratio) ? `，约为比较基线的 ${Math.round(ratio * 100)}%` : ""}。系统已用新容量重新规划。`,
             );
@@ -3744,11 +3844,15 @@ function createRuntime(logic, initialState) {
           null,
           activeResetCause === "banked-redeem" ? "banked-redeemed" : "personal-landed",
         );
-        sendNativeNotification(copy.subtitle, copy.body);
+        deliverNativeNotification(
+          activeResetCause === "banked-redeem" ? "banked-redeemed" : "personal-landed",
+          copy.subtitle,
+          copy.body,
+        );
       }
       if (unknownCreditDisappearance && !settings.startup) {
         const copy = notificationCopy(null, "banked-disappeared");
-        sendNativeNotification(copy.subtitle, copy.body);
+        deliverNativeNotification("banked-disappeared", copy.subtitle, copy.body);
       }
       return { landed: anyLanded, parsed: activeParsed };
     } catch (error) {
@@ -3817,7 +3921,7 @@ function createRuntime(logic, initialState) {
     save();
     if (!startup) {
       const copy = notificationCopy(model, "commitment");
-      sendNativeNotification(copy.subtitle, copy.body);
+      deliverNativeNotification("commitment", copy.subtitle, copy.body);
     }
     return "commitment";
   }
@@ -3830,7 +3934,7 @@ function createRuntime(logic, initialState) {
     save();
     if (plan.reason && !startup) {
       const copy = notificationCopy(model, plan.reason);
-      sendNativeNotification(copy.subtitle, copy.body);
+      deliverNativeNotification(plan.reason, copy.subtitle, copy.body);
     }
     return plan.reason;
   }
@@ -3843,7 +3947,7 @@ function createRuntime(logic, initialState) {
     save();
     if (plan.reason && !startup) {
       const copy = notificationCopy(model, plan.reason);
-      sendNativeNotification(copy.subtitle, copy.body);
+      deliverNativeNotification(plan.reason, copy.subtitle, copy.body);
     }
   }
 
@@ -3862,7 +3966,7 @@ function createRuntime(logic, initialState) {
     save();
     if (!startup && action === "redeem" && previousAction && previousAction !== "redeem") {
       const copy = notificationCopy(model, "banked-redeem");
-      sendNativeNotification(copy.subtitle, copy.body);
+      deliverNativeNotification("banked-redeem", copy.subtitle, copy.body);
     } else if (
       !startup &&
       action === "prepare" &&
@@ -3872,7 +3976,7 @@ function createRuntime(logic, initialState) {
           previousOptimalAt - optimalAtMs >= 12 * hour))
     ) {
       const copy = notificationCopy(model, "banked-window");
-      sendNativeNotification(copy.subtitle, copy.body);
+      deliverNativeNotification("banked-window", copy.subtitle, copy.body);
     }
   }
 
@@ -4071,6 +4175,7 @@ function createRuntime(logic, initialState) {
         refreshSite({ startup: true }).catch(() => null),
         refreshAtom({ startup: true }).catch(() => null),
       ]);
+      recoverMissedExplicitNotification();
       runtime.state.bootstrapCompleteAt = iso(Date.now());
       save();
     })();
@@ -4124,6 +4229,7 @@ function createRuntime(logic, initialState) {
     currentModel,
     uiSnapshot,
     processEvent,
+    recoverMissedExplicitNotification,
     refreshUsage,
     refreshShortLoad,
     refreshSessions,

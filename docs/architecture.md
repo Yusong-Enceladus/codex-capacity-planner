@@ -60,14 +60,22 @@ boundary.
 ## Reset-credit planning
 
 A reset credit is a finite-lived capacity option, not an isolated countdown.
-The decision compares redeeming and holding across candidate nodes through at
-least one post-redemption weekly cycle. It includes other-account capacity,
-natural or forced refreshes, expected real work, expiry, and the seven-day
-schedule displacement caused by redemption.
+The decision simulates every account on one time-ordered capacity chain and
+compares the real work served by redeeming with the work served by holding
+through at least one post-redemption weekly cycle. A candidate is ineligible
+until every account's existing capacity is exhausted, and it is invalid when a
+non-credit refresh would arrive within the following 24 hours. Natural and
+verified forced refreshes, probabilistic reset risk, expected real work,
+expiry, and the new weekly boundary created by redemption are all processed by
+the same simulator.
 
 The planner must form a high-value redemption node before expiry by arranging
 existing valuable work. It must not wait until the final moment, manufacture
 busywork, or treat expiry as successful planning.
+
+`workAction`, `accountAction`, and `creditAction` are projections of one
+`capacityPlan`. Presentation and notifications may explain that plan but may
+not recompute an action with a separate formula.
 
 ## Real capacity and account scheduling
 

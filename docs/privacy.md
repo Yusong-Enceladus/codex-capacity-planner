@@ -31,8 +31,10 @@ endpoint. The local capability token never leaves loopback.
 
 The monitor binds to `127.0.0.1` by default. Public state omits credentials,
 raw samples, reset-credit IDs, thread IDs, full paths, prompts, responses, and
-conversation content. Loopback callers receive only fields needed to render
-the UI.
+conversation content. Native-notification observability contains only the last
+attempt/success/failure times, a coarse trigger reason, status, and error kind;
+notification titles and bodies are not retained. Loopback callers receive only
+fields needed to render the UI.
 
 ## Retention and deletion
 

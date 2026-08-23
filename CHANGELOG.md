@@ -5,6 +5,29 @@ versioning once the first public release is tagged.
 
 ## Unreleased
 
+## 0.1.5 - 2026-08-23
+
+- Replace the isolated reset-credit cycle-age heuristic with one capacity-chain
+  simulation covering every account, real work demand, natural and verified
+  forced refreshes, probabilistic reset risk, credit expiry, and the weekly
+  boundary created by redemption.
+- Make every coupon node wait until other-account capacity is exhausted and
+  invalidate redemption when a non-credit refresh will arrive within 24 hours.
+- Use the stated center of an approximate official time as the one canonical
+  instant across the progress target, countdown, account loss, coupon planning,
+  and notifications.
+- Derive work, account, and credit actions from one capacity plan; replace the
+  obsolete cycle-age value copy with incremental real-work value.
+- Record only the status, time, and reason of the latest native-notification
+  attempt so delivery can be inspected without retaining message content.
+- Recover an unresolved explicit announcement once when an older Monitor saw
+  it but never delivered a notification, with a private per-event dedupe set.
+- Keep three to five concrete recent tasks on the home card whenever work is
+  still required, an account switch is recommended, or a credit node must be
+  formed.
+- Advance the capacity simulation only at real state transitions so month-long
+  credit horizons remain responsive without changing the decision result.
+
 ## 0.1.4 - 2026-08-23
 
 - Seed 5x and 20x accounts with dated, cited community API-equivalent capacity

@@ -443,6 +443,29 @@ function codexResetSignalStartsAfterSettlement(signal, window, settlementAtMs) {
   return startAtMs !== null && startAtMs > settlementAtMs;
 }
 
+function codexResetSignalTiming(signal, window) {
+  const startMs =
+    codexResetMillis(window && window.start_at) ||
+    codexResetMillis(signal && signal.start_at);
+  const endMs =
+    codexResetMillis(window && window.end_at) ||
+    codexResetMillis(signal && signal.end_at);
+  const exactMs =
+    codexResetMillis(signal && signal.effective_at) ||
+    codexResetMillis(signal && signal.deadline_at);
+  const label = codexResetLocalized(window, "label").toLowerCase();
+  const approximatePoint = /\baround\b|\babout\b|approximately|大约|约/.test(label);
+  const canonicalMs =
+    exactMs !== null
+      ? exactMs
+      : approximatePoint && startMs !== null && endMs !== null && endMs > startMs
+        ? startMs + (endMs - startMs) / 2
+        : endMs !== null
+          ? endMs
+          : startMs;
+  return { startMs, endMs, canonicalMs };
+}
+
 function codexResetEventEffects(value) {
   const event = codexResetObject(value) || {};
   const tags = [
@@ -536,10 +559,8 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
     ) {
       return;
     }
-    const deadlineMs =
-      codexResetMillis(window.end_at) ||
-      codexResetMillis(signal.deadline_at) ||
-      codexResetMillis(signal.end_at);
+    const timing = codexResetSignalTiming(signal, window);
+    const deadlineMs = timing.canonicalMs;
     const isRecent = nowMs - atMs <= 72 * 60 * 60 * 1000;
     if (level === "explicit" && settings.source !== "receiver") {
       const expiresAtMs = deadlineMs === null
@@ -560,6 +581,8 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
       id,
       atMs,
       deadlineMs,
+      windowStartMs: timing.startMs,
+      windowEndMs: timing.endMs,
       summary: originalSummary || "Tibo 发布了新的重置信号",
       localizedSummary: codexResetText(signal.localized_summary),
       url: codexResetHTTPSURL(signal.url),
@@ -616,6 +639,8 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
     id: null,
     atMs: null,
     deadlineMs: null,
+    windowStartMs: null,
+    windowEndMs: null,
     summary: "暂无未兑现的 Tibo 重置预告",
     localizedSummary: "",
     url: "",
@@ -1325,7 +1350,225 @@ function codexResetBankedStateAt(account, atMs, ratePerHour) {
   return { usedPercent, agePercent, quotaEdge: usedPercent - agePercent };
 }
 
-function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs) {
+function codexResetChainCapacityUSD(account) {
+  const direct = codexResetFinite(account && account.fullCapacityUSD);
+  if (direct !== null) return direct;
+  const estimate = codexResetObject(account && account.capacityEstimate);
+  return codexResetFinite(estimate && estimate.estimateUSD);
+}
+
+function codexResetChainDemandRateUSD(account, behavior, nowMs) {
+  if (!account || !account.usage) return 0;
+  const pace = account.pace || {};
+  const measuredRate =
+    codexResetFinite(pace.long && pace.long.ratePerHour) ??
+    codexResetFinite(pace.short && pace.short.ratePerHour);
+  const prediction = codexResetObject(behavior && behavior.prediction);
+  const behaviorRate =
+    prediction && Number.isFinite(prediction.additionalMedian)
+      ? prediction.additionalMedian / Math.max(1, prediction.horizonHours || 24)
+      : null;
+  const cycleStartedAtMs =
+    account.usage.resetsAtMs - account.usage.windowMinutes * 60_000;
+  const elapsedHours = Math.max(1, (nowMs - cycleStartedAtMs) / 3_600_000);
+  const cycleRate = account.usage.usedPercent / elapsedHours;
+  const percentRate = codexResetClamp(
+    measuredRate === null
+      ? behaviorRate === null
+        ? cycleRate
+        : behaviorRate
+      : measuredRate,
+    0,
+    20,
+  );
+  const capacityUSD = codexResetChainCapacityUSD(account);
+  return (capacityUSD === null ? 100 : capacityUSD) * percentRate / 100;
+}
+
+function codexResetCapacityChainScenarios(forecast, nowMs, horizonMs) {
+  const signal = codexResetObject(forecast && forecast.signal) || {};
+  if (signal.level === "explicit") return [{ weight: 1, forcedAtMs: null, source: "explicit" }];
+
+  if (
+    signal.level === "commitment" &&
+    Number.isFinite(signal.deadlineMs) &&
+    signal.deadlineMs > nowMs &&
+    signal.deadlineMs < horizonMs
+  ) {
+    const probability = codexResetClamp(
+      (codexResetFinite(signal.commitmentFloor) ?? codexResetFinite(forecast && forecast.p24) ?? 0) /
+        100,
+      0,
+      1,
+    );
+    return [
+      { weight: probability, forcedAtMs: signal.deadlineMs, source: "commitment" },
+      { weight: 1 - probability, forcedAtMs: null, source: "no-forced-reset" },
+    ].filter((scenario) => scenario.weight > 0.0001);
+  }
+
+  const p24 = codexResetClamp((codexResetFinite(forecast && forecast.p24) ?? 0) / 100, 0, 1);
+  const p48 = codexResetClamp(
+    Math.max(p24, (codexResetFinite(forecast && forecast.p48) ?? p24 * 100) / 100),
+    0,
+    1,
+  );
+  const at24 = nowMs + 24 * 3_600_000;
+  const at48 = nowMs + 48 * 3_600_000;
+  return [
+    {
+      weight: at24 < horizonMs ? p24 : 0,
+      forcedAtMs: at24 < horizonMs ? at24 : null,
+      source: "forecast-24h",
+    },
+    {
+      weight: at48 < horizonMs ? Math.max(0, p48 - p24) : 0,
+      forcedAtMs: at48 < horizonMs ? at48 : null,
+      source: "forecast-48h",
+    },
+    { weight: 1 - (at48 < horizonMs ? p48 : at24 < horizonMs ? p24 : 0), forcedAtMs: null, source: "no-forced-reset" },
+  ].filter((scenario) => scenario.weight > 0.0001);
+}
+
+function codexResetSimulateCapacityChain(accounts, options) {
+  const nowMs = options.nowMs;
+  const horizonMs = options.horizonMs;
+  const demandRateUSD = Math.max(0, options.demandRateUSD || 0);
+  const redeemAtMs = Number.isFinite(options.redeemAtMs) ? options.redeemAtMs : null;
+  const redeemAccountId = codexResetText(options.redeemAccountId);
+  const scenarioForcedAtMs = Number.isFinite(options.scenarioForcedAtMs)
+    ? options.scenarioForcedAtMs
+    : null;
+  const states = accounts.map((candidate) => {
+    const knownCapacityUSD = codexResetChainCapacityUSD(candidate);
+    const capacityUSD = knownCapacityUSD === null ? 100 : knownCapacityUSD;
+    const windowMs = Math.max(60_000, candidate.usage.windowMinutes * 60_000);
+    const naturalAtMs = candidate.usage.resetsAtMs;
+    const forcedAtMs = Number.isFinite(candidate.explicitForcedResetAtMs)
+      ? candidate.explicitForcedResetAtMs
+      : candidate.freeResetSource === "announced-forced" &&
+          Number.isFinite(candidate.freeResetDeadlineMs)
+        ? candidate.freeResetDeadlineMs
+        : null;
+    return {
+      id: candidate.id,
+      capacityUSD,
+      knownCapacityUSD,
+      remainingUSD: capacityUSD * codexResetClamp(100 - candidate.usage.usedPercent, 0, 100) / 100,
+      windowMs,
+      naturalAtMs,
+      forcedAtMs,
+    };
+  });
+  let servedUSD = 0;
+  let unservedUSD = 0;
+  let cursorMs = nowMs;
+  let scenarioPending = scenarioForcedAtMs;
+  let redeemed = false;
+  let redeemEligible = false;
+  let blockedByNearFreeReset = false;
+  let remainingBeforeRedeemUSD = null;
+  let ownerRemainingBeforeRedeemUSD = null;
+  let nextFreeResetAtRedeemMs = null;
+
+  const nextResetAt = (state) => {
+    const values = [state.naturalAtMs, state.forcedAtMs, scenarioPending]
+      .filter((value) => Number.isFinite(value) && value > cursorMs);
+    return values.length ? Math.min(...values) : Infinity;
+  };
+
+  function processFreeResets(atMs) {
+    if (scenarioPending !== null && scenarioPending <= atMs) {
+      for (const state of states) {
+        state.remainingUSD = state.capacityUSD;
+        state.naturalAtMs = scenarioPending + state.windowMs;
+        if (state.forcedAtMs !== null && state.forcedAtMs <= scenarioPending) state.forcedAtMs = null;
+      }
+      scenarioPending = null;
+    }
+    for (const state of states) {
+      if (state.forcedAtMs !== null && state.forcedAtMs <= atMs) {
+        state.remainingUSD = state.capacityUSD;
+        state.naturalAtMs = state.forcedAtMs + state.windowMs;
+        state.forcedAtMs = null;
+      }
+      while (state.naturalAtMs <= atMs) {
+        state.remainingUSD = state.capacityUSD;
+        state.naturalAtMs += state.windowMs;
+      }
+    }
+  }
+
+  function attemptRedeem(atMs) {
+    if (redeemAtMs === null || redeemed || Math.abs(atMs - redeemAtMs) > 1) return;
+    const owner = states.find((state) => state.id === redeemAccountId);
+    if (!owner) return;
+    remainingBeforeRedeemUSD = states.reduce((total, state) => total + state.remainingUSD, 0);
+    ownerRemainingBeforeRedeemUSD = owner.remainingUSD;
+    const toleranceUSD = states.reduce(
+      (total, state) => total + Math.max(1, state.capacityUSD * 0.01),
+      0,
+    );
+    redeemEligible = remainingBeforeRedeemUSD <= toleranceUSD;
+    const upcoming = states.map(nextResetAt).filter(Number.isFinite);
+    nextFreeResetAtRedeemMs = upcoming.length ? Math.min(...upcoming) : null;
+    blockedByNearFreeReset =
+      nextFreeResetAtRedeemMs !== null && nextFreeResetAtRedeemMs - atMs <= 24 * 3_600_000;
+    if (!redeemEligible || blockedByNearFreeReset) return;
+    owner.remainingUSD = owner.capacityUSD;
+    owner.naturalAtMs = atMs + owner.windowMs;
+    redeemed = true;
+  }
+
+  processFreeResets(cursorMs);
+  attemptRedeem(cursorMs);
+  while (cursorMs < horizonMs) {
+    // Demand is linear between reset/redemption events, so consuming an hour at
+    // a time adds no information and makes long-lived credits prohibitively
+    // expensive to value. Advance directly to the next state transition.
+    let nextMs = horizonMs;
+    for (const state of states) {
+      if (state.naturalAtMs > cursorMs) nextMs = Math.min(nextMs, state.naturalAtMs);
+      if (state.forcedAtMs !== null && state.forcedAtMs > cursorMs) {
+        nextMs = Math.min(nextMs, state.forcedAtMs);
+      }
+    }
+    if (scenarioPending !== null && scenarioPending > cursorMs) nextMs = Math.min(nextMs, scenarioPending);
+    if (redeemAtMs !== null && !redeemed && redeemAtMs > cursorMs) nextMs = Math.min(nextMs, redeemAtMs);
+    if (nextMs <= cursorMs) nextMs = Math.min(horizonMs, cursorMs + 1);
+
+    let demandUSD = demandRateUSD * ((nextMs - cursorMs) / 3_600_000);
+    const ordered = states.slice().sort((left, right) => {
+      const deadlineDelta = nextResetAt(left) - nextResetAt(right);
+      if (Math.abs(deadlineDelta) > 1) return deadlineDelta;
+      return right.remainingUSD - left.remainingUSD;
+    });
+    for (const state of ordered) {
+      if (demandUSD <= 0) break;
+      const consumed = Math.min(state.remainingUSD, demandUSD);
+      state.remainingUSD -= consumed;
+      demandUSD -= consumed;
+      servedUSD += consumed;
+    }
+    unservedUSD += Math.max(0, demandUSD);
+    cursorMs = nextMs;
+    processFreeResets(cursorMs);
+    attemptRedeem(cursorMs);
+  }
+
+  return {
+    servedUSD,
+    unservedUSD,
+    redeemed,
+    redeemEligible,
+    blockedByNearFreeReset,
+    remainingBeforeRedeemUSD,
+    ownerRemainingBeforeRedeemUSD,
+    nextFreeResetAtRedeemMs,
+  };
+}
+
+function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs, forecast) {
   if (!account) return null;
   const campaign = codexResetObject(receiver && receiver.bankedCampaign);
   const officialState = String(campaign && campaign.officialState || "unknown");
@@ -1383,10 +1626,23 @@ function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs) {
     (!candidate.usage.shortWindow || candidate.usage.shortWindow.usedPercent < 99);
   const usableAccounts = allAccounts.filter(accountUsable);
   const allAccountsBlocked = usableAccounts.length === 0;
+  const naturalDemandRateUSD = codexResetChainDemandRateUSD(account, behavior, nowMs);
+  const nextNonCouponResetAtMs = allAccounts.reduce((earliest, candidate) => {
+    if (!Number.isFinite(candidate.freeResetDeadlineMs) || candidate.freeResetDeadlineMs <= nowMs) {
+      return earliest;
+    }
+    const conservativeAtMs = Number.isFinite(candidate.freeResetWindowStartMs)
+      ? candidate.freeResetWindowStartMs
+      : candidate.freeResetDeadlineMs;
+    return earliest === null ? conservativeAtMs : Math.min(earliest, conservativeAtMs);
+  }, null);
+  const freeResetFirst =
+    nextNonCouponResetAtMs !== null && nextNonCouponResetAtMs - nowMs <= 24 * 3_600_000;
   const candidates = [];
   for (const entry of creditEntries) {
     const candidateAccount = entry.account;
-    const expiryMs = entry.credit.expiresAtMs || nowMs + 30 * 24 * 3_600_000;
+    const expiryMs = entry.credit.expiresAtMs;
+    if (expiryMs === null) continue;
     const pace = candidateAccount.pace || {};
     const measuredRate =
       codexResetFinite(pace.long && pace.long.ratePerHour) ??
@@ -1414,46 +1670,129 @@ function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs) {
       0,
       20,
     );
-    const capacity = codexResetObject(candidateAccount.capacityEstimate);
-    const capacityUSD = codexResetFinite(capacity && capacity.estimateUSD);
-    const valueAt = (atMs) => {
-      const state = codexResetBankedStateAt(candidateAccount, atMs, rate);
-      const netCapacityUSD = capacityUSD === null ? null : capacityUSD * state.quotaEdge / 100;
-      return {
+    const capacityUSD = codexResetChainCapacityUSD(candidateAccount);
+    const windowMs = Math.max(60_000, candidateAccount.usage.windowMinutes * 60_000);
+    const horizonMs = expiryMs + Math.max(windowMs, 7 * 24 * 3_600_000);
+    const scenarios = codexResetCapacityChainScenarios(forecast, nowMs, horizonMs);
+    const baselineByScenario = scenarios.map((scenario) => ({
+      scenario,
+      result: codexResetSimulateCapacityChain(allAccounts, {
+        nowMs,
+        horizonMs,
+        demandRateUSD: naturalDemandRateUSD,
+        scenarioForcedAtMs: scenario.forcedAtMs,
+      }),
+    }));
+    const candidateTimes = [nowMs];
+    for (let atMs = nowMs + 3_600_000; atMs < expiryMs; atMs += 3_600_000) {
+      candidateTimes.push(atMs);
+    }
+    if (expiryMs > nowMs) candidateTimes.push(expiryMs - 1);
+    for (const atMs of candidateTimes) {
+      let expectedAdditionalWorkUSD = 0;
+      let eligibleWeight = 0;
+      let representative = null;
+      for (const item of baselineByScenario) {
+        const redeemedResult = codexResetSimulateCapacityChain(allAccounts, {
+          nowMs,
+          horizonMs,
+          demandRateUSD: naturalDemandRateUSD,
+          scenarioForcedAtMs: item.scenario.forcedAtMs,
+          redeemAtMs: atMs,
+          redeemAccountId: candidateAccount.id,
+        });
+        if (!redeemedResult.redeemed) continue;
+        eligibleWeight += item.scenario.weight;
+        expectedAdditionalWorkUSD +=
+          Math.max(0, redeemedResult.servedUSD - item.result.servedUSD) * item.scenario.weight;
+        if (!representative || item.scenario.weight > representative.weight) {
+          representative = { ...redeemedResult, weight: item.scenario.weight };
+        }
+      }
+      if (eligibleWeight < 0.5 || !representative) continue;
+      const fullCapacityUSD = capacityUSD === null ? 100 : capacityUSD;
+      candidates.push({
         account: candidateAccount,
         credit: entry.credit,
         atMs,
-        state,
-        netPercent: state.quotaEdge,
-        netCapacityUSD,
-        score: netCapacityUSD === null ? state.quotaEdge : netCapacityUSD,
+        expectedAdditionalWorkUSD,
+        netPercent: codexResetClamp(expectedAdditionalWorkUSD / fullCapacityUSD * 100, 0, 100),
+        score: expectedAdditionalWorkUSD,
         capacityUSD,
         measuredRate,
         expiryMs,
-      };
-    };
-    candidates.push(valueAt(nowMs));
-    for (let atMs = nowMs + 3_600_000; atMs < expiryMs; atMs += 3_600_000) {
-      candidates.push(valueAt(atMs));
+        eligibleWeight,
+        remainingBeforeRedeemUSD: representative.remainingBeforeRedeemUSD,
+        ownerRemainingBeforeRedeemUSD: representative.ownerRemainingBeforeRedeemUSD,
+        nextFreeResetAtRedeemMs: representative.nextFreeResetAtRedeemMs,
+      });
     }
-    if (expiryMs > nowMs) candidates.push(valueAt(expiryMs - 1));
   }
-  const best = candidates.reduce((winner, item) => (item.score > winner.score ? item : winner));
-  const nowValue = candidates
-    .filter((item) => item.atMs === nowMs)
-    .reduce((winner, item) => (!winner || item.score > winner.score ? item : winner), null);
-  const hoursToExpiry = Math.max(0, (best.expiryMs - nowMs) / 3_600_000);
+  const best = candidates.reduce(
+    (winner, item) => (!winner || item.score > winner.score ? item : winner),
+    null,
+  );
+  const currentState = codexResetBankedStateAt(
+    account,
+    nowMs,
+    naturalDemandRateUSD /
+      Math.max(1, codexResetChainCapacityUSD(account) === null ? 1 : codexResetChainCapacityUSD(account) / 100),
+  );
+  const earliestKnownExpiryMs = creditEntries.reduce((earliest, entry) => {
+    if (entry.credit.expiresAtMs === null) return earliest;
+    return earliest === null
+      ? entry.credit.expiresAtMs
+      : Math.min(earliest, entry.credit.expiresAtMs);
+  }, null);
+  const hoursToExpiry = earliestKnownExpiryMs === null
+    ? null
+    : Math.max(0, (earliestKnownExpiryMs - nowMs) / 3_600_000);
+  if (!best) {
+    return {
+      status: earliestKnownExpiryMs === null ? "expiry-unknown" : freeResetFirst ? "free-reset-first" : "must-form-node",
+      creditAction:
+        freeResetFirst
+          ? "hold"
+          : earliestKnownExpiryMs !== null && hoursToExpiry <= 72
+            ? "prepare"
+            : "hold",
+      availableCount: creditEntries.length,
+      currentAccountAvailableCount: currentAccountCredits ? currentAccountCredits.availableCount : 0,
+      currentAccountExpiresAtMs: currentAccountCredits ? currentAccountCredits.expiresAtMs : null,
+      accountCredits,
+      officialState,
+      expiresAtMs: earliestKnownExpiryMs,
+      hoursToExpiry,
+      grossRecovery: currentState.usedPercent,
+      scheduleCost: currentState.agePercent,
+      quotaEdge: currentState.quotaEdge,
+      netCapacityUSD: null,
+      bestNetPercent: null,
+      bestNetCapacityUSD: null,
+      fullCapacityUSD: codexResetChainCapacityUSD(account),
+      highValueNode: false,
+      optimalAtMs: null,
+      optimalWindowStartMs: null,
+      optimalWindowEndMs: null,
+      nextFreeResetAtMs: nextNonCouponResetAtMs,
+      freeResetFirst,
+      valuationMethod: "capacity-chain",
+      naturalDemandRateUSD,
+      confidence: "low",
+    };
+  }
   const hoursToBest = Math.max(0, (best.atMs - nowMs) / 3_600_000);
   const highValueNode = best.netPercent >= 35;
-  const alternativeAccountAvailable = usableAccounts.some((item) => item.id !== account.id);
   let creditAction = "hold";
   let status = "ready";
-  if (allAccountsBlocked) {
+  if (freeResetFirst) {
+    status = "free-reset-first";
+  } else if (allAccountsBlocked && highValueNode && hoursToBest <= 1) {
     creditAction = "redeem";
     status = "interruption-now";
-  } else if (!alternativeAccountAvailable && highValueNode && hoursToBest <= 24) {
+  } else if (highValueNode && hoursToBest <= 24) {
     creditAction = "prepare";
-  } else if (!alternativeAccountAvailable && !highValueNode && hoursToExpiry <= 72) {
+  } else if (!highValueNode && hoursToExpiry !== null && hoursToExpiry <= 72) {
     creditAction = "prepare";
     status = "must-form-node";
   }
@@ -1473,12 +1812,12 @@ function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs) {
     accountLabel: best.account.label,
     expiresAtMs: best.credit.expiresAtMs,
     hoursToExpiry,
-    grossRecovery: nowValue.state.usedPercent,
-    scheduleCost: nowValue.state.agePercent,
-    quotaEdge: nowValue.netPercent,
-    netCapacityUSD: nowValue.netCapacityUSD,
+    grossRecovery: currentState.usedPercent,
+    scheduleCost: currentState.agePercent,
+    quotaEdge: currentState.quotaEdge,
+    netCapacityUSD: best.expectedAdditionalWorkUSD,
     bestNetPercent: best.netPercent,
-    bestNetCapacityUSD: best.netCapacityUSD,
+    bestNetCapacityUSD: best.expectedAdditionalWorkUSD,
     fullCapacityUSD: best.capacityUSD,
     optimalAtMs: best.atMs,
     optimalWindowStartMs: Math.max(nowMs, best.atMs - 3 * 3_600_000),
@@ -1486,8 +1825,16 @@ function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs) {
     highValueNode,
     allAccountsBlocked,
     usableAccountCount: usableAccounts.length,
-    alternativeAccountAvailable,
     activeLanes: best.account.usage.activeLanes || ["weekly"],
+    nextFreeResetAtMs: freeResetFirst
+      ? nextNonCouponResetAtMs
+      : best.nextFreeResetAtRedeemMs,
+    freeResetFirst,
+    valuationMethod: "capacity-chain",
+    naturalDemandRateUSD,
+    expectedAdditionalWorkUSD: best.expectedAdditionalWorkUSD,
+    remainingBeforeRedeemUSD: best.remainingBeforeRedeemUSD,
+    ownerRemainingBeforeRedeemUSD: best.ownerRemainingBeforeRedeemUSD,
     confidence:
       best.capacityUSD !== null && best.measuredRate !== null
         ? "high"
@@ -1588,6 +1935,14 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
       Number.isFinite(forecast.signal.deadlineMs) && forecast.signal.deadlineMs > nowMs
         ? forecast.signal.deadlineMs
         : null;
+    const explicitForcedWindowStartMs =
+      explicitForcedDeadlineMs !== null && Number.isFinite(forecast.signal.windowStartMs)
+        ? forecast.signal.windowStartMs
+        : explicitForcedDeadlineMs;
+    const explicitForcedWindowEndMs =
+      explicitForcedDeadlineMs !== null && Number.isFinite(forecast.signal.windowEndMs)
+        ? forecast.signal.windowEndMs
+        : explicitForcedDeadlineMs;
     const freeResetDeadlineMs = explicitForcedDeadlineMs !== null
       ? Math.min(accountUsage.resetsAtMs, explicitForcedDeadlineMs)
       : accountUsage.resetsAtMs;
@@ -1645,6 +2000,13 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
       projectionRate,
       freeResetDeadlineMs,
       freeResetSource,
+      freeResetWindowStartMs:
+        freeResetSource === "announced-forced" ? explicitForcedWindowStartMs : freeResetDeadlineMs,
+      freeResetWindowEndMs:
+        freeResetSource === "announced-forced" ? explicitForcedWindowEndMs : freeResetDeadlineMs,
+      explicitForcedResetAtMs: explicitForcedDeadlineMs,
+      explicitForcedWindowStartMs,
+      explicitForcedWindowEndMs,
       hoursToFreeReset,
       projectedRemainingAtFreeResetPercent,
       atRiskCapacityUSD,
@@ -1734,24 +2096,40 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
     .filter(Boolean)
     .sort((left, right) => left.renewalAtMs - right.renewalAtMs)[0] || null;
   const sessionSuggestions = codexResetSessionSuggestions(receiver);
-  const bankedPlan = codexResetBankedPlan(activeAccount, accountPlans, receiver, behavior, nowMs);
-  const workAction = decision
-    ? decision.immediate
-      ? "fast"
-      : behavior && behavior.prediction && codexResetBehaviorZone(decision, behavior.prediction) === "behind"
-        ? "accelerate"
-        : decision.targetReached
-          ? "standard"
-          : "continue"
-    : "hold";
-  const actions = {
+  const bankedPlan = codexResetBankedPlan(
+    activeAccount,
+    accountPlans,
+    receiver,
+    behavior,
+    nowMs,
+    forecast,
+  );
+  const workAction = bankedPlan && bankedPlan.creditAction === "redeem"
+    ? "hold"
+    : decision
+      ? decision.immediate
+        ? "fast"
+        : behavior && behavior.prediction && codexResetBehaviorZone(decision, behavior.prediction) === "behind"
+          ? "accelerate"
+          : bankedPlan && bankedPlan.status === "must-form-node"
+            ? "accelerate"
+            : decision.targetReached
+              ? "standard"
+              : "continue"
+      : "hold";
+  const capacityPlan = {
+    version: 1,
     workAction,
     creditAction: bankedPlan ? bankedPlan.creditAction : "hold",
     accountAction:
       devicePlan.shouldSwitch && recommendedAccount
         ? `consider-switch:${recommendedAccount.id}`
         : "stay",
+    nextExternalResetAtMs: activeAccount && activeAccount.freeResetDeadlineMs,
+    nextExternalResetSource: activeAccount && activeAccount.freeResetSource,
+    creditValuationMethod: bankedPlan && bankedPlan.valuationMethod,
   };
+  const actions = capacityPlan;
   return {
     usage,
     forecast,
@@ -1765,6 +2143,7 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
     accounts: accountPlans,
     devicePlan,
     bankedPlan,
+    capacityPlan,
     subscriptionAdvice,
     actions,
     sessionSuggestions,
@@ -1864,6 +2243,22 @@ defineProvider({
         "global-manual": "强制刷新",
         upgrade: "套餐升级刷新",
       }[String(value || "").toLowerCase()] || "强制刷新";
+    }
+
+    function notificationReasonLabel(value) {
+      const normalized = String(value || "").toLowerCase();
+      if (normalized === "global") return "明确强制重置公告";
+      if (normalized === "global-catch-up") return "明确强制重置公告（补发）";
+      if (normalized === "personal-landed") return "个人额度到账";
+      if (normalized === "banked-redeem") return "进入券兑换窗口";
+      if (normalized === "banked-window") return "券窗口提前";
+      if (normalized === "banked-arrived") return "重置券到账";
+      if (normalized === "banked-announced") return "重置券公告";
+      if (normalized === "commitment") return "有期限承诺";
+      if (normalized.startsWith("capacity-")) return "有效容量变化";
+      if (normalized.startsWith("behavior-")) return "使用节奏变化";
+      if (normalized === "forecast") return "预测上调";
+      return normalized || "未知";
     }
 
     function sessionMainSummary(candidates, candidateCount) {
@@ -1992,6 +2387,9 @@ defineProvider({
         : "时段未知";
     const health = codexResetObject(model.receiver && model.receiver.health);
     const push = codexResetObject(model.receiver && model.receiver.push);
+    const notificationDelivery = codexResetObject(
+      model.receiver && model.receiver.notificationDelivery,
+    );
     const usingLastGoodUsage = model.usageSource === "last-good" && Boolean(model.usage);
     const actionRows = [];
     const sessionSuggestions = model.sessionSuggestions;
@@ -2069,7 +2467,11 @@ defineProvider({
       const prediction = behavior && behavior.prediction;
       const behaviorZone = prediction ? codexResetBehaviorZone(decision, prediction) : "unknown";
       const targetReached = decision.targetReached === true;
-      showSessionSuggestions = !targetReached && (decision.immediate || behaviorZone === "behind");
+      showSessionSuggestions =
+        sessionCandidates.length > 0 &&
+        (!targetReached ||
+          (model.devicePlan && model.devicePlan.shouldSwitch) ||
+          (model.bankedPlan && model.bankedPlan.status === "must-form-node"));
       const deadlineLabel = decision.immediate ? "现在" : utc8(decision.deadlineMs);
       const progressTitle = decision.immediate
         ? "现在的使用计划 · Tibo 已明确"
@@ -2149,7 +2551,20 @@ defineProvider({
             : "另一个账号在更早免费刷新前有更多真实容量会被清掉；不会自动切号";
       } else if (model.bankedPlan && model.bankedPlan.status === "interruption-now") {
         recommendationValue = `所有账号都已阻塞，使用 ${model.bankedPlan.accountLabel || "当前账号"} 的重置券`;
-        recommendationSecondary = "免费账户容量与免费刷新均不可立即使用；此时兑换是恢复工作的下一环，只提示、不自动兑换";
+        recommendationSecondary = "所有账号均已无容量，且未来 24 小时没有非券刷新；统一容量链确认兑换能承接足够真实工作，只提示、不自动兑换";
+      } else if (model.bankedPlan && model.bankedPlan.status === "free-reset-first") {
+        recommendationSecondary = `${recommendationSecondary}；明确强制刷新先到，重置券保持不动并在到账后重新规划`;
+      } else if (
+        model.bankedPlan &&
+        model.bankedPlan.status === "must-form-node" &&
+        !targetReached
+      ) {
+        recommendationValue = sessionCandidates.length
+          ? "安排以下真实任务，提前形成安全兑换点"
+          : "增加有价值工作，提前形成安全兑换点";
+        recommendationSecondary = model.bankedPlan.expiresAtMs
+          ? `券最早 ${utc8(model.bankedPlan.expiresAtMs)} 到期；系统不会让其他账号容量或更早免费刷新排在券之后`
+          : "当前尚未形成安全兑换点；不制造任务，也不编造券到期时间";
       }
       actionRows.push({
         label: "建议",
@@ -2458,10 +2873,7 @@ defineProvider({
       });
     }
 
-    if (
-      model.bankedPlan &&
-      ["ready", "interruption-now", "must-form-node"].includes(model.bankedPlan.status)
-    ) {
+    if (model.bankedPlan && model.bankedPlan.availableCount > 0) {
       const banked = model.bankedPlan;
       const accountCreditRows = (banked.accountCredits || [])
         .filter((inventory) => inventory.availableCount > 0)
@@ -2489,32 +2901,37 @@ defineProvider({
           value:
             banked.creditAction === "redeem"
               ? `现在兑换 · ${banked.accountLabel}`
+              : banked.status === "free-reset-first"
+                ? "先等待明确强制刷新，券保持不动"
+                : banked.status === "expiry-unknown"
+                  ? "券到期时间未知，暂不生成兑换节点"
               : banked.creditAction === "prepare"
                 ? banked.status === "must-form-node"
                   ? "需要提前安排工作，形成高价值兑换点"
                   : `准备在 ${banked.accountLabel} 形成兑换点`
                 : "保留选择权，先用现有账号容量",
           group: "assets",
-          secondaryValue: banked.accountId === currentAccount?.id
-            ? "策略作用于当前账号"
-            : `策略作用于 ${banked.accountLabel}`,
+          secondaryValue: banked.status === "free-reset-first"
+            ? `先在 ${utc8(banked.nextFreeResetAtMs)} 前使用会被清零的现有容量；刷新到账后整条链重新计算`
+            : banked.accountId === currentAccount?.id
+              ? "策略作用于当前账号；其他账号的可用容量已排在券之前"
+              : banked.accountLabel
+                ? `策略作用于 ${banked.accountLabel}；其他账号的可用容量已排在券之前`
+                : "尚无满足整条容量链约束的安全兑换账号",
         },
         {
           label: "净容量价值",
-          value: `恢复 ${percent(banked.grossRecovery, 1)} − 刷新日推迟成本 ${percent(
-            banked.scheduleCost,
-            1,
-          )} = ${percent(banked.quotaEdge, 1)}${
-            banked.netCapacityUSD === null
-              ? ""
-              : `（API 等价约 $${banked.netCapacityUSD.toFixed(2)}）`
-          }`,
+          value: Number.isFinite(banked.expectedAdditionalWorkUSD)
+            ? `相对继续持有，预计多承接 ${percent(banked.bestNetPercent, 1)} 完整容量 · API 等价约 $${banked.expectedAdditionalWorkUSD.toFixed(2)}`
+            : "当前没有可验证的正收益兑换点",
           group: "assets",
-          secondaryValue: "净价值 = 账号完整容量 ×（已用比例 − 周期经过比例）；不是按券快到期的概率判断",
+          secondaryValue: "同时模拟所有账号、真实工作、自然/强制刷新、券到期与兑换后新周期；不再使用独立的周期年龄公式",
         },
         {
           label: "高价值节点",
-          value: `${utc8(banked.optimalWindowStartMs)}–${utc8(banked.optimalWindowEndMs)} · ${banked.accountLabel}`,
+          value: Number.isFinite(banked.optimalWindowStartMs) && Number.isFinite(banked.optimalWindowEndMs)
+            ? `${utc8(banked.optimalWindowStartMs)}–${utc8(banked.optimalWindowEndMs)} · ${banked.accountLabel}`
+            : "尚未形成安全兑换点",
           group: "assets",
           secondaryValue: banked.highValueNode
             ? `预计净得 ${percent(banked.bestNetPercent, 1)} 完整容量${
@@ -2522,7 +2939,11 @@ defineProvider({
                   ? ""
                   : ` · API 等价约 $${banked.bestNetCapacityUSD.toFixed(2)}`
               }`
-            : "当前安排还不能在到期前形成足够高价值节点；需要提前调整账号与任务顺序，不能把过期当作正常结果",
+            : banked.status === "free-reset-first"
+              ? "当前明确强制刷新先到；刷新之前的候选兑换点全部作废，到账后重新规划"
+              : banked.status === "expiry-unknown"
+                ? "没有可靠到期时间，系统不会编造日期或伪精确价值"
+                : "当前工作与账号容量尚不能形成高价值节点；需要提前调整真实任务顺序，不能把过期当作正常结果",
         },
       );
     }
@@ -2824,6 +3245,19 @@ defineProvider({
           1,
         )} · ${confidence(forecast.confidence)}`,
         secondaryValue: `24h 内按 P24、24–48h 按 P24/P48 分段插值 · 常见 ${commonHours}`,
+      },
+      {
+        label: "通知投递",
+        value: notificationDelivery && notificationDelivery.lastStatus
+          ? notificationDelivery.lastStatus === "sent"
+            ? `最近一次已交给 macOS · ${utc8(stateTime(notificationDelivery.lastSuccessAt || notificationDelivery.lastAttemptAt))}`
+            : notificationDelivery.lastStatus === "failed"
+              ? `最近一次发送失败 · ${utc8(stateTime(notificationDelivery.lastFailureAt || notificationDelivery.lastAttemptAt))}`
+              : `测试模式已抑制 · ${utc8(stateTime(notificationDelivery.lastAttemptAt))}`
+          : "尚无本机通知投递记录",
+        secondaryValue: notificationDelivery && notificationDelivery.lastReason
+          ? `触发原因：${notificationReasonLabel(notificationDelivery.lastReason)}${notificationDelivery.lastErrorKind ? ` · ${notificationDelivery.lastErrorKind}` : ""}`
+          : "只记录投递状态和原因，不保存通知正文或账号信息",
       },
     ];
     if (behavior) {

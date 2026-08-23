@@ -333,8 +333,32 @@ private enum ResetGalleryFixtures {
                         self.row("下次自然刷新", self.natural, group: "current"),
                         self.row("重置券 · 当前账号", "1 次可用", "09-02 到期", group: "assets"),
                         self.row("重置券 · 另一个账号", "1 次可用", "09-06 到期", group: "assets"),
-                        self.row("重置策略", "保留选择权，先用现有账号容量", "策略作用于当前账号", group: "assets"),
-                        self.row("净容量价值", "恢复 51% − 推迟成本 22% = 29%", group: "assets"),
+                        self.row("重置策略", "保留选择权，先用现有账号容量", "其他账号容量已排在券之前", group: "assets"),
+                        self.row("净容量价值", "当前没有可验证的正收益兑换点", "按完整容量链比较兑换与继续持有", group: "assets"),
+                    ]),
+                detail: "重置", groups: ["current", "assets"]),
+            self.scenario(
+                "credit-forced-first", "24 小时内明确强制刷新", phase: "先刷新",
+                explanation: "所有刷新共用同一条容量链；强制刷新前券保持不动。", tint: .orange,
+                snapshot: self.snapshot(
+                    action: "尽快运行有价值任务，重置券保持不动",
+                    actionSecondary: "明确强制刷新先到；到账后重新计算兑换节点",
+                    extraMain: [
+                        self.row("可用重置", "1 次可用", "当前账号持有"),
+                        self.row("重置", "明确强制重置 · 12 小时后"),
+                    ],
+                    progress: self.progress(current: 81, target: 100, lower: 88, median: 94, upper: 100),
+                    why: self.whyRows(
+                        current: "已用 81% · 仍有容量会被清零",
+                        forecast: "12 小时后明确强制刷新",
+                        conclusion: "先用现有额度，券保持不动",
+                        explanation: "非券刷新早于任何安全兑换节点"),
+                    reset: [
+                        self.row("当前状态", "明确强制刷新将在 12 小时后到达", group: "current"),
+                        self.row("重置券 · 当前账号", "1 次可用", group: "assets"),
+                        self.row("重置策略", "先等待明确强制刷新，券保持不动", "到账后整条链重新计算", group: "assets"),
+                        self.row("净容量价值", "当前没有可验证的正收益兑换点", "强制刷新前的候选节点全部作废", group: "assets"),
+                        self.row("高价值节点", "尚未形成安全兑换点", "刷新到账后再规划", group: "assets"),
                     ]),
                 detail: "重置", groups: ["current", "assets"]),
             self.scenario(
@@ -374,7 +398,7 @@ private enum ResetGalleryFixtures {
                         self.row("当前状态", "全部账号已阻塞", "兑换后才能继续工作", group: "current"),
                         self.row("重置券 · 当前账号", "1 次可用", "系统不会自动操作", group: "assets"),
                         self.row("重置策略", "现在兑换 · 当前账户", "策略作用于当前账号", group: "assets"),
-                        self.row("净容量价值", "恢复 100% − 推迟成本 8% = 92%", group: "assets"),
+                        self.row("净容量价值", "相对继续持有，预计多承接 92% 完整容量", "其他账号已耗尽且未来 24 小时没有非券刷新", group: "assets"),
                     ]),
                 detail: "重置", groups: ["current", "assets"]),
         ]

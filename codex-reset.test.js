@@ -640,7 +640,7 @@ close(rawModel.forecast.p48, 51.49);
 close(rawModel.forecast.displayP24, 30);
 close(rawModel.forecast.displayP48, 50);
 
-function bankedModel(usedPercent, resetsAt, expiresAt) {
+function bankedModel(usedPercent, resetsAt, expiresAt, forecast = forecastFixture()) {
   const usage = [
     {
       provider: "codex",
@@ -687,13 +687,25 @@ function bankedModel(usedPercent, resetsAt, expiresAt) {
       },
     ],
   };
-  return build(usage, forecastFixture(), null, now, receiver);
+  return build(usage, forecast, null, now, receiver);
 }
+
+const noResetForecast = {
+  ...forecastFixture(),
+  probabilities: {
+    rounded_24h: 0,
+    rounded_48h: 0,
+    raw_24h: 0,
+    raw_48h: 0,
+    commitment_floor_percent: null,
+  },
+};
 
 const earlyBurnBanked = bankedModel(
   99,
   new Date(now + 167 * hour).toISOString(),
   new Date(now + 30 * day).toISOString(),
+  noResetForecast,
 );
 check(earlyBurnBanked.bankedPlan.quotaEdge > 98);
 equal(earlyBurnBanked.actions.creditAction, "redeem");
@@ -721,10 +733,9 @@ const bankedWithFreeAccount = bankedPlanFor(
   null,
   now,
 );
-equal(
-  bankedWithFreeAccount.creditAction,
-  "hold",
-  "another usable account must stay ahead of coupon redemption in the capacity chain",
+check(
+  bankedWithFreeAccount.creditAction !== "redeem" && bankedWithFreeAccount.optimalAtMs > now,
+  "another usable account must be consumed before a later coupon node can become eligible",
 );
 const secondCreditAccount = {
   ...earlyBurnBanked.accounts[0],
@@ -770,6 +781,64 @@ equal(lateUnusedBanked.actions.creditAction, "hold");
 check(
   lateUnusedBanked.bankedPlan.bestNetPercent > lateUnusedBanked.bankedPlan.quotaEdge,
   "the planner must search the whole credit lifetime for a better high-value node",
+);
+const forcedBeforeCouponNode = bankedModel(
+  99,
+  new Date(now + 6 * day).toISOString(),
+  new Date(now + 30 * day).toISOString(),
+  {
+    ...noResetForecast,
+    official_signal: {
+      tweet_id: "2090766694897619555",
+      at: new Date(now - hour).toISOString(),
+      kind: "explicit",
+      summary: "Paid usage will reset around 2 PM PT.",
+      url: "https://x.com/thsottiaux/status/2090766694897619555",
+      official_window: {
+        label: "around 2 PM PT",
+        start_at: new Date(now + 11 * hour).toISOString(),
+        end_at: new Date(now + 13 * hour).toISOString(),
+      },
+    },
+  },
+);
+equal(
+  forcedBeforeCouponNode.forecast.signal.deadlineMs,
+  now + 12 * hour,
+  "an approximate official range must use its stated center as the one displayed planning instant",
+);
+equal(forcedBeforeCouponNode.bankedPlan.status, "free-reset-first");
+equal(
+  forcedBeforeCouponNode.actions.creditAction,
+  "hold",
+  "a verified forced reset inside 24 hours must stay ahead of coupon redemption",
+);
+check(
+  forcedBeforeCouponNode.bankedPlan.optimalAtMs === null ||
+    forcedBeforeCouponNode.bankedPlan.optimalAtMs > forcedBeforeCouponNode.forecast.signal.deadlineMs,
+  "the coupon planner must invalidate every node that crosses the earlier forced reset",
+);
+equal(
+  forcedBeforeCouponNode.capacityPlan.creditValuationMethod,
+  "capacity-chain",
+  "all three actions must expose the shared capacity-chain result",
+);
+check(
+  /重置券保持不动/.test(notificationCopy(forcedBeforeCouponNode, "global").body),
+  "the forced-reset notification must carry the same hold-credit conclusion as the UI",
+);
+const unknownExpiryBanked = bankedModel(
+  99,
+  new Date(now + 6 * day).toISOString(),
+  null,
+  noResetForecast,
+);
+equal(unknownExpiryBanked.bankedPlan.status, "expiry-unknown");
+equal(unknownExpiryBanked.bankedPlan.optimalAtMs, null);
+equal(
+  unknownExpiryBanked.actions.creditAction,
+  "hold",
+  "an unknown credit expiry must not manufacture a precise redemption date",
 );
 equal(
   bankedPlanFor(null, [], {}, null, now),
@@ -1738,6 +1807,12 @@ const publicRuntime = createRuntime(
       status: "ready",
       updatedAt: new Date(now).toISOString(),
     },
+    notificationDelivery: {
+      lastAttemptAt: new Date(now - minute).toISOString(),
+      lastSuccessAt: new Date(now - minute).toISOString(),
+      lastReason: "global",
+      lastStatus: "sent",
+    },
   },
 );
 const publicState = publicRuntime.publicReceiverState();
@@ -1747,6 +1822,12 @@ equal(publicState.usageSnapshot.usedPercent, 10);
 check(publicStateJSON.includes("usagePace"), "derived pace should be available to the provider");
 check(publicStateJSON.includes("usageBehavior"), "the sanitized behavior result should be public locally");
 check(publicStateJSON.includes("usageShortLoad"), "the one-hour load forecast should be public locally");
+equal(publicState.notificationDelivery.lastStatus, "sent");
+equal(publicState.notificationDelivery.lastReason, "global");
+check(
+  !JSON.stringify(publicState.notificationDelivery).includes("notification body"),
+  "notification observability must expose delivery state without persisting message content",
+);
 close(publicState.usageShortLoad.prediction.additionalMedian, 1);
 equal(publicState.usageShortLoad.shadow.evaluations, 1);
 equal(publicState.usageShortLoad.pending, undefined, "pending shadow rows must stay private");
@@ -1929,7 +2010,7 @@ const staleEpisodeRuntime = createRuntime(
   },
 );
 const staleEpisodeState = staleEpisodeRuntime.publicReceiverState();
-equal(staleEpisodeState.version, 15);
+equal(staleEpisodeState.version, 16);
 equal(staleEpisodeState.activeEpisode, null, "migration must clear an already-settled episode");
 equal(staleEpisodeState.signalSettlement.throughAt, landedAt);
 check(
@@ -2085,6 +2166,44 @@ function currentSiteEpisode(id, firstSeenOffsetMinutes = 1) {
   };
 }
 
+const missedNotificationEventID = "2888888888888888884";
+const recoveredNotifications = [];
+const missedNotificationRuntime = createRuntime(
+  {
+    buildModel() { return null; },
+    pickUsage() { return null; },
+    sendNativeNotification(subtitle, body) {
+      recoveredNotifications.push({ subtitle, body });
+    },
+  },
+  {
+    activeEpisode: currentSiteEpisode(missedNotificationEventID),
+    events: { seenIds: [missedNotificationEventID] },
+  },
+);
+equal(
+  missedNotificationRuntime.recoverMissedExplicitNotification(),
+  true,
+  "an unresolved explicit announcement that was seen but never delivered must be recovered once",
+);
+equal(recoveredNotifications.length, 1);
+equal(
+  missedNotificationRuntime.publicReceiverState().notificationDelivery.lastReason,
+  "global-catch-up",
+);
+check(
+  missedNotificationRuntime.runtime.state.events.notifiedForcedEventIds.includes(
+    missedNotificationEventID,
+  ),
+  "the recovered event must be persisted in the private notification dedupe set",
+);
+equal(
+  missedNotificationRuntime.recoverMissedExplicitNotification(),
+  false,
+  "restarting after a recovered delivery must not notify the same explicit event again",
+);
+equal(recoveredNotifications.length, 1);
+
 const rejectedRuntime = createRuntime(
   { buildModel() { return null; }, pickUsage() { return null; } },
   { activeEpisode: currentSiteEpisode("2888888888888888881") },
@@ -2212,6 +2331,13 @@ const receiverState = {
   health: {
     lastFeedSuccessAt: "2026-08-12T08:59:00Z",
     lastUsageSuccessAt: "2026-08-12T08:59:00Z",
+  },
+  notificationDelivery: {
+    lastAttemptAt: "2026-08-12T08:58:00Z",
+    lastSuccessAt: "2026-08-12T08:58:00Z",
+    lastReason: "global",
+    lastStatus: "sent",
+    lastErrorKind: null,
   },
   currentEvent: null,
   targetTrajectory: targetTrajectoryFixture,
@@ -2536,6 +2662,12 @@ const ctx = {
     forecastSection.rows.some((row) => row.label === "自然使用预测"),
     "the model range should be available in plan details",
   );
+  check(
+    forecastSection.rows.some(
+      (row) => row.label === "通知投递" && /已交给 macOS/.test(row.value) && /明确强制重置公告/.test(row.secondaryValue),
+    ),
+    "the explanation view must expose the latest local notification delivery result",
+  );
   equal(
     forecastSection.rows.filter((row) => row.group === "summary").map((row) => row.label).join("→"),
     "当前→预计→因此",
@@ -2576,6 +2708,11 @@ const ctx = {
     suitableSnapshot.details[0].rows.some((row) => row.label === "可考虑续跑"),
     false,
     "resumable sessions should not clutter a suitable state",
+  );
+  equal(
+    suitableSnapshot.details[0].rows.filter((row) => /^任务 \d+$/.test(row.label)).length,
+    3,
+    "while useful work remains, the home card must keep three to five concrete tasks visible even when pace is suitable",
   );
 
   receiverState.usageBehavior = {
@@ -2927,6 +3064,15 @@ const ctx = {
     multiResetSection.rows.some((row) => row.label === "重置策略") &&
       !multiResetSection.rows.some((row) => row.label === "重置券" && /2 张可用/.test(row.secondaryValue || "")),
     "the cross-account strategy must be separated from per-account inventory",
+  );
+  const chainValueRow = multiResetSection.rows.find((row) => row.label === "净容量价值");
+  check(
+    chainValueRow && /同时模拟所有账号、真实工作、自然\/强制刷新/.test(chainValueRow.secondaryValue),
+    "the reset UI must explain the shared capacity-chain valuation instead of the old cycle-age formula",
+  );
+  check(
+    !/刷新日推迟成本|已用比例 − 周期经过比例/.test(JSON.stringify(multiResetSection.rows)),
+    "the obsolete standalone coupon formula must not remain visible",
   );
 
   const workerSource = fs.readFileSync(`${__dirname}/receiver/sw.js`, "utf8");
