@@ -21,7 +21,9 @@
   <a href="README.en.md">English</a>
 </p>
 
-![Codex Capacity Planner 主界面](docs/assets/codex-capacity-planner-home.png)
+<p align="center">
+  <img src="docs/assets/codex-capacity-planner-app-zh.png" width="620" alt="Codex Capacity Planner 独立 App 中文真实菜单">
+</p>
 
 > 非 OpenAI 官方产品。本项目与 OpenAI 没有隶属或背书关系；Codex 是 OpenAI 的商标。
 
@@ -33,19 +35,19 @@
 - **多账号支持**：根据各账号的可用额度、使用情况和刷新时间，提供账号使用与切换建议。
 - **重置券规划**：结合现有额度、未来刷新和工作需求，提供保留、准备或使用重置券的建议。
 
-![Codex Capacity Planner 功能界面](docs/assets/codex-capacity-planner-features.png)
+<img src="docs/assets/codex-capacity-planner-details-zh.png" width="900" alt="Codex Capacity Planner 中文真实详情菜单">
 
 ## 一份统一的使用计划
 
 当前额度、使用情况、近期工作、刷新信息和重置券共同形成一份使用计划。任一信息变化后，工作、账号和重置券建议会一起更新。
 
-![Codex Capacity Planner 统一使用计划](docs/assets/codex-capacity-planner-plan.png)
-
 ## 独立 App 与 CodexBar
 
 macOS App 可以独立使用。通过仓库内的 CodexBar 集成构建时，两种界面读取同一份本机计划与建议。
 
-![独立 App 与 CodexBar 使用同一份结果](docs/assets/codex-capacity-planner-surfaces.png)
+<p align="center">
+  <img src="docs/assets/codex-capacity-planner-codexbar-zh.png" width="620" alt="CodexBar 中的 Codex Capacity Planner 中文真实菜单">
+</p>
 
 ## 安装
 

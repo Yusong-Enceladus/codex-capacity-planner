@@ -24,6 +24,8 @@ final class MenuController: NSObject, NSMenuDelegate {
     private static let detailsWidth: CGFloat = 380
 
     private let store: SnapshotStore
+    private let presentationLanguage: ResetPresentationLanguage
+    private let allowsRefresh: Bool
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
     private var settingsWindow: NSWindow?
@@ -32,8 +34,14 @@ final class MenuController: NSObject, NSMenuDelegate {
     private var menuOpen = false
     private var rebuildPending = false
 
-    init(store: SnapshotStore) {
+    init(
+        store: SnapshotStore,
+        presentationLanguage: ResetPresentationLanguage = .simplifiedChinese,
+        allowsRefresh: Bool = true)
+    {
         self.store = store
+        self.presentationLanguage = presentationLanguage
+        self.allowsRefresh = allowsRefresh
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         self.statusItem.autosaveName = "codex-reset"
@@ -70,7 +78,9 @@ final class MenuController: NSObject, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         self.menuOpen = true
-        Task { await self.store.refresh() }
+        if self.allowsRefresh {
+            Task { await self.store.refresh() }
+        }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -89,11 +99,21 @@ final class MenuController: NSObject, NSMenuDelegate {
         self.menu.removeAllItems()
         self.menu.addItem(self.makeCardItem())
         self.menu.addItem(.separator())
-        self.menu.addItem(self.nativeItem("刷新", image: "arrow.clockwise", action: #selector(self.refresh), key: "r"))
-        self.menu.addItem(self.nativeItem("设置…", image: "gearshape", action: #selector(self.openSettings), key: ","))
+        self.menu.addItem(self.nativeItem(
+            self.presentationLanguage.text("刷新", "Refresh"),
+            image: "arrow.clockwise",
+            action: #selector(self.refresh),
+            key: "r"))
+        self.menu.addItem(self.nativeItem(
+            self.presentationLanguage.text("设置…", "Settings…"),
+            image: "gearshape",
+            action: #selector(self.openSettings),
+            key: ","))
         self.menu.addItem(.separator())
         self.menu.addItem(self.nativeItem(
-            "退出 Codex Capacity Planner",
+            self.presentationLanguage.text(
+                "退出 Codex Capacity Planner",
+                "Quit Codex Capacity Planner"),
             image: "xmark.square",
             action: #selector(self.quit),
             key: "q"))
@@ -108,6 +128,8 @@ final class MenuController: NSObject, NSMenuDelegate {
             width: Self.cardWidth,
             hasSubmenu: hasSubmenu,
             onRefresh: { [weak self] in Task { await self?.store.refresh() } })
+            .environment(\.resetPresentationLanguage, self.presentationLanguage)
+            .environment(\.locale, self.presentationLanguage.locale)
         let hosting = FixedHeightHostingView(rootView: root)
         let measuredHeight = hosting.measuredFittingHeight(width: Self.cardWidth)
         hosting.apply(width: Self.cardWidth, height: measuredHeight + 7)
@@ -144,13 +166,14 @@ final class MenuController: NSObject, NSMenuDelegate {
         submenu.autoenablesItems = false
         submenu.minimumWidth = Self.detailsWidth
         let grouped = Dictionary(grouping: section.rows) { $0.group ?? "all" }
-        let summaryKey = section.title == "为什么这样建议" ? "summary" : "current"
+        let isPlanSection = ["为什么这样建议", "Why This Plan"].contains(section.title)
+        let summaryKey = isPlanSection ? "summary" : "current"
         let summaryRows = grouped[summaryKey] ?? (grouped.count == 1 ? section.rows : [])
         if !summaryRows.isEmpty {
             submenu.addItem(self.makeDetailContentItem(DetailSection(title: section.title, rows: summaryRows)))
         }
 
-        let groupOrder = section.title == "为什么这样建议"
+        let groupOrder = isPlanSection
             ? ["calculation", "work", "data"]
             : ["assets", "history", "official"]
         for key in groupOrder {
@@ -158,7 +181,7 @@ final class MenuController: NSObject, NSMenuDelegate {
             if !submenu.items.isEmpty, submenu.items.last?.isSeparatorItem != true {
                 submenu.addItem(.separator())
             }
-            let title = Self.detailGroupTitle(key)
+            let title = Self.detailGroupTitle(key, language: self.presentationLanguage)
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             item.image = NSImage(
                 systemSymbolName: Self.detailGroupSymbol(key),
@@ -191,6 +214,8 @@ final class MenuController: NSObject, NSMenuDelegate {
 
     private func makeDetailContentItem(_ section: DetailSection) -> NSMenuItem {
         let root = ResetDetailsView(sections: [section], width: Self.detailsWidth)
+            .environment(\.resetPresentationLanguage, self.presentationLanguage)
+            .environment(\.locale, self.presentationLanguage.locale)
         let hosting = FixedHeightHostingView(rootView: root)
         let measuredHeight = hosting.measuredFittingHeight(width: Self.detailsWidth)
         hosting.apply(width: Self.detailsWidth, height: measuredHeight)
@@ -213,15 +238,18 @@ final class MenuController: NSObject, NSMenuDelegate {
         }
     }
 
-    private static func detailGroupTitle(_ key: String) -> String {
+    private static func detailGroupTitle(
+        _ key: String,
+        language: ResetPresentationLanguage) -> String
+    {
         switch key {
-        case "calculation": "使用与目标"
-        case "work": "建议任务"
-        case "data": "计算与数据"
-        case "assets": "可用重置"
-        case "history": "重置历史"
-        case "official": "官方消息"
-        default: "更多信息"
+        case "calculation": language.text("使用与目标", "Usage & Target")
+        case "work": language.text("建议任务", "Suggested Tasks")
+        case "data": language.text("计算与数据", "Calculation & Data")
+        case "assets": language.text("可用重置", "Available Resets")
+        case "history": language.text("重置历史", "Reset History")
+        case "official": language.text("官方消息", "Official Updates")
+        default: language.text("更多信息", "More")
         }
     }
 
@@ -239,10 +267,10 @@ final class MenuController: NSObject, NSMenuDelegate {
 
     private static func symbolName(for title: String) -> String {
         switch title {
-        case "可继续的任务": "play.circle"
-        case "账户": "person.2"
-        case "为什么这样建议": "chart.line.uptrend.xyaxis"
-        case "重置": "clock.arrow.circlepath"
+        case "可继续的任务", "Suggested Tasks": "play.circle"
+        case "账户", "Accounts": "person.2"
+        case "为什么这样建议", "Why This Plan": "chart.line.uptrend.xyaxis"
+        case "重置", "Resets": "clock.arrow.circlepath"
         default: "list.bullet.rectangle"
         }
     }
@@ -256,7 +284,9 @@ final class MenuController: NSObject, NSMenuDelegate {
     }
 
     @objc private func refresh() {
-        Task { await self.store.refresh() }
+        if self.allowsRefresh {
+            Task { await self.store.refresh() }
+        }
     }
 
     @objc private func noOp() {}
@@ -287,7 +317,10 @@ final class MenuController: NSObject, NSMenuDelegate {
     }
 
     private func showPreviewWindow() {
-        let controller = NSHostingController(rootView: ResetMenuPreview(store: self.store))
+        let controller = NSHostingController(
+            rootView: ResetMenuPreview(store: self.store)
+                .environment(\.resetPresentationLanguage, self.presentationLanguage)
+                .environment(\.locale, self.presentationLanguage.locale))
         let window = NSWindow(contentViewController: controller)
         window.title = "Codex Capacity Planner Menu Preview"
         window.styleMask = [.titled, .closable]

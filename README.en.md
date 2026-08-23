@@ -21,7 +21,9 @@
   <a href="README.md">简体中文</a>
 </p>
 
-![Codex Capacity Planner home view](docs/assets/codex-capacity-planner-home.png)
+<p align="center">
+  <img src="docs/assets/codex-capacity-planner-app-en.png" width="620" alt="Codex Capacity Planner standalone app with the real English macOS menu">
+</p>
 
 > This is not an official OpenAI product and is not affiliated with or endorsed by OpenAI. Codex is a trademark of OpenAI.
 
@@ -33,19 +35,19 @@
 - **Multiple accounts**: uses each account's available quota, usage, and reset timing to recommend account use and switching.
 - **Reset-credit planning**: combines existing quota, future resets, and work demand to recommend holding, preparing, or using a credit.
 
-![Codex Capacity Planner feature views](docs/assets/codex-capacity-planner-features.png)
+<img src="docs/assets/codex-capacity-planner-details-en.png" width="900" alt="Codex Capacity Planner real English detail menus">
 
 ## One unified usage plan
 
 Current quota, usage, recent work, reset information, and reset credits form one plan. When any input changes, work, account, and reset-credit recommendations update together.
 
-![Codex Capacity Planner unified plan](docs/assets/codex-capacity-planner-plan.png)
-
 ## Standalone app and CodexBar
 
 The macOS app works independently. When using the CodexBar integration included in the source tree, both interfaces read the same local plan and recommendations.
 
-![The standalone app and CodexBar use the same result](docs/assets/codex-capacity-planner-surfaces.png)
+<p align="center">
+  <img src="docs/assets/codex-capacity-planner-codexbar-en.png" width="620" alt="Codex Capacity Planner real English menu inside CodexBar">
+</p>
 
 ## Install
 

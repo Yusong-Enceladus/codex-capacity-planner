@@ -7,6 +7,7 @@ final class MenuHighlightState: ObservableObject {
 }
 
 struct ResetMenuCard: View {
+    @Environment(\.resetPresentationLanguage) private var presentationLanguage
     @ObservedObject var store: SnapshotStore
     @ObservedObject var highlight: MenuHighlightState
     let width: CGFloat
@@ -36,7 +37,9 @@ struct ResetMenuCard: View {
                     .foregroundStyle(self.highlight.isHighlighted ? .white : .red)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("正在读取额度与策略…").font(.caption).foregroundStyle(.secondary)
+                Text(self.presentationLanguage.text("正在读取额度与策略…", "Loading usage and plan…"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 20)
@@ -85,16 +88,25 @@ struct ResetMenuCard: View {
             } else {
                 Button(action: self.onRefresh) { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.plain)
-                    .help("刷新")
+                    .help(self.presentationLanguage.text("刷新", "Refresh"))
             }
         }
     }
 
     private var headerSubtitle: String {
-        if self.store.isRefreshing { return "正在刷新…" }
-        guard let fetchedAt = self.store.fetchedAt else { return "尚未更新" }
-        if Date().timeIntervalSince(fetchedAt) < 5 { return "刚刚更新" }
-        return RelativeDateTimeFormatter().localizedString(for: fetchedAt, relativeTo: Date()) + "更新"
+        if self.store.isRefreshing {
+            return self.presentationLanguage.text("正在刷新…", "Refreshing…")
+        }
+        guard let fetchedAt = self.store.fetchedAt else {
+            return self.presentationLanguage.text("尚未更新", "Not updated yet")
+        }
+        if Date().timeIntervalSince(fetchedAt) < 5 {
+            return self.presentationLanguage.text("刚刚更新", "Updated just now")
+        }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = self.presentationLanguage.locale
+        let relative = formatter.localizedString(for: fetchedAt, relativeTo: Date())
+        return self.presentationLanguage.text(relative + "更新", "Updated \(relative)")
     }
 
     private func decisionProgress(_ progress: DecisionProgress) -> some View {
@@ -352,6 +364,7 @@ final class FixedHeightHostingView<Content: View>: NSHostingView<Content> {
 }
 
 struct ResetMenuPreview: View {
+    @Environment(\.resetPresentationLanguage) private var presentationLanguage
     @ObservedObject var store: SnapshotStore
     @StateObject private var highlight = MenuHighlightState()
 
@@ -391,10 +404,21 @@ struct ResetMenuPreview: View {
                     hasSubmenu: !(self.store.snapshot?.submenuDetails.isEmpty ?? true),
                     onRefresh: { Task { await self.store.refresh() } })
                 Divider()
-                self.previewRow("arrow.clockwise", "刷新", shortcut: "⌘R")
-                self.previewRow("gearshape", "设置…", shortcut: "⌘,")
+                self.previewRow(
+                    "arrow.clockwise",
+                    self.presentationLanguage.text("刷新", "Refresh"),
+                    shortcut: "⌘R")
+                self.previewRow(
+                    "gearshape",
+                    self.presentationLanguage.text("设置…", "Settings…"),
+                    shortcut: "⌘,")
                 Divider()
-                self.previewRow("xmark.square", "退出 Codex Capacity Planner", shortcut: "⌘Q")
+                self.previewRow(
+                    "xmark.square",
+                    self.presentationLanguage.text(
+                        "退出 Codex Capacity Planner",
+                        "Quit Codex Capacity Planner"),
+                    shortcut: "⌘Q")
             }
             .frame(width: 310)
             .padding(.vertical, 4)
@@ -419,10 +443,10 @@ struct ResetMenuPreview: View {
 
     private func symbolName(for title: String) -> String {
         switch title {
-        case "可继续的任务": "play.circle"
-        case "账户": "person.2"
-        case "为什么这样建议": "chart.line.uptrend.xyaxis"
-        case "重置": "clock.arrow.circlepath"
+        case "可继续的任务", "Suggested Tasks": "play.circle"
+        case "账户", "Accounts": "person.2"
+        case "为什么这样建议", "Why This Plan": "chart.line.uptrend.xyaxis"
+        case "重置", "Resets": "clock.arrow.circlepath"
         default: "list.bullet.rectangle"
         }
     }

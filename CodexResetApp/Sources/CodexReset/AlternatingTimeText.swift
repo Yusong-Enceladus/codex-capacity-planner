@@ -8,18 +8,31 @@ enum AlternatingDisplay {
         Int(floor(date.timeIntervalSince1970 / self.interval)).isMultiple(of: 2) == false
     }
 
-    static func relativeText(until target: Date, now: Date) -> String {
+    static func relativeText(
+        until target: Date,
+        now: Date,
+        language: ResetPresentationLanguage = .simplifiedChinese) -> String
+    {
         let remaining = target.timeIntervalSince(now)
-        if remaining <= 0 { return "等待刷新确认" }
+        if remaining <= 0 {
+            return language.text("等待刷新确认", "Waiting for reset confirmation")
+        }
         let hour: TimeInterval = 60 * 60
         let day: TimeInterval = 24 * hour
         let totalMinutes = max(1, Int(remaining / 60))
-        if totalMinutes < 60 { return "\(totalMinutes) 分钟后" }
+        if totalMinutes < 60 {
+            return language.text("\(totalMinutes) 分钟后", "in \(totalMinutes) min")
+        }
         let totalHours = max(1, Int(remaining / hour))
-        if totalHours < 24 { return "\(totalHours) 小时后" }
+        if totalHours < 24 {
+            return language.text("\(totalHours) 小时后", "in \(totalHours) hr")
+        }
         let days = Int(remaining / day)
         let hours = Int((remaining - Double(days) * day) / hour)
-        return hours == 0 ? "\(days) 天后" : "\(days) 天 \(hours) 小时后"
+        if hours == 0 {
+            return language.text("\(days) 天后", "in \(days) days")
+        }
+        return language.text("\(days) 天 \(hours) 小时后", "in \(days) days \(hours) hr")
     }
 
     static func date(from value: String?) -> Date? {
@@ -32,6 +45,7 @@ enum AlternatingDisplay {
 }
 
 struct AlternatingTimeText: View {
+    @Environment(\.resetPresentationLanguage) private var presentationLanguage
     let primary: String
     var alternate: String?
     var relativeTimeAt: String?
@@ -58,7 +72,10 @@ struct AlternatingTimeText: View {
     private func value(at now: Date) -> String {
         guard AlternatingDisplay.usesAlternate(at: now) else { return self.primary }
         if let target = AlternatingDisplay.date(from: self.relativeTimeAt) {
-            return (self.relativeTimePrefix ?? "") + AlternatingDisplay.relativeText(until: target, now: now)
+            return (self.relativeTimePrefix ?? "") + AlternatingDisplay.relativeText(
+                until: target,
+                now: now,
+                language: self.presentationLanguage)
         }
         return self.alternate ?? self.primary
     }

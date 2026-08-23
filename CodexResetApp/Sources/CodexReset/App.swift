@@ -15,12 +15,23 @@ enum CodexResetApplication {
 
 @MainActor
 final class ApplicationDelegate: NSObject, NSApplicationDelegate {
-    private let store = SnapshotStore()
+    private var store: SnapshotStore?
     private let monitor = MonitorSupervisor()
     private var menuController: MenuController?
     private var galleryWindow: NSWindow?
+    private var demoBackdropWindows: [NSWindow] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let demoLanguage = Self.readmeDemoLanguage() {
+            let store = SnapshotStore(snapshot: ResetDemoFixtures.primarySnapshot(demoLanguage))
+            self.store = store
+            self.showDemoBackdropIfAvailable()
+            self.menuController = MenuController(
+                store: store,
+                presentationLanguage: demoLanguage,
+                allowsRefresh: false)
+            return
+        }
         if let galleryPage = ProcessInfo.processInfo.arguments
             .first(where: { $0.hasPrefix("--state-gallery=") })?
             .split(separator: "=", maxSplits: 1).last.map(String.init)
@@ -28,34 +39,62 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
             self.showStateGallery(page: galleryPage)
             return
         }
+        let store = SnapshotStore()
+        self.store = store
         if let startupError = self.monitor.start() {
-            self.store.setStartupError(startupError)
+            store.setStartupError(startupError)
         }
-        self.menuController = MenuController(store: self.store)
-        self.store.start()
+        self.menuController = MenuController(store: store)
+        store.start()
     }
 
     private func showStateGallery(page: String) {
         NSApplication.shared.setActivationPolicy(.regular)
-        let isReadmeGallery = page.hasPrefix("readme-")
-        let rootView = isReadmeGallery
-            ? AnyView(ResetReadmeGallery(page: page))
-            : AnyView(ResetStateGallery(page: page))
-        let controller = NSHostingController(rootView: rootView)
+        let controller = NSHostingController(rootView: ResetStateGallery(page: page))
         let window = NSWindow(contentViewController: controller)
-        window.title = isReadmeGallery
-            ? "Codex Capacity Planner"
-            : "Codex Capacity Planner 状态机 · \(page)"
+        window.title = "Codex Capacity Planner 状态机 · \(page)"
         window.styleMask = [.titled, .closable, .resizable]
         window.appearance = NSAppearance(named: .darkAqua)
-        window.setContentSize(
-            isReadmeGallery
-                ? ResetReadmeGallery.preferredSize(for: page)
-                : NSSize(width: 1440, height: 900))
+        window.setContentSize(NSSize(width: 1440, height: 900))
         window.center()
         window.makeKeyAndOrderFront(nil)
         self.galleryWindow = window
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    private static func readmeDemoLanguage() -> ResetPresentationLanguage? {
+        guard let rawValue = ProcessInfo.processInfo.arguments
+            .first(where: { $0.hasPrefix("--readme-demo=") })?
+            .split(separator: "=", maxSplits: 1).last
+        else { return nil }
+        return rawValue == "en" ? .english : .simplifiedChinese
+    }
+
+    private func showDemoBackdropIfAvailable() {
+        guard let rawPath = ProcessInfo.processInfo.environment["CODEX_RESET_DEMO_WALLPAPER"],
+              let image = NSImage(contentsOfFile: rawPath)
+        else { return }
+
+        self.demoBackdropWindows = NSScreen.screens.map { screen in
+            let localFrame = NSRect(origin: .zero, size: screen.frame.size)
+            let imageView = NSImageView(frame: localFrame)
+            imageView.image = image
+            imageView.imageScaling = .scaleAxesIndependently
+            let window = NSWindow(
+                contentRect: localFrame,
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false,
+                screen: screen)
+            window.contentView = imageView
+            window.setFrame(screen.frame, display: true)
+            window.level = .floating
+            window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+            window.ignoresMouseEvents = true
+            window.hasShadow = false
+            window.orderFrontRegardless()
+            return window
+        }
     }
 }
 

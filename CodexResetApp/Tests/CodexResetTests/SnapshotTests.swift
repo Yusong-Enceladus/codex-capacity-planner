@@ -51,6 +51,21 @@ import Testing
     #expect(AlternatingDisplay.date(from: "2026-08-28T02:48:56Z") != nil)
 }
 
+@Test func `presentation countdown follows the selected language`() {
+    let now = Date(timeIntervalSince1970: 100)
+    let target = now.addingTimeInterval(2 * 86_400 + 3 * 3_600)
+
+    #expect(AlternatingDisplay.relativeText(
+        until: target,
+        now: now,
+        language: .simplifiedChinese) == "2 天 3 小时后")
+    #expect(AlternatingDisplay.relativeText(
+        until: target,
+        now: now,
+        language: .english) == "in 2 days 3 hr")
+    #expect(ResetPresentationLanguage.english.text("中文", "English") == "English")
+}
+
 @MainActor
 @Test func `hosting view measures content before fixing its menu height`() {
     let content = VStack(spacing: 8) {
