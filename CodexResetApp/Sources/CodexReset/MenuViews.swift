@@ -251,8 +251,15 @@ private struct ResetDecisionContent: View {
                                     .font(.caption.weight(.medium))
                                     .lineLimit(2)
                                     .fixedSize(horizontal: false, vertical: true)
+                                if let secondary = row.secondaryValue {
+                                    Text(secondary)
+                                        .font(.caption2)
+                                        .foregroundStyle(self.highlighted ? .white.opacity(0.7) : .secondary)
+                                        .lineLimit(2)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
-                            .frame(maxWidth: .infinity, minHeight: 40, alignment: .topLeading)
+                            .frame(maxWidth: .infinity, minHeight: 50, alignment: .topLeading)
                             .accessibilityElement(children: .combine)
                         }
                     }

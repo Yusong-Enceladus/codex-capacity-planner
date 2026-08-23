@@ -8,12 +8,16 @@ const {
   appendUsageSample,
   behaviorNotificationPlan,
   behaviorZone,
+  communityCapacityPrior,
+  classifyCapacityCohort,
   createRuntime,
   eventSettledByState,
   globalSettlementFromState,
   inferDeadline,
+  inferredDeadlineLabel,
   latestExplicitFeedEvent,
   normalizedTargetTrajectory,
+  normalizedCapacityEstimate,
   normalizedResetCreditInventory,
   notificationCopy,
   notificationPlan,
@@ -564,6 +568,53 @@ equal(
   "stay",
   "a usable 20x account at 71% used must not switch to a 5x account at 69% used without learned capacities",
 );
+const provenCapacitySwitchModel = build(
+  [
+    {
+      ...usagePayload[0],
+      account: "current-20x@example.test",
+      cacheAccountKey: "codex:stored:current-20x-proof",
+      accountActive: true,
+      accountLive: true,
+      usage: {
+        ...usagePayload[0].usage,
+        identity: { loginMethod: "pro" },
+        secondary: {
+          ...usagePayload[0].usage.secondary,
+          usedPercent: 50,
+          resetsAt: new Date(now + 5 * day).toISOString(),
+        },
+      },
+    },
+    {
+      ...usagePayload[0],
+      account: "expiring-5x@example.test",
+      cacheAccountKey: "codex:stored:expiring-5x-proof",
+      accountActive: false,
+      accountLive: false,
+      usage: {
+        ...usagePayload[0].usage,
+        identity: { loginMethod: "prolite" },
+        secondary: {
+          ...usagePayload[0].usage.secondary,
+          usedPercent: 10,
+          resetsAt: new Date(now + day).toISOString(),
+        },
+      },
+    },
+  ],
+  forecastFixture(),
+  null,
+  now,
+  null,
+);
+check(provenCapacitySwitchModel.actions.accountAction.startsWith("consider-switch:"));
+equal(provenCapacitySwitchModel.devicePlan.switchReason, "capacity-at-risk");
+check(
+  provenCapacitySwitchModel.devicePlan.switchProof.recommendedAtRiskCapacityUSD > 500,
+  "the switch decision must expose the real API-equivalent capacity at risk",
+);
+equal(provenCapacitySwitchModel.devicePlan.switchProof.capacitySource, "community-prior");
 check(
   !/多个 Codex 账户/.test(multiAccountModel.blocker || ""),
   "multiple accounts must no longer be a global blocker",
@@ -740,6 +791,43 @@ close(
 );
 const learnedCapacity = appendCapacitySample(null, 25, 10, now);
 close(learnedCapacity.estimateUSD, 250);
+const communityFive = communityCapacityPrior("prolite");
+close(communityFive.estimateUSD, 637.5);
+equal(communityFive.source, "community-prior");
+let calibratedCapacity = normalizedCapacityEstimate(null, "prolite");
+equal(calibratedCapacity.source, "community-prior");
+for (let index = 0; index < 6; index += 1) {
+  calibratedCapacity = appendCapacitySample(
+    calibratedCapacity,
+    60 + index,
+    10,
+    now + index * hour,
+    "prolite",
+  );
+}
+equal(calibratedCapacity.source, "api-equivalent-local");
+equal(calibratedCapacity.sampleCount, 6);
+check(
+  calibratedCapacity.estimateUSD >= 600 && calibratedCapacity.estimateUSD <= 650,
+  "six valid local samples must take over from the community prior",
+);
+const capacityChangeSamples = Array.from({ length: 8 }, (_, index) => ({
+  at: new Date(now + index * hour).toISOString(),
+  fullCapacityUSD: index < 4 ? 640 : 400,
+  costUSD: index < 4 ? 64 : 40,
+  percentDelta: 10,
+}));
+const changedCapacity = normalizedCapacityEstimate({ samples: capacityChangeSamples }, "prolite");
+equal(changedCapacity.anomaly.status, "change-detected");
+const changedAccount = { planType: "prolite", capacityEstimate: changedCapacity };
+const stableAccount = {
+  planType: "prolite",
+  capacityEstimate: normalizedCapacityEstimate({
+    samples: capacityChangeSamples.map((sample) => ({ ...sample, fullCapacityUSD: 640, costUSD: 64 })),
+  }, "prolite"),
+};
+classifyCapacityCohort([changedAccount, stableAccount]);
+equal(changedAccount.capacityEstimate.anomaly.status, "account-low");
 
 const stale = build(usagePayload, forecastFixture("2026-08-12T07:20:00Z"), null, now, null);
 equal(stale.decision, null);
@@ -856,6 +944,7 @@ const atom = `<?xml version="1.0"?><feed><entry>
 const atomEntry = parseAtomEntries(atom)[0];
 equal(atomEntry.id, tiboEvent.id);
 equal(atomEntry.deadlineAt, "2026-08-13T02:01:37.000Z");
+equal(atomEntry.windowLabel, "next hour");
 equal(atomEntry.url, tiboEvent.url);
 
 const xHTML = `<article data-tweet-id="${tiboEvent.id}">
@@ -875,6 +964,12 @@ equal(
   Date.parse("2026-08-23T22:00:00.000Z"),
   "a calendar promise in a Tibo reply must produce a concrete deadline",
 );
+equal(
+  inferDeadline("Reset lands tomorrow around 2pm PDT.", Date.parse("2026-08-23T06:29:05.000Z")),
+  Date.parse("2026-08-23T21:00:00.000Z"),
+  "a tomorrow-first approximate deadline must preserve the explicit source timezone",
+);
+equal(inferredDeadlineLabel("Reset lands tomorrow around 2pm PDT."), "tomorrow around 2pm PDT");
 equal(inferDeadline("it has been reset", now), null, "past tense without a window stays immediate");
 
 const explicitReplyWithoutAnnouncementState = {
@@ -2293,13 +2388,15 @@ const ctx = {
   equal(snapshot.details[0].title, "现在");
   equal(
     snapshot.details[0].rows.length,
-    4,
-    "the main card should show the decision, named sessions, account and reset context",
+    6,
+    "the main card should show the decision, three named tasks, account and reset context",
   );
   equal(snapshot.details[0].rows[0].label, "建议");
-  equal(snapshot.details[0].rows[1].label, "建议续跑");
-  equal(snapshot.details[0].rows[2].label, "账户");
-  equal(snapshot.details[0].rows[3].label, "重置");
+  equal(snapshot.details[0].rows[1].label, "任务 1");
+  equal(snapshot.details[0].rows[2].label, "任务 2");
+  equal(snapshot.details[0].rows[3].label, "任务 3");
+  equal(snapshot.details[0].rows[4].label, "账户");
+  equal(snapshot.details[0].rows[5].label, "重置");
   check(
     /续跑近期任务.*开启 Fast/.test(
       snapshot.details[0].rows.find((row) => row.label === "建议").value,
@@ -2403,7 +2500,7 @@ const ctx = {
   equal(resetHomeRow.relativeTimePrefix, "下次自然刷新 · ");
   check(
     snapshot.details[0].rows.some(
-      (row) => row.label === "建议续跑" && /Paused research task/.test(row.value),
+      (row) => row.label === "任务 1" && /Paused research task/.test(row.value),
     ),
     "the core recommendation must name the first sessions to resume",
   );
@@ -2673,6 +2770,7 @@ const ctx = {
     }
   }
   const tiboMainRow = signalSnapshot.details[0].rows.find((row) => row.label === "重置");
+  equal(tiboMainRow.relativeTimeAt, "2026-08-12T09:50:00.000Z");
   check(/截止 08-12 17:50 UTC\+8/.test(tiboMainRow.secondaryValue), "Tibo metadata must survive clipping");
   const signalEventSection = signalSnapshot.submenuDetails.find(
     (section) => section.title === "重置",
@@ -2688,6 +2786,18 @@ const ctx = {
       (row) => row.label === "当前状态" && row.group === "current",
     ),
     "a forced reset signal must become the current state rather than a generic announcement row",
+  );
+  check(
+    signalEventSection.rows.some(
+      (row) => row.label === "官方预计时间" && row.relativeTimeAt === "2026-08-12T09:50:00.000Z",
+    ),
+    "the converted official time must drive the reset detail countdown",
+  );
+  check(
+    signalEventSection.rows.some(
+      (row) => row.label === "强制重置公告" && row.link && row.link.label === "打开这条 Tibo 原帖",
+    ),
+    "each official post must retain its own adjacent source action",
   );
 
   const multiReceiverState = {

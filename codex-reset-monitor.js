@@ -153,8 +153,48 @@ function codexPlanRank(value) {
   return 0;
 }
 
-// API-equivalent dollars are an account-independent unit. Plan labels remain
-// display metadata and never participate in capacity arithmetic.
+// API-equivalent dollars are an account-independent unit. The plan is used
+// only to select a dated community cold-start prior; all mature arithmetic is
+// driven by this Mac's token/cost observations.
+const communityCapacityPriors = {
+  plus: {
+    estimateUSD: 637.5,
+    lowerUSD: 500,
+    upperUSD: 800,
+    asOf: "2026-07-23",
+    evidence: "community-regression-pro-5x-2026-07",
+  },
+  prolite: {
+    estimateUSD: 637.5,
+    lowerUSD: 500,
+    upperUSD: 800,
+    asOf: "2026-07-23",
+    evidence: "community-regression-pro-5x-2026-07",
+  },
+  pro: {
+    estimateUSD: 3000,
+    lowerUSD: 2400,
+    upperUSD: 3600,
+    asOf: "2026-07-23",
+    evidence: "community-reports-pro-20x-2026-07",
+  },
+};
+
+function communityCapacityPrior(planType) {
+  const plan = text(planType).toLowerCase().replace(/[ _-]+/g, " ");
+  const key = ["plus", "plus plan", "chatgpt plus"].includes(plan)
+    ? "plus"
+    : ["prolite", "pro lite", "codex pro lite"].includes(plan)
+      ? "prolite"
+      : ["pro", "codex pro"].includes(plan)
+        ? "pro"
+        : null;
+  const prior = key && communityCapacityPriors[key];
+  return prior
+    ? { ...prior, source: "community-prior", confidence: "low", sampleCount: 0 }
+    : null;
+}
+
 const apiPricing = {
   "gpt-5": [1.25e-6, 1e-5, 1.25e-7],
   "gpt-5-codex": [1.25e-6, 1e-5, 1.25e-7],
@@ -223,7 +263,7 @@ function readIncrementalAPICost(previousValue) {
   }
 }
 
-function normalizedCapacityEstimate(value) {
+function normalizedCapacityEstimate(value, planType) {
   const source = object(value) || {};
   const samples = (Array.isArray(source.samples) ? source.samples : [])
     .map((sampleValue) => {
@@ -238,7 +278,12 @@ function normalizedCapacityEstimate(value) {
     })
     .filter(Boolean)
     .slice(-24);
-  if (!samples.length) return { source: "api-equivalent-local", samples };
+  const community = communityCapacityPrior(planType || source.planType);
+  if (!samples.length) {
+    return community
+      ? { ...community, samples, community, anomaly: { status: "baseline", scope: "none" } }
+      : { source: "unavailable", samples, community: null, anomaly: { status: "insufficient", scope: "none" } };
+  }
   const sorted = samples.map((item) => item.fullCapacityUSD).sort((a, b) => a - b);
   const median = sorted[Math.floor(sorted.length / 2)];
   const deviations = sorted.map((item) => Math.abs(item - median)).sort((a, b) => a - b);
@@ -247,26 +292,90 @@ function normalizedCapacityEstimate(value) {
     (item) => samples.length < 4 || Math.abs(item.fullCapacityUSD - median) <= 3 * mad,
   );
   const values = accepted.map((item) => item.fullCapacityUSD).sort((a, b) => a - b);
-  const estimateUSD = values[Math.floor(values.length / 2)];
+  const localEstimateUSD = values[Math.floor(values.length / 2)];
+  const localLowerUSD = values[Math.floor((values.length - 1) * 0.2)];
+  const localUpperUSD = values[Math.ceil((values.length - 1) * 0.8)];
+  const localWeight = community ? Math.min(1, accepted.length / 6) : 1;
+  const estimateUSD = community
+    ? community.estimateUSD * (1 - localWeight) + localEstimateUSD * localWeight
+    : localEstimateUSD;
+  const lowerUSD = community
+    ? community.lowerUSD * (1 - localWeight) + localLowerUSD * localWeight
+    : localLowerUSD;
+  const upperUSD = community
+    ? community.upperUSD * (1 - localWeight) + localUpperUSD * localWeight
+    : localUpperUSD;
+
+  const chronological = accepted.slice().sort((left, right) => millis(left.at) - millis(right.at));
+  let historicalRatio = null;
+  if (chronological.length >= 8) {
+    const split = Math.floor(chronological.length / 2);
+    const older = chronological.slice(0, split).map((item) => item.fullCapacityUSD).sort((a, b) => a - b);
+    const recent = chronological.slice(split).map((item) => item.fullCapacityUSD).sort((a, b) => a - b);
+    const olderMedian = older[Math.floor(older.length / 2)];
+    const recentMedian = recent[Math.floor(recent.length / 2)];
+    if (olderMedian > 0) historicalRatio = recentMedian / olderMedian;
+  }
+  const communityRatio = community && community.estimateUSD > 0
+    ? localEstimateUSD / community.estimateUSD
+    : null;
+  let anomaly = historicalRatio !== null && historicalRatio < 0.8
+    ? { status: "change-detected", scope: "unknown", ratio: historicalRatio }
+    : accepted.length >= 4 && communityRatio !== null && communityRatio < 0.75
+      ? { status: "below-community", scope: "unknown", ratio: communityRatio }
+      : { status: accepted.length >= 6 ? "normal" : "calibrating", scope: "none", ratio: historicalRatio ?? communityRatio };
+  const priorClassification = object(source.anomaly);
+  if (["account-low", "global-shift"].includes(text(priorClassification && priorClassification.status)) &&
+      ["change-detected", "below-community"].includes(anomaly.status)) {
+    anomaly = { ...anomaly, status: priorClassification.status, scope: priorClassification.scope };
+  }
   return {
-    source: "api-equivalent-local",
+    source: accepted.length >= 6 ? "api-equivalent-local" : "community-calibrated",
     samples,
     estimateUSD,
-    lowerUSD: values[Math.floor((values.length - 1) * 0.2)],
-    upperUSD: values[Math.ceil((values.length - 1) * 0.8)],
+    lowerUSD,
+    upperUSD,
+    localEstimateUSD,
     sampleCount: accepted.length,
     confidence: accepted.length >= 6 ? "high" : accepted.length >= 2 ? "medium" : "low",
+    community,
+    anomaly,
   };
 }
 
-function appendCapacitySample(value, costUSD, percentDelta, atMs) {
-  const estimate = normalizedCapacityEstimate(value);
+function appendCapacitySample(value, costUSD, percentDelta, atMs, planType) {
+  const estimate = normalizedCapacityEstimate(value, planType);
   if (!(costUSD > 0.001 && percentDelta >= 0.05 && percentDelta <= 50)) return estimate;
   const fullCapacityUSD = costUSD / (percentDelta / 100);
   if (!(fullCapacityUSD > 0.01 && fullCapacityUSD < 100_000)) return estimate;
   return normalizedCapacityEstimate({
     samples: [...estimate.samples, { at: iso(atMs), fullCapacityUSD, costUSD, percentDelta }],
+  }, planType);
+}
+
+function classifyCapacityCohort(accountValues) {
+  const accounts = accountValues.map((account) => {
+    account.capacityEstimate = normalizedCapacityEstimate(account.capacityEstimate, account.planType);
+    return account;
   });
+  const byPlan = new Map();
+  for (const account of accounts) {
+    if (!account.planType) continue;
+    const rows = byPlan.get(account.planType) || [];
+    rows.push(account);
+    byPlan.set(account.planType, rows);
+  }
+  for (const peers of byPlan.values()) {
+    const changed = peers.filter((account) =>
+      ["change-detected", "below-community"].includes(account.capacityEstimate.anomaly.status));
+    if (changed.length >= 2) {
+      for (const account of changed) {
+        account.capacityEstimate.anomaly = { ...account.capacityEstimate.anomaly, status: "global-shift", scope: "global" };
+      }
+    } else if (changed.length === 1 && peers.some((account) => account !== changed[0] && account.capacityEstimate.sampleCount >= 4)) {
+      changed[0].capacityEstimate.anomaly = { ...changed[0].capacityEstimate.anomaly, status: "account-low", scope: "account" };
+    }
+  }
 }
 
 function compactAccountLabel(value) {
@@ -310,7 +419,7 @@ function normalizedAccountState(value, id) {
       millis(source.subscriptionRenewsAt) === null ? null : iso(millis(source.subscriptionRenewsAt)),
     subscriptionExpiresAt:
       millis(source.subscriptionExpiresAt) === null ? null : iso(millis(source.subscriptionExpiresAt)),
-    capacityEstimate: normalizedCapacityEstimate(source.capacityEstimate),
+    capacityEstimate: normalizedCapacityEstimate(source.capacityEstimate, source.planType),
     historyAccountKey: text(source.historyAccountKey) || null,
     usage,
     resetCredits: normalizedResetCreditInventory(source.resetCredits),
@@ -319,6 +428,7 @@ function normalizedAccountState(value, id) {
     lastPersonalReset: personalResets[personalResets.length - 1] || null,
     forecastNotification: object(source.forecastNotification) || {},
     behaviorNotification: object(source.behaviorNotification) || {},
+    capacityNotification: object(source.capacityNotification) || {},
   };
 }
 
@@ -1516,8 +1626,8 @@ function publicUsageSnapshot(value) {
   };
 }
 
-function publicCapacityEstimate(value) {
-  const estimate = normalizedCapacityEstimate(value);
+function publicCapacityEstimate(value, planType) {
+  const estimate = normalizedCapacityEstimate(value, planType);
   if (!Number.isFinite(estimate.estimateUSD)) return null;
   return {
     source: estimate.source,
@@ -1526,6 +1636,16 @@ function publicCapacityEstimate(value) {
     upperUSD: estimate.upperUSD,
     sampleCount: estimate.sampleCount,
     confidence: estimate.confidence,
+    community: estimate.community
+      ? {
+          estimateUSD: estimate.community.estimateUSD,
+          lowerUSD: estimate.community.lowerUSD,
+          upperUSD: estimate.community.upperUSD,
+          asOf: estimate.community.asOf,
+          evidence: estimate.community.evidence,
+        }
+      : null,
+    anomaly: estimate.anomaly || null,
   };
 }
 
@@ -1913,7 +2033,7 @@ function safePublicState(state, runtime) {
             Date.now() < millis(account.lapsedCycleResetsAt),
         }
       : null,
-    capacityEstimate: publicCapacityEstimate(account.capacityEstimate),
+    capacityEstimate: publicCapacityEstimate(account.capacityEstimate, account.planType),
     targetTrajectory: normalizedTargetTrajectory(account.targetTrajectory),
     usageSnapshot: publicUsageSnapshot(account.usage && account.usage.latest),
     usagePace: publicUsagePace(account.usage && account.usage.pace),
@@ -2104,12 +2224,14 @@ function inferDeadline(textValue, announcedAtMs) {
   // the deadline remains deterministic and does not depend on this Mac's zone.
   const tomorrowAt = value.match(
     /(?:around\s+|at\s+)?(\d{1,2})(?::(\d{2}))?\s*(?:am|pm)?\s*(pst|pdt|utc)\s+tomorrow/,
+  ) || value.match(
+    /tomorrow\s+(?:around\s+|at\s+)?(\d{1,2})(?::(\d{2}))?\s*(?:am|pm)?\s*(pst|pdt|utc)/,
   );
   if (tomorrowAt) {
     let clockHour = Number(tomorrowAt[1]);
     const clockMinute = Number(tomorrowAt[2] || 0);
     const meridiem = value.slice(tomorrowAt.index, tomorrowAt.index + tomorrowAt[0].length)
-      .match(/\b(am|pm)\b/);
+      .match(/(am|pm)/);
     if (meridiem && meridiem[1] === "pm" && clockHour < 12) clockHour += 12;
     if (meridiem && meridiem[1] === "am" && clockHour === 12) clockHour = 0;
     if (clockHour <= 23 && clockMinute <= 59) {
@@ -2125,6 +2247,22 @@ function inferDeadline(textValue, announcedAtMs) {
     }
   }
   return null;
+}
+
+function inferredDeadlineLabel(textValue) {
+  const value = String(textValue || "");
+  const patterns = [
+    /(?:next|within|over)\s+\d{1,3}\s+minutes?/i,
+    /(?:next|within|over)\s+\d{1,2}\s+hours?/i,
+    /next hour|within (?:the )?hour|hour or so/i,
+    /(?:around\s+|at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:pst|pdt|utc)\s+tomorrow/i,
+    /tomorrow\s+(?:around\s+|at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:pst|pdt|utc)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = value.match(pattern);
+    if (match) return match[0];
+  }
+  return "";
 }
 
 function eventID(value) {
@@ -2270,7 +2408,10 @@ function normalizeFeedEvent(value) {
       text(window.end_at) ||
       text(event.deadline_at) ||
       (inferredDeadline ? iso(inferredDeadline) : null),
-    windowLabel: text(window.localized_label) || text(window.label),
+    windowLabel:
+      text(window.localized_label) ||
+      text(window.label) ||
+      (inferredDeadline ? inferredDeadlineLabel(`${originalSummary} ${localizedSummary}`) : ""),
     summary: text(event.summary) || summary,
     localizedSummary: text(event.localized_summary) || "",
     url: /^https:\/\//.test(text(event.url)) ? text(event.url) : "",
@@ -2355,14 +2496,13 @@ function parseAtomEntries(xml) {
     const announcedAtMs = millis(element("updated"));
     if (announcedAtMs === null) continue;
     const summary = element("summary");
+    const inferredDeadline = inferDeadline(summary, announcedAtMs);
     const entry = {
       id: eventID(element("id")),
       announcedAt: iso(announcedAtMs),
       windowStartAt: null,
-      deadlineAt: inferDeadline(summary, announcedAtMs)
-        ? iso(inferDeadline(summary, announcedAtMs))
-        : null,
-      windowLabel: "",
+      deadlineAt: inferredDeadline ? iso(inferredDeadline) : null,
+      windowLabel: inferredDeadline ? inferredDeadlineLabel(summary) : "",
       summary,
       localizedSummary: "",
       url: link && /^https:\/\//.test(decodeEntities(link[1])) ? decodeEntities(link[1]) : "",
@@ -3527,7 +3667,28 @@ function createRuntime(logic, initialState) {
             costUpdate.deltaUSD,
             candidate.percentDelta,
             candidate.atMs,
+            account.planType,
           );
+        }
+      }
+
+      classifyCapacityCohort(Object.values(runtime.state.accountStates));
+
+      for (const account of Object.values(runtime.state.accountStates)) {
+        const anomaly = object(account.capacityEstimate && account.capacityEstimate.anomaly) || {};
+        const anomalyStatus = text(anomaly.status);
+        const previousStatus = text(account.capacityNotification && account.capacityNotification.status);
+        if (["account-low", "global-shift"].includes(anomalyStatus) && anomalyStatus !== previousStatus) {
+          if (!settings.startup) {
+            const ratio = Number(anomaly.ratio);
+            sendNativeNotification(
+              anomalyStatus === "account-low" ? "该账号有效容量疑似偏低" : "近期整体有效容量疑似变化",
+              `${compactAccountLabel(account.label)}：$${Math.round(account.capacityEstimate.estimateUSD)} API 等价${Number.isFinite(ratio) ? `，约为比较基线的 ${Math.round(ratio * 100)}%` : ""}。系统已用新容量重新规划。`,
+            );
+          }
+          account.capacityNotification = { status: anomalyStatus, at: iso(nowMs) };
+        } else if (["normal", "calibrating"].includes(anomalyStatus) && previousStatus) {
+          account.capacityNotification = { status: anomalyStatus, at: iso(nowMs) };
         }
       }
 
@@ -4205,6 +4366,9 @@ module.exports = {
   appendUsageSample,
   apiEquivalentCost,
   appendCapacitySample,
+  communityCapacityPrior,
+  classifyCapacityCohort,
+  inferredDeadlineLabel,
   normalizedCapacityEstimate,
   paceNotificationPlan,
   parseAtomEntries,

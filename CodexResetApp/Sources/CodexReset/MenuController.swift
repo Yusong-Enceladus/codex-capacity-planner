@@ -179,8 +179,13 @@ final class MenuController: NSObject, NSMenuDelegate {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         submenu.minimumWidth = Self.detailsWidth
-        submenu.addItem(self.makeDetailContentItem(section))
-        self.appendLinks(from: section.rows, to: submenu)
+        for (index, row) in section.rows.enumerated() {
+            if index > 0, submenu.items.last?.isSeparatorItem != true {
+                submenu.addItem(.separator())
+            }
+            submenu.addItem(self.makeDetailContentItem(DetailSection(title: section.title, rows: [row])))
+            self.appendLinks(from: [row], to: submenu)
+        }
         return submenu
     }
 

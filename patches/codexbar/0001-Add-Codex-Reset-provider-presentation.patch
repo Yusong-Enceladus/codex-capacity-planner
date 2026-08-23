@@ -1,7 +1,7 @@
-From 6f6105b73bcf48bad51f13194e5f84f94d7a1a1f Mon Sep 17 00:00:00 2001
+From bcd4eee0dea188d121c299a3e017281a573f51b4 Mon Sep 17 00:00:00 2001
 From: Yusong-Enceladus <175666848+Yusong-Enceladus@users.noreply.github.com>
 Date: Sat, 22 Aug 2026 22:36:49 -0700
-Subject: [PATCH] Add Codex Capacity Planner provider presentation
+Subject: [PATCH] Add Codex Reset provider presentation
 
 ---
  Sources/CodexBar/AlternatingTimeText.swift    |  65 +++
@@ -10,11 +10,11 @@ Subject: [PATCH] Add Codex Capacity Planner provider presentation
  .../ProviderSubmenuDetailsContent.swift       |  65 +++
  .../CodexBar/Resources/CodexResetCardIcon.png | Bin 0 -> 45074 bytes
  .../CodexBar/StatusItemController+Menu.swift  |   5 +-
- .../StatusItemController+UserPlugins.swift    | 497 +++++++++++++++++-
+ .../StatusItemController+UserPlugins.swift    | 513 +++++++++++++++++-
  Sources/CodexBarCLI/CLIPayloads.swift         |  13 +
  Sources/CodexBarCLI/CLIUsageCommand.swift     |  10 +
  .../Plugins/ProviderPluginManifest.swift      |  34 ++
- .../ProviderPluginSnapshotMapper.swift        | 208 +++++++-
+ .../ProviderPluginSnapshotMapper.swift        | 208 ++++++-
  .../ProviderDecisionProgress.swift            | 131 +++++
  .../CodexBarCore/ProviderDetailSection.swift  |  25 +-
  .../ProviderSubmenuDetailSection.swift        | 201 +++++++
@@ -27,7 +27,7 @@ Subject: [PATCH] Add Codex Capacity Planner provider presentation
  .../ProviderSubmenuDetailSectionTests.swift   |  70 +++
  .../UserProviderPluginTests.swift             |  48 ++
  UPSTREAM.md                                   |  12 +
- 23 files changed, 1619 insertions(+), 22 deletions(-)
+ 23 files changed, 1635 insertions(+), 22 deletions(-)
  create mode 100644 Sources/CodexBar/AlternatingTimeText.swift
  create mode 100644 Sources/CodexBar/ProviderSubmenuDetailsContent.swift
  create mode 100644 Sources/CodexBar/Resources/CodexResetCardIcon.png
@@ -1112,7 +1112,7 @@ index 3278130..e10ba48 100644
  
      func addActionableSections(
 diff --git a/Sources/CodexBar/StatusItemController+UserPlugins.swift b/Sources/CodexBar/StatusItemController+UserPlugins.swift
-index 9e51e75..7f61e08 100644
+index 9e51e75..720efa4 100644
 --- a/Sources/CodexBar/StatusItemController+UserPlugins.swift
 +++ b/Sources/CodexBar/StatusItemController+UserPlugins.swift
 @@ -4,8 +4,11 @@ import CodexBarCore
@@ -1150,7 +1150,7 @@ index 9e51e75..7f61e08 100644
                  containsInteractiveControls: true))
              if index < plugins.count - 1 {
                  menu.addItem(.separator())
-@@ -36,6 +46,225 @@ extension StatusItemController {
+@@ -36,6 +46,234 @@ extension StatusItemController {
          }
          menu.addItem(.separator())
      }
@@ -1283,8 +1283,17 @@ index 9e51e75..7f61e08 100644
 +        let menu = NSMenu()
 +        menu.autoenablesItems = false
 +        menu.minimumWidth = width
-+        self.addCodexResetDetailContent(section, to: menu, width: width)
-+        self.addCodexResetLinks(section.rows, to: menu)
++        for (index, row) in section.rows.enumerated() {
++            if index > 0, !menu.items.isEmpty, menu.items.last?.isSeparatorItem != true {
++                menu.addItem(.separator())
++            }
++            guard let rowSection = try? ProviderSubmenuDetailSection(
++                title: section.title,
++                rows: [row])
++            else { continue }
++            self.addCodexResetDetailContent(rowSection, to: menu, width: width)
++            self.addCodexResetLinks([row], to: menu)
++        }
 +        return menu
 +    }
 +
@@ -1376,7 +1385,7 @@ index 9e51e75..7f61e08 100644
  }
  
  struct UserPluginQuotaPresentation: Equatable {
-@@ -51,6 +280,120 @@ struct UserPluginQuotaPresentation: Equatable {
+@@ -51,6 +289,120 @@ struct UserPluginQuotaPresentation: Equatable {
      }
  }
  
@@ -1497,7 +1506,7 @@ index 9e51e75..7f61e08 100644
  private struct UserPluginMenuCardView: View {
      let plugin: UserProviderPlugin
      let snapshot: UsageSnapshot?
-@@ -63,14 +406,10 @@ private struct UserPluginMenuCardView: View {
+@@ -63,14 +415,10 @@ private struct UserPluginMenuCardView: View {
      var body: some View {
          VStack(alignment: .leading, spacing: 9) {
              HStack(spacing: 8) {
@@ -1514,7 +1523,7 @@ index 9e51e75..7f61e08 100644
                          .font(.caption2)
                          .foregroundStyle(.secondary)
                  }
-@@ -98,7 +437,15 @@ private struct UserPluginMenuCardView: View {
+@@ -98,7 +446,15 @@ private struct UserPluginMenuCardView: View {
                      }
                      .font(.caption)
                  }
@@ -1531,7 +1540,7 @@ index 9e51e75..7f61e08 100644
                      Divider()
                      ProviderDetailSectionsContent(sections: snapshot.details, chartColor: self.tint)
                  }
-@@ -116,6 +463,30 @@ private struct UserPluginMenuCardView: View {
+@@ -116,6 +472,30 @@ private struct UserPluginMenuCardView: View {
          .frame(width: self.width, alignment: .leading)
      }
  
@@ -1562,7 +1571,7 @@ index 9e51e75..7f61e08 100644
      @ViewBuilder
      private func identity(_ identity: ProviderIdentitySnapshot) -> some View {
          if identity.accountEmail != nil || identity.accountOrganization != nil || identity.loginMethod != nil
-@@ -171,12 +542,120 @@ private struct UserPluginMenuCardView: View {
+@@ -171,12 +551,127 @@ private struct UserPluginMenuCardView: View {
              blue: Double(value & 0xFF) / 255)
      }
  
@@ -1672,8 +1681,15 @@ index 9e51e75..7f61e08 100644
 +                                    .font(.caption.weight(.medium))
 +                                    .lineLimit(2)
 +                                    .fixedSize(horizontal: false, vertical: true)
++                                if let secondary = row.secondaryValue {
++                                    Text(secondary)
++                                        .font(.caption2)
++                                        .foregroundStyle(.secondary)
++                                        .lineLimit(2)
++                                        .fixedSize(horizontal: false, vertical: true)
++                                }
 +                            }
-+                            .frame(maxWidth: .infinity, minHeight: 40, alignment: .topLeading)
++                            .frame(maxWidth: .infinity, minHeight: 50, alignment: .topLeading)
 +                            .accessibilityElement(children: .combine)
 +                        }
 +                    }
@@ -3097,9 +3113,9 @@ index 0000000..3adfc64
 +- Base commit: `fc57a317cee4a8f84962c62c45e4502085f6fc79`
 +- License: MIT, preserved in [LICENSE](LICENSE)
 +
-+This branch contains local modifications for Codex Capacity Planner provider details,
++This branch contains local modifications for Codex Reset provider details,
 +shared decision-progress presentation, reset-credit state, and synchronized
 +menu content. Its history was reconstructed from the exact upstream tag so the
-+Codex Capacity Planner commit can be reviewed and future upstream merges remain explicit.
++Codex Reset commit can be reviewed and future upstream merges remain explicit.
 -- 
 2.50.1 (Apple Git-155)

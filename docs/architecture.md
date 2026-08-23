@@ -68,3 +68,30 @@ schedule displacement caused by redemption.
 The planner must form a high-value redemption node before expiry by arranging
 existing valuable work. It must not wait until the final moment, manufacture
 busywork, or treat expiry as successful planning.
+
+## Real capacity and account scheduling
+
+Plan labels and raw percentages are not comparable capacity units. Each known
+5x/20x account starts with a dated, low-confidence community API-equivalent
+prior. Valid local cost/quota segments progressively calibrate that prior; six
+accepted samples switch the account to a robust personal estimate. See
+[`capacity-baselines.md`](capacity-baselines.md) for the values and evidence.
+
+The monitor also compares the current estimate with the account's earlier
+same-plan samples, locally observed same-plan peers, and the community range.
+It distinguishes an account-specific low effective capacity from a cohort-wide
+metering shift, but never infers provider intent.
+
+For multiple accounts, the scheduling quantity is:
+
+```text
+capacity at risk = adopted full API-equivalent capacity
+                 × projected remaining percent at the next free reset
+```
+
+The next free reset is the earlier of the account's natural boundary and a
+verified explicit forced-reset deadline. A usable current account is changed
+only when another named account has a materially earlier, material capacity
+loss. The recommendation carries the deadline, both loss values, capacity
+source, and confidence. A blocked current account may still fall back directly
+to any usable account.

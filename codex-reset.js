@@ -47,6 +47,72 @@ function codexResetPlanLabel(value) {
   return plan ? plan.toUpperCase() : "套餐未知";
 }
 
+function codexResetCommunityCapacityPrior(value) {
+  const label = codexResetPlanLabel(value);
+  if (label === "5x") {
+    return {
+      source: "community-prior",
+      estimateUSD: 637.5,
+      lowerUSD: 500,
+      upperUSD: 800,
+      sampleCount: 0,
+      confidence: "low",
+      community: {
+        estimateUSD: 637.5,
+        lowerUSD: 500,
+        upperUSD: 800,
+        asOf: "2026-07-23",
+        evidence: "community-regression-pro-5x-2026-07",
+      },
+      anomaly: { status: "baseline", scope: "none" },
+    };
+  }
+  if (label === "20x") {
+    return {
+      source: "community-prior",
+      estimateUSD: 3000,
+      lowerUSD: 2400,
+      upperUSD: 3600,
+      sampleCount: 0,
+      confidence: "low",
+      community: {
+        estimateUSD: 3000,
+        lowerUSD: 2400,
+        upperUSD: 3600,
+        asOf: "2026-07-23",
+        evidence: "community-reports-pro-20x-2026-07",
+      },
+      anomaly: { status: "baseline", scope: "none" },
+    };
+  }
+  return null;
+}
+
+function codexResetCapacityEstimate(receiverAccount, planType) {
+  const local = codexResetObject(receiverAccount && receiverAccount.capacityEstimate);
+  return local && codexResetFinite(local.estimateUSD) !== null
+    ? local
+    : codexResetCommunityCapacityPrior(planType);
+}
+
+function codexResetCapacitySourceLabel(value) {
+  const source = codexResetText(value);
+  if (source === "community-prior") return "社区基线";
+  if (source === "community-calibrated") return "正在用个人数据校准";
+  if (source === "api-equivalent-local") return "个人实测";
+  return "容量来源未知";
+}
+
+function codexResetCapacityAnomalyLabel(value) {
+  const anomaly = codexResetObject(value);
+  const status = codexResetText(anomaly && anomaly.status);
+  if (status === "account-low") return "该账号有效容量疑似偏低";
+  if (status === "global-shift") return "近期整体有效容量疑似变化";
+  if (["change-detected", "below-community"].includes(status)) return "有效容量变化待确认";
+  if (status === "calibrating") return "容量仍在校准";
+  return null;
+}
+
 function codexResetHTTPSURL(value) {
   const text = codexResetText(value);
   return /^https:\/\/[^\s]+$/i.test(text) ? text : "";
@@ -1504,7 +1570,7 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
           })
         : null;
     const accountPace = codexResetPaceModel(accountReceiver || {});
-    const capacityEstimate = codexResetObject(accountReceiver && accountReceiver.capacityEstimate);
+    const capacityEstimate = codexResetCapacityEstimate(accountReceiver, accountUsage.planType);
     const fullCapacityUSD = codexResetFinite(capacityEstimate && capacityEstimate.estimateUSD);
     const observedRate =
       codexResetFinite(accountPace && accountPace.long && accountPace.long.ratePerHour) ??
@@ -1513,6 +1579,30 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
       accountDecision && observedRate !== null && observedRate > 0.01
         ? accountDecision.additionalTotal / observedRate
         : null;
+    const cycleStartMs = accountUsage.resetsAtMs - accountUsage.windowMinutes * 60_000;
+    const elapsedHours = Math.max(1, (nowMs - cycleStartMs) / 3_600_000);
+    const cycleAverageRate = codexResetClamp(accountUsage.usedPercent / elapsedHours, 0, 20);
+    const projectionRate = observedRate === null ? cycleAverageRate : observedRate;
+    const explicitForcedDeadlineMs =
+      forecast && forecast.signal && forecast.signal.level === "explicit" &&
+      Number.isFinite(forecast.signal.deadlineMs) && forecast.signal.deadlineMs > nowMs
+        ? forecast.signal.deadlineMs
+        : null;
+    const freeResetDeadlineMs = explicitForcedDeadlineMs !== null
+      ? Math.min(accountUsage.resetsAtMs, explicitForcedDeadlineMs)
+      : accountUsage.resetsAtMs;
+    const freeResetSource = explicitForcedDeadlineMs !== null && explicitForcedDeadlineMs < accountUsage.resetsAtMs
+      ? "announced-forced"
+      : "natural";
+    const hoursToFreeReset = Math.max(0, (freeResetDeadlineMs - nowMs) / 3_600_000);
+    const projectedRemainingAtFreeResetPercent = codexResetClamp(
+      100 - accountUsage.usedPercent - projectionRate * hoursToFreeReset,
+      0,
+      100,
+    );
+    const atRiskCapacityUSD = fullCapacityUSD === null
+      ? null
+      : fullCapacityUSD * projectedRemainingAtFreeResetPercent / 100;
     return {
       id: accountUsage.accountId,
       label: accountUsage.accountLabel,
@@ -1528,6 +1618,8 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
       pace: accountPace,
       capacityEstimate,
       fullCapacityUSD,
+      capacitySource: capacityEstimate && capacityEstimate.source,
+      capacityConfidence: capacityEstimate && capacityEstimate.confidence,
       remainingCapacityUSD:
         fullCapacityUSD === null ? null : fullCapacityUSD * (100 - accountUsage.usedPercent) / 100,
       targetGapCapacityUSD:
@@ -1550,22 +1642,23 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
         accountUsage.usedPercent < 99 &&
         (!accountUsage.shortWindow || accountUsage.shortWindow.usedPercent < 99),
       requiredWorkHours,
-      // Cross-account percentages are not comparable. Until this account has
-      // a learned API-equivalent capacity, it cannot outrank an available
-      // current account merely because its percentage gap is larger.
-      urgency:
-        accountDecision && accountDecision.additionalTotal > 0 && fullCapacityUSD !== null
-          ? (fullCapacityUSD * accountDecision.additionalTotal / 100) /
-            Math.max(0.25, accountDecision.horizonHours)
-          : null,
+      projectionRate,
+      freeResetDeadlineMs,
+      freeResetSource,
+      hoursToFreeReset,
+      projectedRemainingAtFreeResetPercent,
+      atRiskCapacityUSD,
+      lossUrgency: atRiskCapacityUSD === null
+        ? null
+        : atRiskCapacityUSD / Math.max(1, hoursToFreeReset),
     };
   });
   const activeAccount = accountPlans.find((item) => item.live) || null;
   const selectedAccount = accountPlans.find((item) => item.selected) || null;
   const rankedAccounts = accountPlans
-    .filter((item) => item.decision && item.usable && Number.isFinite(item.urgency))
+    .filter((item) => item.decision && item.usable && Number.isFinite(item.lossUrgency))
     .slice()
-    .sort((left, right) => right.urgency - left.urgency);
+    .sort((left, right) => right.lossUrgency - left.lossUrgency);
   const blockedFallback = activeAccount && !activeAccount.usable
     ? accountPlans
         .filter((item) => item.id !== activeAccount.id && item.decision && item.usable)
@@ -1577,13 +1670,23 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
           return (100 - right.usage.usedPercent) - (100 - left.usage.usedPercent);
         })[0] || null
     : null;
-  const capacityPriority = rankedAccounts[0] || null;
+  const capacityPriority = activeAccount
+    ? rankedAccounts.find((candidate) => {
+        if (candidate.id === activeAccount.id || candidate.atRiskCapacityUSD === null) return false;
+        const materialLoss = candidate.atRiskCapacityUSD >= Math.max(10, candidate.fullCapacityUSD * 0.1);
+        const earlierExpiry = candidate.freeResetDeadlineMs + 2 * 3_600_000 < activeAccount.freeResetDeadlineMs;
+        const sameForcedDeadline =
+          candidate.freeResetSource === "announced-forced" &&
+          activeAccount.freeResetSource === "announced-forced" &&
+          Math.abs(candidate.freeResetDeadlineMs - activeAccount.freeResetDeadlineMs) <= 60_000 &&
+          candidate.atRiskCapacityUSD > Math.max(5, (activeAccount.atRiskCapacityUSD || 0) * 1.2);
+        return materialLoss && candidate.hoursToFreeReset <= 72 && (earlierExpiry || sameForcedDeadline);
+      }) || null
+    : null;
   const recommendedAccount = blockedFallback || capacityPriority;
   const switchReason = blockedFallback
     ? "current-blocked"
-    : activeAccount && capacityPriority && activeAccount.id !== capacityPriority.id &&
-        Number.isFinite(activeAccount.urgency) &&
-        capacityPriority.urgency > Math.max(0.05, activeAccount.urgency) * 1.2
+    : activeAccount && capacityPriority && activeAccount.id !== capacityPriority.id
       ? "capacity-at-risk"
       : null;
   const devicePlan = {
@@ -1597,6 +1700,17 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
     recommendedAccountId: recommendedAccount && recommendedAccount.id,
     shouldSwitch: Boolean(accountPlans.length > 1 && switchReason),
     switchReason,
+    switchProof: switchReason === "capacity-at-risk" && activeAccount && capacityPriority
+      ? {
+          currentAccountId: activeAccount.id,
+          currentAtRiskCapacityUSD: activeAccount.atRiskCapacityUSD,
+          recommendedAtRiskCapacityUSD: capacityPriority.atRiskCapacityUSD,
+          recommendedResetAtMs: capacityPriority.freeResetDeadlineMs,
+          recommendedResetSource: capacityPriority.freeResetSource,
+          capacitySource: capacityPriority.capacitySource,
+          capacityConfidence: capacityPriority.capacityConfidence,
+        }
+      : null,
   };
   const subscriptionAdvice = accountPlans
     .map((candidate) => {
@@ -1900,7 +2014,7 @@ defineProvider({
             ? `CodexBar 当前查看：${selectedAccount.label} · ${selectedAccount.planLabel}`
             : currentAccount.fullCapacityUSD === null
               ? "完整容量正在按本机 API 等价成本学习；套餐倍率不参与计算"
-              : `完整周容量约 $${currentAccount.fullCapacityUSD.toFixed(2)} API 等价 · ${currentAccount.capacityEstimate.confidence} 置信度`,
+              : `完整周容量约 $${currentAccount.fullCapacityUSD.toFixed(0)} API 等价 · ${codexResetCapacitySourceLabel(currentAccount.capacitySource)}`,
       };
     }
 
@@ -2027,9 +2141,12 @@ defineProvider({
         : null;
       if (recommended) {
         recommendationValue = `切到 ${recommended.label} · ${recommended.planLabel} 继续工作`;
+        const proof = codexResetObject(model.devicePlan.switchProof);
         recommendationSecondary = model.devicePlan.switchReason === "current-blocked"
           ? "当前账号额度或短窗口已经阻塞；该账号仍可工作。切号只需重新登录，不会自动执行"
-          : "按本机学习到的 API 等价容量，该账号在更早免费刷新前有更多真实容量会被清零；不会自动切号";
+          : proof
+            ? `${utc8(proof.recommendedResetAtMs)} 免费刷新前预计仍有 $${proof.recommendedAtRiskCapacityUSD.toFixed(0)} API 等价容量会被清掉；当前账号对应约 $${(proof.currentAtRiskCapacityUSD || 0).toFixed(0)} · ${codexResetCapacitySourceLabel(proof.capacitySource)}，不会自动切号`
+            : "另一个账号在更早免费刷新前有更多真实容量会被清掉；不会自动切号";
       } else if (model.bankedPlan && model.bankedPlan.status === "interruption-now") {
         recommendationValue = `所有账号都已阻塞，使用 ${model.bankedPlan.accountLabel || "当前账号"} 的重置券`;
         recommendationSecondary = "免费账户容量与免费刷新均不可立即使用；此时兑换是恢复工作的下一环，只提示、不自动兑换";
@@ -2090,11 +2207,16 @@ defineProvider({
     }
 
     if (showSessionSuggestions && sessionCandidates.length) {
-      actionRows.push({
-        label: "建议续跑",
-        value: sessionMainSummary(sessionCandidates, sessionCandidates.length),
-        secondaryValue: "按最近活动、本周期本机用量与明确 Goal 状态排序；是否已完成由你判断",
-      });
+      for (const [index, candidate] of sessionCandidates.slice(0, 5).entries()) {
+        actionRows.push({
+          label: `任务 ${index + 1}`,
+          value: clip(candidate.title, 120),
+          secondaryValue: clip(
+            [candidate.reason, candidate.project || null].filter(Boolean).join(" · "),
+            120,
+          ),
+        });
+      }
     }
     if (model.subscriptionAdvice) {
       actionRows.push({
@@ -2106,7 +2228,13 @@ defineProvider({
     if (forecast.signal.level !== "none") {
       actionRows.push({
         label: "重置",
-        value: signalLabel,
+        value: forecast.signal.deadlineMs
+          ? `${signalLabel} · 约 ${utc8(forecast.signal.deadlineMs)}`
+          : signalLabel,
+        relativeTimeAt: forecast.signal.deadlineMs
+          ? new Date(forecast.signal.deadlineMs).toISOString()
+          : null,
+        relativeTimePrefix: forecast.signal.deadlineMs ? `${signalLabel} · 约 ` : null,
         secondaryValue: signalSecondary(
           forecast.signal.summary,
           forecast.signal.deadlineMs
@@ -2140,19 +2268,35 @@ defineProvider({
       actionRows.push(creditSummaryRow);
     }
     if (accountSummaryRow) actionRows.push(accountSummaryRow);
+    const capacityAlert = currentAccount && codexResetCapacityAnomalyLabel(
+      currentAccount.capacityEstimate && currentAccount.capacityEstimate.anomaly,
+    );
+    if (capacityAlert && !["容量仍在校准"].includes(capacityAlert)) {
+      const ratio = codexResetFinite(
+        currentAccount.capacityEstimate && currentAccount.capacityEstimate.anomaly &&
+        currentAccount.capacityEstimate.anomaly.ratio,
+      );
+      actionRows.push({
+        label: "容量变化",
+        value: capacityAlert,
+        secondaryValue: ratio === null
+          ? "已同时比较个人历史、同档账号和社区同期范围"
+          : `当前有效容量约为比较基线的 ${percent(ratio * 100, 0)}；已排除刷新与套餐切换样本`,
+      });
+    }
     const mainRowPriority = {
       建议: 0,
       建议暂不可用: 0,
-      建议续跑: 1,
       订阅: 1,
       账户: 2,
+      容量变化: 2,
       可用重置: 3,
       重置: 4,
     };
     actionRows.sort(
       (left, right) =>
-        (mainRowPriority[left.label] === undefined ? 9 : mainRowPriority[left.label]) -
-        (mainRowPriority[right.label] === undefined ? 9 : mainRowPriority[right.label]),
+        (left.label.startsWith("任务 ") ? 1 : (mainRowPriority[left.label] === undefined ? 9 : mainRowPriority[left.label])) -
+        (right.label.startsWith("任务 ") ? 1 : (mainRowPriority[right.label] === undefined ? 9 : mainRowPriority[right.label])),
     );
 
     const submenuEventRows = [];
@@ -2174,11 +2318,51 @@ defineProvider({
               ? "承诺概率下限与历史模型取较高值，不当作已经到账"
               : "普通暗示只展示，不擅自给概率加权",
       });
+      if (forecast.signal.deadlineMs) {
+        submenuEventRows.push({
+          label: "官方预计时间",
+          value: `约 ${utc8(forecast.signal.deadlineMs)}`,
+          relativeTimeAt: new Date(forecast.signal.deadlineMs).toISOString(),
+          relativeTimePrefix: "约 ",
+          group: "current",
+          secondaryValue: forecast.signal.windowLabel
+            ? `官方原始表述：${forecast.signal.windowLabel}；保留近似含义，不伪造分钟精度`
+            : "由官方消息中的日期、时间和时区换算；保留近似含义",
+        });
+      }
+      if (deliveryValues.length) {
+        submenuEventRows.push({
+          label: "个人到账",
+          value: `${deliveredAccounts}/${deliveryValues.length} 个账号已确认`,
+          group: "current",
+          secondaryValue: Object.entries(accountDelivery)
+            .map(([accountID, state]) => {
+              const candidate = model.accounts.find((item) => item.id === accountID);
+              return `${candidate ? candidate.label : "账号"}：${state === "landed" ? "已到账" : "等待到账"}`;
+            })
+            .join(" · "),
+        });
+      }
+      if (model.decision) {
+        submenuEventRows.push({
+          label: "对当前计划的影响",
+          value: `目标已用 ${percent(model.decision.targetUsed, 1)} · 当前已用 ${percent(model.usage.usedPercent, 1)}`,
+          group: "current",
+          secondaryValue: forecast.signal.deadlineMs
+            ? "系统使用同一个官方截止点计算红线、任务建议和跨账号容量损失"
+            : "官方没有提供时间，因此不生成公告倒计时；只保留明确公告状态",
+        });
+      }
     }
     if (forecast.signal.level !== "none") {
       submenuEventRows.push({
         label: "强制重置公告",
-        value: clip(forecast.signal.summary, 1900),
+        value: clip([
+          forecast.signal.summary,
+          forecast.signal.localizedSummary && forecast.signal.localizedSummary !== forecast.signal.summary
+            ? `中文摘要：${forecast.signal.localizedSummary}`
+            : null,
+        ].filter(Boolean).join("\n\n"), 1900),
         group: "official",
         secondaryValue: [
           `发布 ${utc8(forecast.signal.atMs)}`,
@@ -2187,19 +2371,8 @@ defineProvider({
         ]
           .filter(Boolean)
           .join(" · "),
-        link: forecast.signal.url ? { label: "打开 Tibo 原帖", url: forecast.signal.url } : null,
+        link: forecast.signal.url ? { label: "打开这条 Tibo 原帖", url: forecast.signal.url } : null,
       });
-      if (
-        forecast.signal.localizedSummary &&
-        forecast.signal.localizedSummary !== forecast.signal.summary
-      ) {
-        submenuEventRows.push({
-          label: "中文摘要",
-          value: clip(forecast.signal.localizedSummary, 1900),
-          group: "official",
-          secondaryValue: "来自 codex-reset.com 的翻译",
-        });
-      }
     }
     if (bankedCampaign) {
       const campaignDelivery = Object.values(
@@ -2225,25 +2398,19 @@ defineProvider({
         },
         {
           label: "重置券发放公告",
-          value: clip(bankedCampaign.summary || bankedCampaign.localizedSummary, 1900),
+          value: clip([
+            bankedCampaign.summary || bankedCampaign.localizedSummary,
+            bankedCampaign.localizedSummary && bankedCampaign.localizedSummary !== bankedCampaign.summary
+              ? `中文摘要：${bankedCampaign.localizedSummary}`
+              : null,
+          ].filter(Boolean).join("\n\n"), 1900),
           group: "official",
           secondaryValue: `最新公告 ${utc8(stateTime(bankedCampaign.latestEventAt || bankedCampaign.announcedAt))}`,
           link: bankedCampaign.url
-            ? { label: "打开 Tibo 原帖", url: bankedCampaign.url }
+            ? { label: "打开这条 Tibo 原帖", url: bankedCampaign.url }
             : null,
         },
       );
-      if (
-        bankedCampaign.localizedSummary &&
-        bankedCampaign.localizedSummary !== bankedCampaign.summary
-      ) {
-        submenuEventRows.push({
-          label: "中文摘要",
-          value: clip(bankedCampaign.localizedSummary, 1900),
-          group: "official",
-          secondaryValue: "来自 codex-reset.com 的翻译",
-        });
-      }
     }
     const resetHistory = (
       currentAccount && Array.isArray(currentAccount.personalResets)
@@ -2379,10 +2546,10 @@ defineProvider({
                 )}`
             : "账号额度暂不可规划",
           secondaryValue: account.decision
-            ? `最晚 ${utc8(account.usage.resetsAtMs)} 自动刷新 · ${
+            ? `${account.freeResetSource === "announced-forced" ? "明确强制重置" : "自然刷新"} ${utc8(account.freeResetDeadlineMs)} · ${
                 account.fullCapacityUSD === null
                   ? "API 等价容量学习中"
-                  : `完整容量约 $${account.fullCapacityUSD.toFixed(2)}，剩余约 $${account.remainingCapacityUSD.toFixed(2)}`
+                  : `完整容量约 $${account.fullCapacityUSD.toFixed(0)}，届时预计被清掉约 $${account.atRiskCapacityUSD.toFixed(0)} · ${codexResetCapacitySourceLabel(account.capacitySource)}`
               }`
             : "账号身份已隔离；等待精确且新鲜的额度数据",
         });
@@ -2400,16 +2567,47 @@ defineProvider({
     const behavior = model.behavior;
     const behaviorPrediction = behavior && behavior.prediction;
     if (currentAccount) {
+      const community = codexResetObject(
+        currentAccount.capacityEstimate && currentAccount.capacityEstimate.community,
+      );
+      const anomalyLabel = codexResetCapacityAnomalyLabel(
+        currentAccount.capacityEstimate && currentAccount.capacityEstimate.anomaly,
+      );
       submenuForecastRows.push({
         label: "账号真实容量",
         value:
           currentAccount.fullCapacityUSD === null
             ? "正在收集 API 等价成本与额度变化的对应样本"
-            : `完整周期约 $${currentAccount.fullCapacityUSD.toFixed(2)} · 剩余约 $${currentAccount.remainingCapacityUSD.toFixed(2)} API 等价`,
+            : `完整周期约 $${currentAccount.fullCapacityUSD.toFixed(0)} · 剩余约 $${currentAccount.remainingCapacityUSD.toFixed(0)} API 等价`,
         secondaryValue:
           currentAccount.fullCapacityUSD === null
-            ? "需要同一账号、同一周期内的本机成本增量与额度增量；不会使用界面上的 5x/20x 代替容量"
-            : `完整容量 = API 等价用量 ÷ 额度已用比例 · ${currentAccount.capacityEstimate.sampleCount} 个有效样本 · ${currentAccount.capacityEstimate.confidence} 置信度`,
+            ? "当前套餐缺少可靠社区样本；等待同一账号、同一周期内的本机成本与额度增量"
+            : `${codexResetCapacitySourceLabel(currentAccount.capacitySource)} · 完整容量 = API 等价用量 ÷ 额度下降比例 · ${currentAccount.capacityEstimate.sampleCount || 0} 个有效样本 · ${currentAccount.capacityEstimate.confidence} 置信度`,
+      });
+      if (community) {
+        submenuForecastRows.push({
+          label: "社区对照",
+          value: `$${community.lowerUSD.toFixed(0)}–$${community.upperUSD.toFixed(0)} · 中心 $${community.estimateUSD.toFixed(0)}`,
+          secondaryValue: `基线日期 ${community.asOf || "未知"} · 仅用于冷启动和异常对照；个人样本充分后不再主导估算`,
+        });
+      }
+      if (anomalyLabel) {
+        const anomaly = currentAccount.capacityEstimate && currentAccount.capacityEstimate.anomaly;
+        const ratio = codexResetFinite(anomaly && anomaly.ratio);
+        submenuForecastRows.push({
+          label: "容量变化判断",
+          value: anomalyLabel,
+          secondaryValue: ratio === null
+            ? "正在比较个人历史、同档账号和同期社区范围"
+            : `当前约为比较基线的 ${percent(ratio * 100, 0)}；只描述有效容量差异，不推断服务端动机`,
+        });
+      }
+      submenuForecastRows.push({
+        label: "下次免费刷新损失",
+        value: currentAccount.atRiskCapacityUSD === null
+          ? "等待真实容量估算"
+          : `预计被清掉 $${currentAccount.atRiskCapacityUSD.toFixed(0)} · 剩余 ${percent(currentAccount.projectedRemainingAtFreeResetPercent, 1)}`,
+        secondaryValue: `${currentAccount.freeResetSource === "announced-forced" ? "明确强制重置" : "自然刷新"} ${utc8(currentAccount.freeResetDeadlineMs)} · 用于多账号排序，不比较裸百分比`,
       });
     }
     if (model.subscriptionAdvice) {

@@ -113,6 +113,7 @@ private enum ResetGalleryFixtures {
         case "decisions": "建议状态机"
         case "credits": "重置券状态机"
         case "forced": "强制重置状态机"
+        case "capacity": "真实容量与多账号状态机"
         default: "刷新历史与订阅边界"
         }
     }
@@ -122,6 +123,7 @@ private enum ResetGalleryFixtures {
         case "decisions": self.decisionScenarios
         case "credits": self.creditScenarios
         case "forced": self.forcedScenarios
+        case "capacity": self.capacityScenarios
         default: self.historyScenarios
         }
     }
@@ -244,7 +246,12 @@ private enum ResetGalleryFixtures {
                 snapshot: self.snapshot(
                     action: "续跑近期任务，仍不足时开启 Fast",
                     actionSecondary: "目标 78% 在预计 50%–65% 右侧",
-                    extraMain: [self.row("重置", "下次自然刷新 · \(self.natural)")],
+                    extraMain: [
+                        self.row("任务 1", "完成容量异常状态机", "Goal 仍在进行 · CodexReset"),
+                        self.row("任务 2", "补齐重置公告详情", "本周期最近活跃 · CodexReset"),
+                        self.row("任务 3", "验证独立 App 与 CodexBar", "已置顶 · CodexReset"),
+                        self.row("重置", "下次自然刷新 · \(self.natural)"),
+                    ],
                     progress: self.progress(current: 42, target: 78, lower: 50, median: 58, upper: 65),
                     why: self.whyRows(
                         current: "已用 42% · 此刻目标 55%",
@@ -446,6 +453,63 @@ private enum ResetGalleryFixtures {
                     reset: [self.row("下次自然刷新", self.natural, "同档续费不会改变此周期", group: "current")]),
                 detail: "重置", groups: ["current"]),
         ]
+    }
+
+    static var capacityScenarios: [ResetGalleryScenario] {
+        [
+            self.capacityScenario(
+                "community", title: "社区基线冷启动", phase: "低可信度", tint: .gray,
+                action: "保持当前节奏",
+                capacity: "完整周期约 $638 · 社区基线",
+                comparison: "社区 5x 范围 $500–$800 · 尚无个人样本",
+                conclusion: "先用于规划；积累本机样本后自动校准"),
+            self.capacityScenario(
+                "calibrating", title: "个人数据正在接管", phase: "校准中", tint: .cyan,
+                action: "保持当前节奏",
+                capacity: "完整周期约 $621 · 正在用个人数据校准",
+                comparison: "4 个有效样本 · 社区权重正在下降",
+                conclusion: "继续收集；不因单次任务判断降额"),
+            self.capacityScenario(
+                "account-low", title: "单账号有效容量偏低", phase: "需关注", tint: .orange,
+                action: "按较低实测容量重新安排任务",
+                capacity: "完整周期约 $438 · 个人实测",
+                comparison: "约为自身历史和同档账号基线的 69%",
+                conclusion: "疑似该账号容量偏低；只描述差异，不推断服务端动机"),
+            self.capacityScenario(
+                "switch-proof", title: "跨账号切换有容量证据", phase: "建议切换", tint: .purple,
+                action: "切到副账号 · 5x 继续工作",
+                capacity: "副账号 18 小时后自然刷新",
+                comparison: "预计被清掉 $86；当前账号同期对应约 $14",
+                conclusion: "先使用即将免费清零的真实容量；不会自动切号"),
+        ]
+    }
+
+    private static func capacityScenario(
+        _ id: String,
+        title: String,
+        phase: String,
+        tint: Color,
+        action: String,
+        capacity: String,
+        comparison: String,
+        conclusion: String) -> ResetGalleryScenario
+    {
+        self.scenario(
+            id, title, phase: phase, explanation: conclusion, tint: tint,
+            snapshot: self.snapshot(
+                action: action,
+                actionSecondary: conclusion,
+                extraMain: [self.row("容量依据", capacity, comparison)],
+                progress: self.progress(current: 51, target: 70, lower: 62, median: 68, upper: 74),
+                why: [
+                    self.row("当前", capacity, group: "summary"),
+                    self.row("对比", comparison, group: "summary"),
+                    self.row("因此", action, conclusion, group: "summary"),
+                    self.row("账号真实容量", capacity, "API 等价用量 ÷ 额度下降比例", group: "data"),
+                    self.row("社区对照", comparison, "社区仅用于冷启动和异常对照", group: "data"),
+                ],
+                reset: [self.row("下次自然刷新", self.natural, group: "current")]),
+            detail: "为什么这样建议", groups: ["summary", "data"])
     }
 
     static var historyScenarios: [ResetGalleryScenario] {
