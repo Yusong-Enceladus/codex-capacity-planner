@@ -4,8 +4,19 @@ struct ResetSnapshot: Codable, Equatable, Sendable {
     let updatedAt: String?
     let dataConfidence: String?
     let decisionProgress: DecisionProgress?
+    var mainlineCorrections: [MainlineCorrection]? = nil
     let details: [DetailSection]
     let submenuDetails: [DetailSection]
+}
+
+struct MainlineCorrection: Codable, Equatable, Identifiable, Sendable {
+    let targetId: String
+    let label: String
+    let project: String?
+    let status: String
+    let updatedAt: String?
+
+    var id: String { self.targetId }
 }
 
 struct DecisionProgress: Codable, Equatable, Sendable {
@@ -39,6 +50,8 @@ struct DetailRow: Codable, Equatable, Identifiable, Sendable {
     let relativeTimePrefix: String?
     let link: DetailLink?
     let group: String?
+    let progress: DecisionProgress?
+    let actions: [DetailAction]?
 
     var id: String {
         "\(self.label)\u{1f}\(self.value)"
@@ -52,7 +65,9 @@ struct DetailRow: Codable, Equatable, Identifiable, Sendable {
         relativeTimeAt: String? = nil,
         relativeTimePrefix: String? = nil,
         link: DetailLink? = nil,
-        group: String? = nil)
+        group: String? = nil,
+        progress: DecisionProgress? = nil,
+        actions: [DetailAction]? = nil)
     {
         self.label = label
         self.value = value
@@ -62,7 +77,15 @@ struct DetailRow: Codable, Equatable, Identifiable, Sendable {
         self.relativeTimePrefix = relativeTimePrefix
         self.link = link
         self.group = group
+        self.progress = progress
+        self.actions = actions
     }
+}
+
+struct DetailAction: Codable, Equatable, Sendable {
+    let title: String
+    let operation: String
+    let targetId: String
 }
 
 struct DetailLink: Codable, Equatable, Sendable {

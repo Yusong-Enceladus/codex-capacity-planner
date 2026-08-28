@@ -204,6 +204,36 @@ private struct CompactDecisionProgress: View {
     }
 }
 
+private struct DetailDecisionProgress: View {
+    let progress: DecisionProgress
+
+    private let tint = Color(red: 0.55, green: 0.39, blue: 0.96)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            CompactDecisionProgress(progress: self.progress, tint: self.tint, highlighted: false)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(self.progress.currentLabel)
+                Spacer(minLength: 8)
+                self.legend(color: .red, text: self.progress.targetLabel)
+            }
+            .font(.caption2)
+            .monospacedDigit()
+            self.legend(color: .cyan, text: self.progress.projectedLabel)
+                .font(.caption2)
+                .monospacedDigit()
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func legend(color: Color, text: String) -> some View {
+        HStack(spacing: 4) {
+            Capsule().fill(color).frame(width: 3, height: 10)
+            Text(text)
+        }
+    }
+}
+
 private struct ResetDecisionContent: View {
     let sections: [DetailSection]
     let tint: Color
@@ -313,6 +343,10 @@ struct ResetDetailsView: View {
                                 relativeTimeAt: row.relativeTimeAt,
                                 relativeTimePrefix: row.relativeTimePrefix)
                                 .font(.caption).fixedSize(horizontal: false, vertical: true)
+                            if let progress = row.progress {
+                                DetailDecisionProgress(progress: progress)
+                                    .padding(.top, 3)
+                            }
                             if let secondary = row.secondaryValue {
                                 Text(secondary)
                                     .font(.caption2)
@@ -443,7 +477,7 @@ struct ResetMenuPreview: View {
 
     private func symbolName(for title: String) -> String {
         switch title {
-        case "可继续的任务", "Suggested Tasks": "play.circle"
+        case "建议主线", "Suggested Mainlines", "可继续的任务", "Suggested Tasks": "play.circle"
         case "账户", "Accounts": "person.2"
         case "为什么这样建议", "Why This Plan": "chart.line.uptrend.xyaxis"
         case "重置", "Resets": "clock.arrow.circlepath"

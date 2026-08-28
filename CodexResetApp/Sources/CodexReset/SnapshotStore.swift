@@ -64,11 +64,67 @@ final class SnapshotStore: ObservableObject {
                 : "本机服务暂时不可用，当前保留上一次可靠结果。"
         }
     }
+
+    func perform(_ action: DetailAction) async {
+        do {
+            let base = UserDefaults.standard.string(forKey: "serviceURL") ?? "http://127.0.0.1:18765"
+            let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard let components = URLComponents(string: trimmed),
+                  components.scheme?.lowercased() == "http",
+                  let host = components.host?.lowercased(),
+                  ["127.0.0.1", "localhost", "::1"].contains(host),
+                  let configURL = URL(string: trimmed + "/api/config"),
+                  let actionURL = URL(string: trimmed + "/api/mainline-action")
+            else { throw SnapshotError.localActionUnavailable }
+
+            var configRequest = URLRequest(url: configURL)
+            configRequest.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            configRequest.timeoutInterval = 5
+            configRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+            let (configData, configResponse) = try await self.session.data(for: configRequest)
+            guard let configHTTP = configResponse as? HTTPURLResponse,
+                  configHTTP.statusCode == 200
+            else { throw SnapshotError.serviceUnavailable }
+            let config = try JSONDecoder().decode(LocalServiceConfig.self, from: configData)
+            guard !config.capabilityToken.isEmpty else { throw SnapshotError.localActionUnavailable }
+
+            var request = URLRequest(url: actionURL)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 8
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue(trimmed, forHTTPHeaderField: "Origin")
+            request.setValue(config.capabilityToken, forHTTPHeaderField: "X-Codex-Reset-Token")
+            request.httpBody = try JSONEncoder().encode(MainlineActionRequest(
+                action: action.operation,
+                targetId: action.targetId))
+            let (_, response) = try await self.session.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                throw SnapshotError.actionRejected
+            }
+            self.errorMessage = nil
+            await self.refresh()
+        } catch {
+            self.errorMessage = "主线纠偏未能保存；本机服务恢复后可重试。"
+        }
+    }
 }
 
 private enum SnapshotError: Error {
     case invalidServiceURL
     case serviceUnavailable
+    case localActionUnavailable
+    case actionRejected
+}
+
+private struct LocalServiceConfig: Decodable {
+    let capabilityToken: String
+}
+
+private struct MainlineActionRequest: Encodable {
+    let action: String
+    let targetId: String
 }
 
 extension Double {

@@ -64,6 +64,9 @@ const codexCostDatabase =
     "Library/Caches/CodexBar/cost-usage/cost-usage.sqlite",
   );
 const sessionRefreshInterval = 5 * minute;
+const sessionTrendWindow = 24 * hour;
+const mainlineIntentWindow = 30 * 24 * hour;
+const mainlineRecencyWindow = 7 * 24 * hour;
 const signalBaseURL = (process.env.CODEX_RESET_SIGNAL_BASE_URL || "https://codex-reset.com").replace(
   /\/+$/,
   "",
@@ -398,10 +401,19 @@ function normalizedAccountState(value, id) {
   usage.pace = object(usage.pace) || usagePaceFromSamples(usage.samples);
   usage.behavior = object(usage.behavior) || null;
   usage.shortLoad = normalizedShortLoadState(usage.shortLoad);
-  const personalResets = classifiedLegacyPersonalResets([
-    ...(Array.isArray(source.personalResets) ? source.personalResets : []),
-    ...(object(source.lastPersonalReset) ? [source.lastPersonalReset] : []),
-  ], usage.latest);
+  const personalResets = resetRecordsWithGenerations(
+    classifiedLegacyPersonalResets(
+      [
+        ...(Array.isArray(source.personalResets) ? source.personalResets : []),
+        ...(object(source.lastPersonalReset) ? [source.lastPersonalReset] : []),
+      ],
+      usage.latest,
+    ),
+  );
+  const recordedGeneration = personalResets.length
+    ? personalResets[personalResets.length - 1].generation
+    : 0;
+  const suppliedGeneration = Math.max(0, Math.floor(Number(source.cycleGeneration) || 0));
   return {
     id,
     label: text(source.label) || "Codex 账号",
@@ -424,6 +436,7 @@ function normalizedAccountState(value, id) {
     usage,
     resetCredits: normalizedResetCreditInventory(source.resetCredits),
     targetTrajectory: normalizedTargetTrajectory(source.targetTrajectory),
+    cycleGeneration: Math.max(recordedGeneration, suppliedGeneration),
     personalResets,
     lastPersonalReset: personalResets[personalResets.length - 1] || null,
     forecastNotification: object(source.forecastNotification) || {},
@@ -605,6 +618,10 @@ function normalizedPersonalResets(value) {
         cause,
         evidence: text(source.evidence) || "unknown",
         eventId: text(source.eventId) || null,
+        generation:
+          Number.isInteger(Number(source.generation)) && Number(source.generation) > 0
+            ? Number(source.generation)
+            : null,
       };
     })
     .filter(Boolean)
@@ -627,6 +644,15 @@ function normalizedPersonalResets(value) {
     else deduped.push(record);
   }
   return deduped.slice(-24);
+}
+
+function resetRecordsWithGenerations(value) {
+  let generation = 0;
+  return normalizedPersonalResets(value).map((record) => {
+    const supplied = Number(record.generation);
+    generation = Number.isInteger(supplied) && supplied > generation ? supplied : generation + 1;
+    return { ...record, generation };
+  });
 }
 
 function classifiedLegacyPersonalResets(value, latestUsageValue) {
@@ -733,24 +759,75 @@ function sqliteJSON(database, query) {
   return Array.isArray(parsed) ? parsed : [];
 }
 
-function localSessionRows(cycleStartMs) {
-  const lowerBound = Math.max(0, Math.floor(cycleStartMs));
+function localSessionRows(windowStartMs) {
+  const lowerBound = Math.max(0, Math.floor(windowStartMs));
   return sqliteJSON(
     codexStateDatabase,
     `SELECT id,
             COALESCE(NULLIF(name, ''), NULLIF(title, ''), '未命名 session') AS display_title,
             cwd,
+            project_id,
             tokens_used,
             created_at_ms,
             recency_at_ms,
             updated_at_ms,
-            is_pinned
+            is_pinned,
+            SUBSTR(COALESCE(first_user_message, ''), 1, 600) AS first_user_message,
+            SUBSTR(COALESCE(preview, ''), 1, 300) AS preview
        FROM threads
       WHERE archived = 0
         AND LOWER(COALESCE(thread_source, source, '')) NOT LIKE '%subagent%'
         AND recency_at_ms >= ${lowerBound}
       ORDER BY recency_at_ms DESC
-      LIMIT 40;`,
+      LIMIT 500;`,
+  );
+}
+
+function localRecentSessionTokenRows(windowStartMs, nowMs = Date.now()) {
+  const lowerBound = Math.max(0, Math.floor(windowStartMs));
+  const upperBound = Math.max(lowerBound, Math.floor(nowMs));
+  return sqliteJSON(
+    codexCostDatabase,
+    `WITH file_totals AS (
+       SELECT f.id AS file_id,
+              f.session_id AS session_id,
+              (
+                SELECT COALESCE(s.total_input, 0) + COALESCE(s.total_output, 0)
+                  FROM token_snapshots AS s
+                 WHERE s.file_id = f.id
+                   AND s.timestamp_ms <= ${upperBound}
+                 ORDER BY s.timestamp_ms DESC, s.event_index DESC
+                 LIMIT 1
+              ) AS latest_tokens,
+              (
+                SELECT COALESCE(s.total_input, 0) + COALESCE(s.total_output, 0)
+                  FROM token_snapshots AS s
+                 WHERE s.file_id = f.id
+                   AND s.timestamp_ms <= ${lowerBound}
+                 ORDER BY s.timestamp_ms DESC, s.event_index DESC
+                 LIMIT 1
+              ) AS baseline_tokens,
+              (
+                SELECT MAX(s.timestamp_ms)
+                  FROM token_snapshots AS s
+                 WHERE s.file_id = f.id
+                   AND s.timestamp_ms <= ${upperBound}
+              ) AS latest_token_at_ms,
+              (
+                SELECT MIN(s.timestamp_ms)
+                  FROM token_snapshots AS s
+                 WHERE s.file_id = f.id
+              ) AS first_token_at_ms
+         FROM files AS f
+        WHERE NULLIF(f.session_id, '') IS NOT NULL
+     )
+     SELECT session_id,
+            CAST(SUM(MAX(0, latest_tokens - COALESCE(baseline_tokens, 0))) AS INTEGER) AS recent_tokens
+      FROM file_totals
+      WHERE latest_tokens IS NOT NULL
+        AND latest_token_at_ms >= ${lowerBound}
+        AND (baseline_tokens IS NOT NULL OR first_token_at_ms >= ${lowerBound})
+      GROUP BY session_id;`,
   );
 }
 
@@ -770,6 +847,17 @@ function sessionProject(value) {
   return path.basename(normalized).slice(0, 120);
 }
 
+function sessionWorkspace(rowValue) {
+  const row = object(rowValue) || {};
+  const projectID = text(row.project_id);
+  const cwd = text(row.cwd).replace(/\/+$/, "");
+  const project = sessionProject(cwd) || "未命名工作区";
+  return {
+    key: projectID ? `project:${projectID}` : `cwd:${cwd || project}`,
+    project,
+  };
+}
+
 function sessionGoalPriority(value) {
   const status = text(value).toLowerCase();
   if (["paused", "usage_limited", "budget_limited"].includes(status)) return 4;
@@ -778,15 +866,172 @@ function sessionGoalPriority(value) {
   return 0;
 }
 
-function sessionReason(goalStatus, pinned, observedTokens) {
-  if (goalStatus === "paused") return "Goal 已暂停";
-  if (goalStatus === "usage_limited") return "Goal 因用量限制暂停";
-  if (goalStatus === "budget_limited") return "Goal 因预算限制暂停";
-  if (goalStatus === "active") return "Goal 仍在进行";
-  if (goalStatus === "blocked") return "Goal 有待处理的阻塞项";
-  if (pinned) return "已置顶";
-  if (observedTokens > 0) return "本机观察期仍有用量";
-  return "本周期最近活跃";
+function opaqueLocalID(kind, value) {
+  const source = `${text(kind)}\u0000${text(value)}`;
+  return crypto.createHash("sha256").update(source).digest("base64url").slice(0, 24);
+}
+
+function normalizedMainlinePreferences(value, nowMs = Date.now()) {
+  const allowedStatuses = new Set(["mainline", "not-mainline", "snoozed", "complete"]);
+  const result = [];
+  for (const itemValue of Array.isArray(value) ? value : []) {
+    const item = object(itemValue);
+    const targetId = text(item && item.targetId);
+    const status = text(item && item.status);
+    const updatedAtMs = millis(item && item.updatedAt);
+    const snoozedUntilMs = millis(item && item.snoozedUntil);
+    if (!targetId || !allowedStatuses.has(status) || updatedAtMs === null) continue;
+    if (status === "snoozed" && snoozedUntilMs !== null && snoozedUntilMs <= nowMs) continue;
+    result.push({
+      targetId: targetId.slice(0, 80),
+      kind: ["session", "mainline"].includes(text(item.kind)) ? text(item.kind) : "mainline",
+      status,
+      label: normalizedSessionTitle(item.label),
+      project: text(item.project).slice(0, 120),
+      updatedAt: iso(updatedAtMs),
+      snoozedUntil: snoozedUntilMs === null ? null : iso(snoozedUntilMs),
+    });
+  }
+  return result
+    .sort((left, right) => millis(right.updatedAt) - millis(left.updatedAt))
+    .slice(0, 200);
+}
+
+const mainlineGenericTerms = new Set([
+  "about", "again", "current", "check", "continue", "create", "fix", "help", "make",
+  "new", "please", "remove", "review", "session", "task", "test", "this", "update", "use",
+  "work", "working", "一下", "一个", "为什么", "任务", "使用", "修复", "删除", "当前", "怎么",
+  "怎样", "检查", "测试", "现在", "看看", "继续", "这个", "这些", "那个", "需求", "问题",
+]);
+
+const mainlineDomainTerms = [
+  { label: "论文", terms: ["paper", "manuscript", "research", "submission", "论文", "投稿", "研究"] },
+  { label: "前端", terms: ["frontend", "react", "swiftui", "前端", "界面"] },
+  { label: "服务端", terms: ["backend", "server", "api", "服务端", "后端"] },
+  { label: "机器人", terms: ["robot", "robotics", "isaac", "机器人"] },
+  { label: "实验", terms: ["experiment", "training", "benchmark", "实验", "训练"] },
+  { label: "演示", terms: ["slides", "presentation", "deck", "演示", "幻灯"] },
+  { label: "应用", terms: ["app", "macos", "swift", "应用"] },
+];
+
+function mainlineTerms(value) {
+  const normalized = text(value).normalize("NFKC").toLowerCase().slice(0, 1_200);
+  const terms = new Set();
+  for (const match of normalized.matchAll(/[a-z][a-z0-9_-]{1,31}/g)) {
+    const term = match[0].replace(/^[-_]+|[-_]+$/g, "");
+    if (term.length >= 2 && !mainlineGenericTerms.has(term)) terms.add(term);
+  }
+  for (const match of normalized.matchAll(/[\p{Script=Han}]{2,24}/gu)) {
+    const segment = match[0];
+    for (const domain of mainlineDomainTerms) {
+      for (const term of domain.terms) {
+        if (/^[\p{Script=Han}]+$/u.test(term) && segment.includes(term)) terms.add(term);
+      }
+    }
+    for (const size of [2, 3]) {
+      for (let index = 0; index + size <= segment.length; index += 1) {
+        const term = segment.slice(index, index + size);
+        if (!mainlineGenericTerms.has(term)) terms.add(term);
+      }
+    }
+  }
+  return [...terms].slice(0, 80);
+}
+
+function mainlineRelated(left, right) {
+  const leftTitle = new Set(left.titleTerms);
+  const rightTitle = new Set(right.titleTerms);
+  const leftAll = new Set(left.intentTerms);
+  const rightAll = new Set(right.intentTerms);
+  const sharedTitle = [...leftTitle].filter((term) => rightTitle.has(term));
+  const sharedAll = [...leftAll].filter((term) => rightAll.has(term));
+  if (sharedTitle.length >= 1) return true;
+  if (sharedAll.length < 2) return false;
+  const overlap = sharedAll.length / Math.max(1, Math.min(leftAll.size, rightAll.size));
+  return overlap >= 0.2;
+}
+
+function localDateKey(value) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate(),
+  ).padStart(2, "0")}`;
+}
+
+function mainlineTopicLabel(candidates) {
+  const frequencies = new Map();
+  for (const candidate of candidates) {
+    for (const term of new Set(candidate.intentTerms)) {
+      frequencies.set(term, (frequencies.get(term) || 0) + 1);
+    }
+  }
+  for (const domain of mainlineDomainTerms) {
+    if (domain.terms.some((term) => (frequencies.get(term) || 0) >= 2)) return domain.label;
+  }
+  const latin = [...frequencies.entries()]
+    .filter(([term, count]) => count >= 2 && /^[a-z][a-z0-9_-]+$/.test(term))
+    .sort((left, right) => right[1] - left[1] || right[0].length - left[0].length)[0];
+  return latin ? latin[0].slice(0, 24) : "持续主线";
+}
+
+function normalizedActionTargets(value) {
+  const result = {};
+  for (const [targetId, itemValue] of Object.entries(object(value) || {})) {
+    const item = object(itemValue);
+    const internalId = text(item && item.internalId);
+    if (!text(targetId) || !internalId) continue;
+    result[text(targetId).slice(0, 80)] = {
+      kind: ["session", "mainline"].includes(text(item.kind)) ? text(item.kind) : "mainline",
+      internalId: internalId.slice(0, 500),
+      label: normalizedSessionTitle(item.label),
+      project: text(item.project).slice(0, 120),
+    };
+  }
+  return result;
+}
+
+function sessionReason(workspaceRank, goalStatus, tokenSource) {
+  const windowLabel = tokenSource === "observation-fallback" ? "本机观察期" : "近 24 小时";
+  const workspaceReason =
+    workspaceRank === 1
+      ? `${windowLabel}最活跃工作区`
+      : `${windowLabel}工作区活跃度第 ${workspaceRank}`;
+  if (["paused", "usage_limited", "budget_limited"].includes(goalStatus)) {
+    return `${workspaceReason} · 可继续的暂停任务`;
+  }
+  if (goalStatus === "active") return `${workspaceReason} · Goal 仍在进行`;
+  if (goalStatus === "blocked") return `${workspaceReason} · Goal 有待处理项`;
+  return workspaceReason;
+}
+
+function normalizedSessionTokenSamples(value, windowStartMs) {
+  const source = object(value) || {};
+  const lowerBound = Number.isFinite(windowStartMs)
+    ? windowStartMs
+    : Date.now() - sessionTrendWindow;
+  const normalized = {};
+  for (const [id, samplesValue] of Object.entries(source)) {
+    if (!text(id) || !Array.isArray(samplesValue)) continue;
+    const samples = samplesValue
+      .map((sampleValue) => {
+        const sample = object(sampleValue);
+        const atMs = millis(sample && sample.at);
+        const tokens = Number(sample && sample.tokens);
+        return atMs !== null && Number.isFinite(tokens) && tokens >= 0
+          ? { at: iso(atMs), atMs, tokens }
+          : null;
+      })
+      .filter(Boolean)
+      .sort((left, right) => left.atMs - right.atMs);
+    if (!samples.length) continue;
+    const before = samples.filter((sample) => sample.atMs <= lowerBound).slice(-1);
+    const within = samples.filter((sample) => sample.atMs > lowerBound);
+    normalized[id] = [...before, ...within]
+      .slice(-400)
+      .map(({ atMs, ...sample }) => sample);
+  }
+  return normalized;
 }
 
 function sessionCandidatesFromRows(
@@ -795,14 +1040,26 @@ function sessionCandidatesFromRows(
   previousValue,
   cycleStartMs,
   nowMs = Date.now(),
+  recentTokenRowsValue,
+  trendWindowStartMs = nowMs - sessionTrendWindow,
+  preferencesValue = [],
+  intentWindowStartMs = nowMs - mainlineIntentWindow,
 ) {
   const previous = object(previousValue) || {};
   const previousCycleStartMs = millis(previous.cycleStartAt);
   const sameCycle =
     previousCycleStartMs !== null && Math.abs(previousCycleStartMs - cycleStartMs) <= minute;
   const previousBaselines = sameCycle ? object(previous.baselines) || {} : {};
+  const previousTokenSamples = normalizedSessionTokenSamples(
+    previous.tokenSamples,
+    trendWindowStartMs,
+  );
   const previousObservationStartedAtMs = sameCycle ? millis(previous.observationStartedAt) : null;
   const observationStartedAtMs = previousObservationStartedAtMs || nowMs;
+  const preferences = normalizedMainlinePreferences(preferencesValue, nowMs);
+  const preferencesByTarget = new Map(
+    preferences.map((preference) => [preference.targetId, preference]),
+  );
   const goals = new Map();
   for (const item of Array.isArray(goalsValue) ? goalsValue : []) {
     const goal = object(item);
@@ -811,58 +1068,372 @@ function sessionCandidatesFromRows(
     if (id && status) goals.set(id, status);
   }
 
+  const recentTokens = new Map();
+  for (const item of Array.isArray(recentTokenRowsValue) ? recentTokenRowsValue : []) {
+    const row = object(item);
+    const id = text(row && (row.session_id || row.sessionId || row.id));
+    const tokens = Number(row && (row.recent_tokens ?? row.recentTokens ?? row.tokens));
+    if (id && Number.isFinite(tokens) && tokens >= 0) recentTokens.set(id, tokens);
+  }
   const baselines = {};
-  const candidates = [];
+  const tokenSamples = {};
+  const eligible = [];
+  const previousActionTargets = normalizedActionTargets(previous.actionTargets);
+  const actionTargets = Object.fromEntries(
+    preferences
+      .map((preference) => [preference.targetId, previousActionTargets[preference.targetId]])
+      .filter(([, target]) => Boolean(target)),
+  );
+  let costLedgerCandidates = 0;
+  let localSampleCandidates = 0;
+  let localSamplesCoverWindow = true;
   for (const item of Array.isArray(rowsValue) ? rowsValue : []) {
     const row = object(item);
     const id = text(row && row.id);
     const recencyAtMs = Number(row && (row.recency_at_ms || row.updated_at_ms));
-    if (!id || !Number.isFinite(recencyAtMs) || recencyAtMs < cycleStartMs) continue;
+    if (!id || !Number.isFinite(recencyAtMs) || recencyAtMs < intentWindowStartMs) continue;
     const goalStatus = goals.get(id) || "";
-    if (["complete", "completed", "achieved"].includes(goalStatus)) continue;
-
+    const activeInsideTrend = recencyAtMs >= trendWindowStartMs;
     const currentTokens = Math.max(0, Number(row.tokens_used) || 0);
     const createdAtMs = Number(row.created_at_ms);
-    let baseline = Number(previousBaselines[id]);
-    if (!Number.isFinite(baseline) || baseline < 0 || baseline > currentTokens) {
-      baseline =
-        Number.isFinite(createdAtMs) && createdAtMs >= observationStartedAtMs
-          ? 0
-          : currentTokens;
+    let taskRecentTokens = 0;
+    if (activeInsideTrend) {
+      let baseline = Number(previousBaselines[id]);
+      if (!Number.isFinite(baseline) || baseline < 0 || baseline > currentTokens) {
+        baseline =
+          Number.isFinite(createdAtMs) && createdAtMs >= observationStartedAtMs
+            ? 0
+            : currentTokens;
+      }
+      baselines[id] = baseline;
+      const observedTokens = Math.max(0, currentTokens - baseline);
+      let samples = (previousTokenSamples[id] || []).map((sample) => ({
+        at: sample.at,
+        atMs: millis(sample.at),
+        tokens: sample.tokens,
+      }));
+      const lastSample = samples[samples.length - 1] || null;
+      if (!lastSample || currentTokens !== lastSample.tokens) {
+        if (lastSample && currentTokens < lastSample.tokens) samples = [];
+        samples.push({ at: iso(nowMs), atMs: nowMs, tokens: currentTokens });
+      }
+      const baselineSample = samples
+        .filter((sample) => sample.atMs !== null && sample.atMs <= trendWindowStartMs)
+        .slice(-1)[0] || null;
+      const firstSample = samples[0] || null;
+      const createdInsideWindow =
+        Number.isFinite(createdAtMs) && createdAtMs >= trendWindowStartMs;
+      const sampleWindowReady = Boolean(baselineSample || createdInsideWindow);
+      const sampledTokens = baselineSample
+        ? currentTokens >= baselineSample.tokens
+          ? currentTokens - baselineSample.tokens
+          : currentTokens
+        : createdInsideWindow
+          ? currentTokens
+          : firstSample
+            ? Math.max(observedTokens, currentTokens - firstSample.tokens)
+            : observedTokens;
+      const hasCostLedgerTokens = recentTokens.has(id);
+      taskRecentTokens = hasCostLedgerTokens
+        ? Math.max(0, recentTokens.get(id) || 0)
+        : Math.max(0, sampledTokens);
+      if (hasCostLedgerTokens) costLedgerCandidates += 1;
+      else {
+        localSampleCandidates += 1;
+        localSamplesCoverWindow = localSamplesCoverWindow && sampleWindowReady;
+      }
+      tokenSamples[id] = normalizedSessionTokenSamples(
+        { [id]: samples.map(({ atMs, ...sample }) => sample) },
+        trendWindowStartMs,
+      )[id] || [];
     }
-    baselines[id] = baseline;
-    const observedTokens = Math.max(0, currentTokens - baseline);
     const pinned = Number(row.is_pinned) === 1;
-    candidates.push({
+    const workspace = sessionWorkspace(row);
+    const title = normalizedSessionTitle(row.display_title);
+    const actionId = opaqueLocalID("session", id);
+    actionTargets[actionId] = {
+      kind: "session",
+      internalId: id,
+      label: title,
+      project: workspace.project,
+    };
+    const titleTerms = mainlineTerms(title);
+    const intentTerms = mainlineTerms(
+      `${title}\n${text(row.first_user_message).slice(0, 600)}\n${text(row.preview).slice(0, 300)}`,
+    );
+    eligible.push({
       id,
-      title: normalizedSessionTitle(row.display_title),
-      project: sessionProject(row.cwd),
+      actionId,
+      title,
+      project: workspace.project,
+      workspaceKey: workspace.key,
+      createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : recencyAtMs,
       lastActiveAt: iso(recencyAtMs),
       lastActiveAtMs: recencyAtMs,
       pinned,
       goalStatus: goalStatus || null,
-      observedTokens,
-      reason: sessionReason(goalStatus, pinned, observedTokens),
+      observedTokens: taskRecentTokens,
       goalPriority: sessionGoalPriority(goalStatus),
+      completed: ["complete", "completed", "achieved"].includes(goalStatus),
+      titleTerms,
+      intentTerms,
     });
   }
 
-  candidates.sort(
-    (left, right) =>
-      right.goalPriority - left.goalPriority ||
-      Number(right.pinned) - Number(left.pinned) ||
-      Number(right.observedTokens > 0) - Number(left.observedTokens > 0) ||
-      right.observedTokens - left.observedTokens ||
-      right.lastActiveAtMs - left.lastActiveAtMs ||
-      left.title.localeCompare(right.title),
+  const tokenSource =
+    costLedgerCandidates > 0 && localSampleCandidates > 0
+      ? "hybrid"
+      : costLedgerCandidates > 0
+        ? "cost-ledger"
+        : localSamplesCoverWindow && localSampleCandidates > 0
+          ? "local-samples"
+          : "observation-fallback";
+
+  const workspaces = new Map();
+  for (const candidate of eligible) {
+    const current = workspaces.get(candidate.workspaceKey) || {
+      key: candidate.workspaceKey,
+      project: candidate.project,
+      observedTokens: 0,
+      lastActiveAtMs: 0,
+      candidates: [],
+    };
+    current.observedTokens += candidate.observedTokens;
+    current.lastActiveAtMs = Math.max(current.lastActiveAtMs, candidate.lastActiveAtMs);
+    const preference = preferencesByTarget.get(candidate.actionId);
+    const hidden = preference && ["not-mainline", "snoozed", "complete"].includes(preference.status);
+    if (!candidate.completed && !hidden) current.candidates.push(candidate);
+    workspaces.set(candidate.workspaceKey, current);
+  }
+  const rankedWorkspaces = [...workspaces.values()]
+    .filter((workspace) => workspace.candidates.length > 0)
+    .sort(
+      (left, right) =>
+        right.observedTokens - left.observedTokens ||
+        right.lastActiveAtMs - left.lastActiveAtMs ||
+        left.project.localeCompare(right.project),
+    );
+  const totalWorkspaceTokens = rankedWorkspaces.reduce(
+    (total, workspace) => total + workspace.observedTokens,
+    0,
   );
+  const candidateCount = rankedWorkspaces.reduce(
+    (total, workspace) => total + workspace.candidates.length,
+    0,
+  );
+  for (const [workspaceIndex, workspace] of rankedWorkspaces.entries()) {
+    workspace.rank = workspaceIndex + 1;
+    workspace.candidates.sort(
+      (left, right) =>
+        right.observedTokens - left.observedTokens ||
+        right.goalPriority - left.goalPriority ||
+        Number(right.pinned) - Number(left.pinned) ||
+        right.lastActiveAtMs - left.lastActiveAtMs ||
+        left.title.localeCompare(right.title),
+    );
+  }
+
+  // Sessions remain available only as recovery context. Their order is not the
+  // recommendation order and therefore does not let token volume choose intent.
+  const candidates = [];
+  const maximumDepth = Math.max(
+    0,
+    ...rankedWorkspaces.map((workspace) => workspace.candidates.length),
+  );
+  for (let depth = 0; depth < maximumDepth && candidates.length < 12; depth += 1) {
+    for (const workspace of rankedWorkspaces) {
+      const candidate = workspace.candidates[depth];
+      if (!candidate) continue;
+      candidates.push({
+        ...candidate,
+        workspaceRank: workspace.rank,
+        workspaceObservedTokens: workspace.observedTokens,
+        workspaceSharePercent:
+          totalWorkspaceTokens > 0
+            ? (workspace.observedTokens / totalWorkspaceTokens) * 100
+            : 0,
+        reason: "仅供定位与纠偏，不代表应继续这条 session",
+      });
+      if (candidates.length >= 12) break;
+    }
+  }
+  const inferable = eligible.filter((candidate) => {
+    if (candidate.completed) return false;
+    const preference = preferencesByTarget.get(candidate.actionId);
+    return !preference || !["not-mainline", "snoozed", "complete"].includes(preference.status);
+  });
+  const byWorkspace = new Map();
+  for (const candidate of inferable) {
+    const list = byWorkspace.get(candidate.workspaceKey) || [];
+    list.push(candidate);
+    byWorkspace.set(candidate.workspaceKey, list);
+  }
+  const inferredClusters = [];
+  for (const workspaceCandidates of byWorkspace.values()) {
+    const parent = workspaceCandidates.map((_, index) => index);
+    const find = (index) => {
+      while (parent[index] !== index) {
+        parent[index] = parent[parent[index]];
+        index = parent[index];
+      }
+      return index;
+    };
+    const unite = (left, right) => {
+      const leftRoot = find(left);
+      const rightRoot = find(right);
+      if (leftRoot !== rightRoot) parent[rightRoot] = leftRoot;
+    };
+    for (let left = 0; left < workspaceCandidates.length; left += 1) {
+      for (let right = left + 1; right < workspaceCandidates.length; right += 1) {
+        if (mainlineRelated(workspaceCandidates[left], workspaceCandidates[right])) {
+          unite(left, right);
+        }
+      }
+    }
+    const components = new Map();
+    for (let index = 0; index < workspaceCandidates.length; index += 1) {
+      const root = find(index);
+      const component = components.get(root) || [];
+      component.push(workspaceCandidates[index]);
+      components.set(root, component);
+    }
+    for (const members of components.values()) {
+      const activeDays = new Set();
+      let goalPriority = 0;
+      for (const member of members) {
+        activeDays.add(localDateKey(member.createdAtMs));
+        activeDays.add(localDateKey(member.lastActiveAtMs));
+        goalPriority = Math.max(goalPriority, member.goalPriority);
+      }
+      activeDays.delete("");
+      const lastActiveAtMs = Math.max(...members.map((member) => member.lastActiveAtMs));
+      const ongoingGoal = members.some((member) => member.goalPriority >= 3);
+      if (!ongoingGoal && (members.length < 2 || activeDays.size < 2)) continue;
+      if (!ongoingGoal && nowMs - lastActiveAtMs > mainlineRecencyWindow) continue;
+      const stableMemberID = members.map((member) => member.id).sort()[0];
+      const actionId = opaqueLocalID(
+        "mainline",
+        `${members[0].workspaceKey}\u0000${stableMemberID}`,
+      );
+      actionTargets[actionId] = {
+        kind: "mainline",
+        internalId: members.map((member) => member.id).sort().join(",").slice(0, 500),
+        label: `${members[0].project} · ${mainlineTopicLabel(members)}`,
+        project: members[0].project,
+      };
+      const clusterPreference = preferencesByTarget.get(actionId);
+      if (
+        clusterPreference &&
+        ["not-mainline", "snoozed", "complete"].includes(clusterPreference.status)
+      ) {
+        continue;
+      }
+      inferredClusters.push({
+        actionId,
+        label: `${members[0].project} · ${mainlineTopicLabel(members)}`.slice(0, 300),
+        project: members[0].project,
+        lastActiveAt: iso(lastActiveAtMs),
+        lastActiveAtMs,
+        source: clusterPreference && clusterPreference.status === "mainline" ? "explicit" : "inferred",
+        confidence: ongoingGoal || members.length >= 3 ? "high" : "medium",
+        sessionCount: members.length,
+        activeDayCount: activeDays.size,
+        observedTokens: members.reduce((total, member) => total + member.observedTokens, 0),
+        goalStatus: members.find((member) => member.goalPriority === goalPriority)?.goalStatus || null,
+        goalPriority,
+        pinned: members.some((member) => member.pinned),
+        memberActionIds: members.map((member) => member.actionId),
+        reason: ongoingGoal
+          ? `Goal 仍在进行，且已跨 ${activeDays.size} 天持续推进`
+          : `${members.length} 条相关任务跨 ${activeDays.size} 天持续推进`,
+      });
+    }
+  }
+
+  const explicitMainlines = [];
+  const inferredMemberTargets = new Set();
+  for (const preference of preferences.filter((item) => item.status === "mainline")) {
+    const session = eligible.find((candidate) => candidate.actionId === preference.targetId);
+    if (!session || session.completed) continue;
+    const relatedCluster = inferredClusters.find((cluster) =>
+      cluster.memberActionIds.includes(session.actionId),
+    );
+    if (relatedCluster) {
+      for (const memberTarget of relatedCluster.memberActionIds) inferredMemberTargets.add(memberTarget);
+    }
+    explicitMainlines.push({
+      actionId: session.actionId,
+      label: preference.label || session.title,
+      project: preference.project || session.project,
+      lastActiveAt: relatedCluster ? relatedCluster.lastActiveAt : session.lastActiveAt,
+      lastActiveAtMs: relatedCluster ? relatedCluster.lastActiveAtMs : session.lastActiveAtMs,
+      source: "explicit",
+      confidence: "high",
+      sessionCount: relatedCluster ? relatedCluster.sessionCount : 1,
+      activeDayCount: relatedCluster ? relatedCluster.activeDayCount : 1,
+      observedTokens: relatedCluster ? relatedCluster.observedTokens : session.observedTokens,
+      goalStatus: session.goalStatus,
+      goalPriority: Math.max(session.goalPriority, relatedCluster ? relatedCluster.goalPriority : 0),
+      pinned: session.pinned,
+      reason: "你已明确标为主线",
+    });
+  }
+  const mainlines = [
+    ...explicitMainlines,
+    ...inferredClusters.filter(
+      (cluster) => !cluster.memberActionIds.some((targetId) => inferredMemberTargets.has(targetId)),
+    ),
+  ]
+    .sort(
+      (left, right) =>
+        Number(right.source === "explicit") - Number(left.source === "explicit") ||
+        right.goalPriority - left.goalPriority ||
+        right.activeDayCount - left.activeDayCount ||
+        right.sessionCount - left.sessionCount ||
+        right.lastActiveAtMs - left.lastActiveAtMs ||
+        left.label.localeCompare(right.label),
+    )
+    .slice(0, 12);
+  const totalMainlineTokens = mainlines.reduce(
+    (total, mainline) => total + mainline.observedTokens,
+    0,
+  );
+
   return {
     cycleStartAt: iso(cycleStartMs),
+    trendWindowStartAt: iso(trendWindowStartMs),
+    trendWindowHours: sessionTrendWindow / hour,
+    intentWindowStartAt: iso(intentWindowStartMs),
+    intentWindowDays: mainlineIntentWindow / (24 * hour),
+    tokenSource,
     observationStartedAt: iso(observationStartedAtMs),
     baselines,
-    candidateCount: candidates.length,
-    candidates: candidates.slice(0, 12).map(({ goalPriority, lastActiveAtMs, ...candidate }) =>
-      candidate,
+    tokenSamples,
+    candidateCount,
+    workspaceCount: rankedWorkspaces.length,
+    mainlineCount: mainlines.length,
+    mainlines: mainlines.map(
+      ({ lastActiveAtMs, goalPriority, pinned, memberActionIds, ...mainline }) => ({
+        ...mainline,
+        loadSharePercent:
+          totalMainlineTokens > 0
+            ? (mainline.observedTokens / totalMainlineTokens) * 100
+            : 0,
+      }),
+    ),
+    actionTargets,
+    candidates: candidates.slice(0, 12).map(
+      ({
+        goalPriority,
+        lastActiveAtMs,
+        workspaceKey,
+        completed,
+        createdAtMs,
+        titleTerms,
+        intentTerms,
+        id,
+        ...candidate
+      }) => candidate,
     ),
   };
 }
@@ -877,27 +1448,86 @@ function normalizedSessionState(value) {
   }
   return {
     cycleStartAt: millis(source.cycleStartAt) === null ? null : iso(millis(source.cycleStartAt)),
+    trendWindowStartAt:
+      millis(source.trendWindowStartAt) === null
+        ? null
+        : iso(millis(source.trendWindowStartAt)),
+    trendWindowHours: Math.max(1, Number(source.trendWindowHours) || 24),
+    intentWindowStartAt:
+      millis(source.intentWindowStartAt) === null
+        ? null
+        : iso(millis(source.intentWindowStartAt)),
+    intentWindowDays: Math.max(1, Number(source.intentWindowDays) || 30),
+    tokenSource: [
+      "cost-ledger",
+      "hybrid",
+      "local-samples",
+      "observation-fallback",
+    ].includes(text(source.tokenSource))
+      ? text(source.tokenSource)
+      : "observation-fallback",
     observationStartedAt:
       millis(source.observationStartedAt) === null
         ? null
         : iso(millis(source.observationStartedAt)),
     baselines,
+    tokenSamples: normalizedSessionTokenSamples(source.tokenSamples),
     candidateCount: Math.max(0, Number(source.candidateCount) || 0),
+    workspaceCount: Math.max(0, Number(source.workspaceCount) || 0),
+    mainlineCount: Math.max(0, Number(source.mainlineCount) || 0),
+    mainlines: (Array.isArray(source.mainlines) ? source.mainlines : [])
+      .map((item) => {
+        const mainline = object(item);
+        const actionId = text(mainline && mainline.actionId);
+        const lastActiveAtMs = millis(mainline && mainline.lastActiveAt);
+        if (!actionId || lastActiveAtMs === null) return null;
+        return {
+          actionId: actionId.slice(0, 80),
+          label: normalizedSessionTitle(mainline.label),
+          project: text(mainline.project).slice(0, 120),
+          lastActiveAt: iso(lastActiveAtMs),
+          source: text(mainline.source) === "explicit" ? "explicit" : "inferred",
+          confidence: ["high", "medium"].includes(text(mainline.confidence))
+            ? text(mainline.confidence)
+            : "medium",
+          sessionCount: Math.max(1, Number(mainline.sessionCount) || 1),
+          activeDayCount: Math.max(1, Number(mainline.activeDayCount) || 1),
+          observedTokens: Math.max(0, Number(mainline.observedTokens) || 0),
+          loadSharePercent: Math.max(
+            0,
+            Math.min(100, Number(mainline.loadSharePercent) || 0),
+          ),
+          goalStatus: text(mainline.goalStatus) || null,
+          reason: text(mainline.reason).slice(0, 180) || "近期持续推进",
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 12),
+    actionTargets: normalizedActionTargets(source.actionTargets),
     candidates: (Array.isArray(source.candidates) ? source.candidates : [])
       .map((item) => {
         const candidate = object(item);
-        const id = text(candidate && candidate.id);
+        const actionId = text(candidate && (candidate.actionId || candidate.id));
         const lastActiveAtMs = millis(candidate && candidate.lastActiveAt);
-        if (!id || lastActiveAtMs === null) return null;
+        if (!actionId || lastActiveAtMs === null) return null;
         return {
-          id,
+          actionId: actionId.slice(0, 80),
           title: normalizedSessionTitle(candidate.title),
           project: text(candidate.project).slice(0, 120),
           lastActiveAt: iso(lastActiveAtMs),
           pinned: candidate.pinned === true,
           goalStatus: text(candidate.goalStatus) || null,
           observedTokens: Math.max(0, Number(candidate.observedTokens) || 0),
-          reason: text(candidate.reason).slice(0, 120) || "本周期最近活跃",
+          workspaceRank: Math.max(1, Number(candidate.workspaceRank) || 1),
+          workspaceObservedTokens: Math.max(
+            0,
+            Number(candidate.workspaceObservedTokens) || 0,
+          ),
+          workspaceSharePercent: Math.max(
+            0,
+            Math.min(100, Number(candidate.workspaceSharePercent) || 0),
+          ),
+          reason: text(candidate.reason).slice(0, 120) || "近 24 小时活跃工作区",
         };
       })
       .filter(Boolean)
@@ -910,22 +1540,44 @@ function normalizedSessionState(value) {
   };
 }
 
-function publicSessionSuggestions(value) {
+function publicSessionSuggestions(value, preferencesValue = []) {
   const sessions = normalizedSessionState(value);
+  const corrections = normalizedMainlinePreferences(preferencesValue).map((preference) => ({
+    targetId: preference.targetId,
+    kind: preference.kind,
+    status: preference.status,
+    label: preference.label,
+    project: preference.project,
+    updatedAt: preference.updatedAt,
+    snoozedUntil: preference.snoozedUntil,
+  }));
   return {
     status: sessions.status,
     cycleStartAt: sessions.cycleStartAt,
+    trendWindowStartAt: sessions.trendWindowStartAt,
+    trendWindowHours: sessions.trendWindowHours,
+    intentWindowStartAt: sessions.intentWindowStartAt,
+    intentWindowDays: sessions.intentWindowDays,
+    tokenSource: sessions.tokenSource,
     observationStartedAt: sessions.observationStartedAt,
     updatedAt: sessions.updatedAt,
     candidateCount: sessions.candidateCount,
-    observationReady: sessions.candidates.some((candidate) => candidate.observedTokens > 0),
-    candidates: sessions.candidates.slice(0, 5).map((candidate) => ({
+    workspaceCount: sessions.workspaceCount,
+    mainlineCount: sessions.mainlines.length,
+    observationReady: sessions.mainlines.some((mainline) => mainline.observedTokens > 0),
+    mainlines: sessions.mainlines.map((mainline) => ({ ...mainline })),
+    corrections,
+    candidates: sessions.candidates.slice(0, 12).map((candidate) => ({
+      actionId: candidate.actionId,
       title: candidate.title,
       project: candidate.project,
       lastActiveAt: candidate.lastActiveAt,
       pinned: candidate.pinned,
       goalStatus: candidate.goalStatus,
       observedTokens: candidate.observedTokens,
+      workspaceRank: candidate.workspaceRank,
+      workspaceObservedTokens: candidate.workspaceObservedTokens,
+      workspaceSharePercent: candidate.workspaceSharePercent,
       reason: candidate.reason,
     })),
   };
@@ -938,6 +1590,256 @@ function rememberClosedEvent(state, id) {
     ...state.events.closedIds.filter((entry) => entry !== value),
     value,
   ].slice(-64);
+}
+
+function normalizedCompletedPublicEvents(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((entry) => {
+      const source = object(entry);
+      const id = explicitEventID(source);
+      const announcedAtMs = eventAnnouncedAtMs(source);
+      if (!id || announcedAtMs === null) return null;
+      return {
+        id,
+        announcedAt: iso(announcedAtMs),
+        summary: text(source.summary),
+        localizedSummary: text(source.localizedSummary || source.localized_summary),
+        url: /^https:\/\//.test(text(source.url)) ? text(source.url) : "",
+        source: text(source.source) || "site-api",
+        status: "landed",
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => millis(left.announcedAt) - millis(right.announcedAt))
+    .slice(-12);
+}
+
+function rememberCompletedPublicEvent(stateValue, eventValue) {
+  const state = object(stateValue);
+  const event = object(eventValue);
+  const id = explicitEventID(event);
+  if (!state || !event || !id || eventAnnouncedAtMs(event) === null) return;
+  state.events.completedPublicEvents = normalizedCompletedPublicEvents([
+    ...normalizedCompletedPublicEvents(state.events.completedPublicEvents).filter(
+      (entry) => entry.id !== id,
+    ),
+    { ...event, id },
+  ]);
+}
+
+function normalizedLocalResetEpisodes(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((entry) => {
+      const source = object(entry);
+      const id = text(source && source.id);
+      if (!id) return null;
+      const accountGenerations = {};
+      const observedAtByAccount = {};
+      for (const [accountID, rawGeneration] of Object.entries(
+        object(source.accountGenerations) || {},
+      )) {
+        const generation = Math.floor(Number(rawGeneration));
+        if (!text(accountID) || !Number.isInteger(generation) || generation <= 0) continue;
+        accountGenerations[text(accountID)] = generation;
+        const observedAtMs = millis(
+          object(source.observedAtByAccount) && source.observedAtByAccount[accountID],
+        );
+        if (observedAtMs !== null) observedAtByAccount[text(accountID)] = iso(observedAtMs);
+      }
+      if (!Object.keys(accountGenerations).length) return null;
+      const observedAtValues = Object.values(observedAtByAccount)
+        .map(millis)
+        .filter(Number.isFinite);
+      const observedAtMs = millis(source.observedAt) ??
+        (observedAtValues.length ? Math.max(...observedAtValues) : null);
+      return {
+        id,
+        cause: "global-manual",
+        observedAt: observedAtMs === null ? null : iso(observedAtMs),
+        accountGenerations,
+        observedAtByAccount,
+        publicEventId: text(source.publicEventId) || null,
+        status: text(source.publicEventId) ? "matched" : "unattributed",
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => (millis(left.observedAt) || 0) - (millis(right.observedAt) || 0))
+    .slice(-24);
+}
+
+function localResetEpisodeID(factsValue) {
+  const facts = (Array.isArray(factsValue) ? factsValue : [])
+    .map((fact) => ({
+      accountId: text(fact && fact.accountId),
+      generation: Math.floor(Number(fact && fact.generation)),
+    }))
+    .filter((fact) => fact.accountId && fact.generation > 0)
+    .sort((left, right) => left.accountId.localeCompare(right.accountId));
+  if (!facts.length) return "";
+  return `local-reset:${crypto
+    .createHash("sha256")
+    .update(JSON.stringify(facts))
+    .digest("hex")
+    .slice(0, 24)}`;
+}
+
+function recordLocalGlobalResetEpisode(stateValue, factsValue) {
+  const state = object(stateValue);
+  const facts = (Array.isArray(factsValue) ? factsValue : []).filter(
+    (fact) =>
+      text(fact && fact.accountId) &&
+      Number.isInteger(Number(fact && fact.generation)) &&
+      Number(fact.generation) > 0 &&
+      millis(fact.at) !== null,
+  );
+  if (!state || !facts.length) return null;
+  const id = localResetEpisodeID(facts);
+  if (!id) return null;
+  const episodes = normalizedLocalResetEpisodes(state.localResetEpisodes);
+  const previous = episodes.find((episode) => episode.id === id);
+  const accountGenerations = { ...(previous && previous.accountGenerations) };
+  const observedAtByAccount = { ...(previous && previous.observedAtByAccount) };
+  const publicEventIDs = new Set();
+  if (previous && previous.publicEventId) publicEventIDs.add(previous.publicEventId);
+  for (const fact of facts) {
+    const accountID = text(fact.accountId);
+    accountGenerations[accountID] = Number(fact.generation);
+    observedAtByAccount[accountID] = iso(millis(fact.at));
+    if (text(fact.eventId)) publicEventIDs.add(text(fact.eventId));
+  }
+  const publicEventId = publicEventIDs.size === 1 ? [...publicEventIDs][0] : null;
+  const observedAt = iso(
+    Math.max(...Object.values(observedAtByAccount).map(millis).filter(Number.isFinite)),
+  );
+  const next = {
+    id,
+    cause: "global-manual",
+    observedAt,
+    accountGenerations,
+    observedAtByAccount,
+    publicEventId,
+    status: publicEventId ? "matched" : "unattributed",
+  };
+  state.localResetEpisodes = normalizedLocalResetEpisodes([
+    ...episodes.filter((episode) => episode.id !== id),
+    next,
+  ]);
+  return next;
+}
+
+function backfillLatestUnattributedGlobalEpisode(stateValue) {
+  const state = object(stateValue);
+  if (!state) return null;
+  state.localResetEpisodes = normalizedLocalResetEpisodes(state.localResetEpisodes);
+  const settlement = globalSettlementFromState(state);
+  const facts = [];
+  for (const account of Object.values(object(state.accountStates) || {})) {
+    if (account.present === false) continue;
+    const records = resetRecordsWithGenerations(account.personalResets);
+    const latest = [...records]
+      .reverse()
+      .find(
+        (record) =>
+          record.cause === "global-manual" &&
+          !record.eventId &&
+          (settlement.atMs === null || millis(record.at) > settlement.atMs),
+      );
+    if (!latest) continue;
+    facts.push({
+      accountId: account.id,
+      generation: latest.generation,
+      at: latest.at,
+      eventId: null,
+    });
+  }
+  if (!facts.length) return null;
+  return recordLocalGlobalResetEpisode(state, facts);
+}
+
+function latestUnattributedGlobalEpisode(stateValue) {
+  const state = object(stateValue);
+  if (!state) return null;
+  backfillLatestUnattributedGlobalEpisode(state);
+  const episodes = normalizedLocalResetEpisodes(state.localResetEpisodes).filter(
+    (episode) => !episode.publicEventId,
+  );
+  return episodes[episodes.length - 1] || null;
+}
+
+function invalidateEventPlanningState(stateValue, eventIDValue) {
+  const state = object(stateValue);
+  const eventID = text(eventIDValue);
+  if (!state || !eventID) return;
+  for (const account of Object.values(object(state.accountStates) || {})) {
+    const trajectory = normalizedTargetTrajectory(account.targetTrajectory);
+    if (!trajectory || trajectory.signalId !== eventID) continue;
+    account.targetTrajectory = null;
+    account.forecastNotification = {};
+    account.behaviorNotification = {};
+  }
+  const rootTrajectory = normalizedTargetTrajectory(state.targetTrajectory);
+  if (rootTrajectory && rootTrajectory.signalId === eventID) {
+    state.targetTrajectory = null;
+    state.forecastNotification = {};
+    state.behaviorNotification = {};
+  }
+}
+
+function associateCompletedEventWithLocalEpisode(stateValue, eventValue) {
+  const state = object(stateValue);
+  const event = object(eventValue);
+  const eventID = explicitEventID(event);
+  if (!state || !event || !eventID) return { delivery: {}, matched: 0, tracked: 0 };
+  const trackedAccounts = Object.values(object(state.accountStates) || {}).filter(
+    (account) => account.present !== false,
+  );
+  const delivery = Object.fromEntries(trackedAccounts.map((account) => [account.id, "pending"]));
+  const recordedEpisodes = normalizedLocalResetEpisodes(state.localResetEpisodes);
+  const episode =
+    recordedEpisodes.find((candidate) => candidate.publicEventId === eventID) ||
+    latestUnattributedGlobalEpisode(state);
+  if (episode) {
+    for (const account of trackedAccounts) {
+      const generation = Number(episode.accountGenerations[account.id]);
+      if (!Number.isInteger(generation) || generation <= 0) continue;
+      let associated = false;
+      account.personalResets = resetRecordsWithGenerations(account.personalResets).map((record) => {
+        if (
+          record.cause !== "global-manual" ||
+          record.generation !== generation ||
+          (record.eventId && record.eventId !== eventID)
+        ) {
+          return record;
+        }
+        associated = true;
+        return { ...record, eventId: eventID };
+      });
+      account.lastPersonalReset = account.personalResets[account.personalResets.length - 1] || null;
+      if (associated) delivery[account.id] = "landed";
+    }
+    episode.publicEventId = eventID;
+    episode.status = "matched";
+    state.localResetEpisodes = normalizedLocalResetEpisodes([
+      ...normalizedLocalResetEpisodes(state.localResetEpisodes).filter(
+        (candidate) => candidate.id !== episode.id,
+      ),
+      episode,
+    ]);
+  }
+  for (const account of trackedAccounts) {
+    if (
+      resetRecordsWithGenerations(account.personalResets).some(
+        (record) => record.cause === "global-manual" && record.eventId === eventID,
+      )
+    ) {
+      delivery[account.id] = "landed";
+    }
+  }
+  if (state.activeAccountId && state.accountStates[state.activeAccountId]) {
+    bindActiveAccountState(state);
+  }
+  const matched = Object.values(delivery).filter((value) => value === "landed").length;
+  return { delivery, matched, tracked: trackedAccounts.length };
 }
 
 function globalSettlementFromState(stateValue) {
@@ -991,6 +1893,103 @@ function terminalVerification(value) {
 
 function negativeVerification(value) {
   return ["rejected", "failed", "expired"].includes(text(value).toLowerCase());
+}
+
+function resetCompletionLanguage(value) {
+  const words = text(value).toLowerCase();
+  return Boolean(
+    /\b(?:has|have|had)\s+(?:been\s+)?reset(?:ted|ed)?\b/.test(words) ||
+      /\bfeeling\s+reset(?:ted|ed)?\b/.test(words) ||
+      /\bbrand new usage\b/.test(words) ||
+      /\breset\s+(?:has\s+)?landed\b/.test(words) ||
+      /\b(?:just\s+)?(?:pressed|hit)\s+(?:the\s+)?reset button\b/.test(words) ||
+      /(?:重置|额度)[^。]{0,24}(?:已经|已完成|已到账|已重建|已刷新)/.test(words) ||
+      /(?:全新|新的)(?:周)?额度/.test(words)
+  );
+}
+
+function eventTemporalPhase(value) {
+  const event = object(value) || {};
+  const declared = text(event.temporalPhase || event.temporal_phase).toLowerCase();
+  if (["future", "in-progress", "completed", "terminal"].includes(declared)) {
+    return declared;
+  }
+  const announcedAtMs = eventAnnouncedAtMs(event);
+  const window = object(event.official_window) || object(event.window) || {};
+  const futureBoundaryMs =
+    millis(event.deadlineAt || event.deadline_at) ??
+    millis(window.end_at) ??
+    millis(event.windowStartAt || window.start_at || event.effective_at);
+  const verification = text(event.reset_verification_status || event.verificationStatus).toLowerCase();
+  const observation = text(event.observation_result || event.observationResult).toLowerCase();
+  const kind = text(event.kind).toLowerCase();
+  const words = `${text(event.summary)} ${text(event.localizedSummary)} ${text(
+    event.localized_summary,
+  )} ${text(event.text)}`;
+  if (["rejected", "failed"].includes(verification)) return "terminal";
+  if (
+    announcedAtMs !== null &&
+    futureBoundaryMs !== null &&
+    futureBoundaryMs > announcedAtMs
+  ) {
+    return "future";
+  }
+  if (
+    ["confirmed", "verified", "completed", "landed"].includes(verification) ||
+    ["confirmed", "reset_observed", "completed", "landed"].includes(observation) ||
+    ["completed", "landed"].includes(kind) ||
+    resetCompletionLanguage(words)
+  ) {
+    return "completed";
+  }
+  if (verification === "expired" || ["expired", "rejected", "failed"].includes(kind)) {
+    return "terminal";
+  }
+  const inferredDeadlineMs = announcedAtMs === null ? null : inferDeadline(words, announcedAtMs);
+  if (inferredDeadlineMs !== null && inferredDeadlineMs > announcedAtMs) return "future";
+  return "in-progress";
+}
+
+function feedRecordsForEvent(feedValue, eventIDValue) {
+  const feed = object(feedValue) || {};
+  const normalizedID = eventID(eventIDValue);
+  if (!normalizedID) return [];
+  return [
+    object(feed.signal),
+    ...(Array.isArray(feed.events) ? feed.events : []),
+    ...(Array.isArray(feed.tweets) ? feed.tweets : []),
+  ].filter((record) => record && explicitEventID(record) === normalizedID);
+}
+
+function forecastResetEventID(forecastValue) {
+  const forecast = object(forecastValue) || {};
+  for (const item of Array.isArray(forecast.evidence) ? forecast.evidence : []) {
+    if (text(item && item.code) !== "last_reset") continue;
+    const id = xStatusID(item && item.href);
+    if (id) return id;
+  }
+  return "";
+}
+
+function consolidatedResetTemporalPhase(feedValue, eventValue, forecastValue) {
+  const event = object(eventValue) || {};
+  const eventID = explicitEventID(event);
+  const records = [event, ...feedRecordsForEvent(feedValue, eventID)];
+  const verificationStates = records
+    .map((record) =>
+      text(record.reset_verification_status || record.verificationStatus).toLowerCase(),
+    )
+    .filter(Boolean);
+  if (verificationStates.some((state) => ["rejected", "failed"].includes(state))) {
+    return "terminal";
+  }
+  const phases = records.map(eventTemporalPhase);
+  if (phases.includes("future")) return "future";
+  if (forecastResetEventID(forecastValue) === eventID || phases.includes("completed")) {
+    return "completed";
+  }
+  if (phases.includes("terminal")) return "terminal";
+  return "in-progress";
 }
 
 function rememberRejectedEvent(state, eventValue, reason, nowMs = Date.now()) {
@@ -1136,6 +2135,8 @@ function targetTrajectoryPolicy(modelValue) {
   const model = object(modelValue);
   const decision = object(model && (model.planningDecision || model.decision));
   const forecast = object(model && model.forecast);
+  const signal = object(forecast && forecast.signal);
+  const signalLevel = text(signal && signal.level);
   if (!decision) return null;
   return {
     kind: text(decision.trajectoryPolicyKind) || "baseline",
@@ -1144,7 +2145,11 @@ function targetTrajectoryPolicy(modelValue) {
       ? decision.trajectoryDeadlineMs
       : null,
     source: text(decision.mode) || "baseline",
-    signalId: text(forecast && forecast.signal && forecast.signal.id) || null,
+    // Candidate IDs must not create a new durable policy identity on every
+    // post. Their bounded pressure is already represented by the hazard.
+    signalId: ["explicit", "commitment"].includes(signalLevel)
+      ? text(signal && signal.id) || null
+      : null,
   };
 }
 
@@ -1171,6 +2176,36 @@ function updateTargetTrajectory(previousValue, modelValue, nowMs) {
   const sameCycle = Boolean(
     previous && Math.abs(millis(previous.cycleResetAt) - cycleResetAtMs) <= 2 * minute,
   );
+  const baselineRemainingPercent = Math.max(
+    0,
+    Math.min(
+      100,
+      ((naturalResetAtMs - nowMs) / Math.max(1, naturalResetAtMs - cycleStartedAtMs)) * 100,
+    ),
+  );
+  const previousRemainingPercent = sameCycle
+    ? projectTargetTrajectory(previous, nowMs)
+    : null;
+  const continuousPolicy = ["baseline", "hazard"].includes(policy.kind);
+  const correctedImmediate = Boolean(
+    sameCycle && previous.policyKind === "immediate" && policy.kind !== "immediate",
+  );
+  const correctedDeadline = Boolean(
+    sameCycle && previous.policyKind === "deadline" && continuousPolicy,
+  );
+  // A finite baseline/hazard trajectory cannot become exactly zero while a
+  // material part of the natural cycle remains. That shape can only be an old
+  // immediate/deadline policy whose later downgrade inherited its zero anchor.
+  // Rebase it from the natural cycle so already-poisoned installations heal on
+  // their next refresh without consulting actual usage.
+  const poisonedZero = Boolean(
+    sameCycle &&
+      continuousPolicy &&
+      previousRemainingPercent !== null &&
+      previousRemainingPercent <= 0.05 &&
+      baselineRemainingPercent > 0.05,
+  );
+  const mustRebase = !sameCycle || correctedImmediate || correctedDeadline || poisonedZero;
   const previousDeadlineAtMs = previous ? millis(previous.policyDeadlineAt) : null;
   const samePolicy = Boolean(
     sameCycle &&
@@ -1181,19 +2216,13 @@ function updateTargetTrajectory(previousValue, modelValue, nowMs) {
       previous.policySource === policy.source &&
       text(previous.signalId) === text(policy.signalId),
   );
-  if (samePolicy) return previous;
+  if (samePolicy && !mustRebase) return previous;
 
   let anchorRemainingPercent;
-  if (sameCycle) {
-    anchorRemainingPercent = projectTargetTrajectory(previous, nowMs);
+  if (mustRebase) {
+    anchorRemainingPercent = baselineRemainingPercent;
   } else {
-    anchorRemainingPercent = Math.max(
-      0,
-      Math.min(
-        100,
-        ((naturalResetAtMs - nowMs) / Math.max(1, naturalResetAtMs - cycleStartedAtMs)) * 100,
-      ),
-    );
+    anchorRemainingPercent = previousRemainingPercent;
   }
   if (policy.kind === "immediate") anchorRemainingPercent = 0;
   return normalizedTargetTrajectory({
@@ -1213,7 +2242,7 @@ function updateTargetTrajectory(previousValue, modelValue, nowMs) {
 
 function ensureState(value) {
   const state = object(value) || {};
-  state.version = 16;
+  state.version = 20;
   state.costMeter = {
     lastRowID: Number.isFinite(state.costMeter && state.costMeter.lastRowID)
       ? state.costMeter.lastRowID
@@ -1234,6 +2263,9 @@ function ensureState(value) {
   state.events.closedIds = Array.isArray(state.events.closedIds)
     ? state.events.closedIds.map(text).filter(Boolean).slice(-64)
     : [];
+  state.events.completedPublicEvents = normalizedCompletedPublicEvents(
+    state.events.completedPublicEvents,
+  );
   for (const axis of ["Forced", "Banked"]) {
     const atKey = `last${axis}EventAt`;
     const idKey = `last${axis}EventId`;
@@ -1259,6 +2291,7 @@ function ensureState(value) {
   state.usage.pace = object(state.usage.pace) || usagePaceFromSamples(state.usage.samples);
   state.usage.behavior = object(state.usage.behavior) || null;
   state.usage.shortLoad = normalizedShortLoadState(state.usage.shortLoad);
+  state.mainlinePreferences = normalizedMainlinePreferences(state.mainlinePreferences);
   state.sessions = normalizedSessionState(state.sessions);
   state.forecastNotification = object(state.forecastNotification) || {};
   state.behaviorNotification =
@@ -1323,10 +2356,6 @@ function ensureState(value) {
     }
   }
   state.lastPersonalReset = state.personalResets[state.personalResets.length - 1] || null;
-  const settlement = globalSettlementFromState(state);
-  state.events.globalSettledThroughAt = settlement.throughAt;
-  state.events.globalSettlementEventId = settlement.eventId;
-  reconcileActiveEpisodeState(state, null, Date.now(), { feedSucceeded: false });
   state.accountStates = Object.fromEntries(
     Object.entries(object(state.accountStates) || {})
       .map(([id, account]) => [text(id), normalizedAccountState(account, text(id))])
@@ -1354,6 +2383,16 @@ function ensureState(value) {
   if (state.activeAccountId && state.accountStates[state.activeAccountId]) {
     bindActiveAccountState(state);
   }
+  state.localResetEpisodes = normalizedLocalResetEpisodes(state.localResetEpisodes);
+  const settlement = globalSettlementFromState(state);
+  state.events.globalSettledThroughAt = settlement.throughAt;
+  state.events.globalSettlementEventId = settlement.eventId;
+  backfillLatestUnattributedGlobalEpisode(state);
+  reconcileActiveEpisodeState(state, object(state.cache.feed), Date.now(), {
+    feedSucceeded: false,
+    reconcileMatching: true,
+    forecast: object(state.cache.forecast),
+  });
   delete state.renewalObservation;
   return state;
 }
@@ -2002,6 +3041,15 @@ function writeState(value) {
 function safePublicState(state, runtime) {
   syncActiveAccountState(state);
   const activeEpisode = object(state.activeEpisode);
+  const activeDeliveryValues = Object.values(
+    object(activeEpisode && activeEpisode.accountDelivery) || {},
+  );
+  const effectiveTemporalPhase =
+    activeEpisode &&
+    text(activeEpisode.temporalPhase) === "completed" &&
+    activeDeliveryValues.some((delivery) => delivery !== "landed")
+      ? "in-progress"
+      : text(activeEpisode && activeEpisode.temporalPhase) || "in-progress";
   const settlement = globalSettlementFromState(state);
   const targetTrajectory = normalizedTargetTrajectory(state.targetTrajectory);
   const bankedCampaign = normalizedBankedCampaign(state.bankedCampaign);
@@ -2026,6 +3074,8 @@ function safePublicState(state, runtime) {
         url: activeEpisode.url,
         status: "awaiting-personal",
         delivery_state: "pending",
+        temporal_phase: effectiveTemporalPhase,
+        public_temporal_phase: text(activeEpisode.temporalPhase) || "in-progress",
         account_delivery: object(activeEpisode.accountDelivery) || {},
         source: activeEpisode.source,
         firstSeenAt: activeEpisode.firstSeenAt,
@@ -2059,11 +3109,12 @@ function safePublicState(state, runtime) {
     usagePace: publicUsagePace(account.usage && account.usage.pace),
     usageBehavior: publicUsageBehavior(account.usage && account.usage.behavior),
     resetCredits: publicResetCreditInventory(account.resetCredits),
+    cycleGeneration: Math.max(0, Math.floor(Number(account.cycleGeneration) || 0)),
     personalResets: normalizedPersonalResets(account.personalResets).slice(-6),
     lastPersonalReset: object(account.lastPersonalReset) || null,
-    deliveryState:
-      (activeEpisode && object(activeEpisode.accountDelivery) && activeEpisode.accountDelivery[account.id]) ||
-      "pending",
+    deliveryState: activeEpisode
+      ? (object(activeEpisode.accountDelivery) && activeEpisode.accountDelivery[account.id]) || "pending"
+      : null,
   }));
   return {
     version: state.version,
@@ -2115,6 +3166,9 @@ function safePublicState(state, runtime) {
       : null,
     targetTrajectory,
     closedEventIds: state.events.closedIds.slice(),
+    completedPublicEvents: normalizedCompletedPublicEvents(
+      state.events.completedPublicEvents,
+    ).slice(-4),
     activeAccountId: state.activeAccountId,
     selectedAccountId: state.selectedAccountId,
     accounts,
@@ -2128,9 +3182,10 @@ function safePublicState(state, runtime) {
     usagePace: publicUsagePace(state.usage.pace),
     usageBehavior: publicUsageBehavior(state.usage.behavior),
     usageShortLoad: publicUsageShortLoad(state.usage.shortLoad),
-    // Session titles and project basenames never leave loopback. IDs, full
-    // paths, message previews and transcripts are deliberately omitted.
-    sessionSuggestions: publicSessionSuggestions(state.sessions),
+    // Mainline labels and bounded recovery titles stay on loopback. Raw thread
+    // IDs, full paths, prompt/preview text and transcripts are omitted; action
+    // IDs are one-way local aliases.
+    sessionSuggestions: publicSessionSuggestions(state.sessions, state.mainlinePreferences),
     schedule: runtime.schedule,
   };
 }
@@ -2391,27 +3446,58 @@ function reconcileActiveEpisodeState(stateValue, feedValue, nowMs = Date.now(), 
   if (eventSettledByState(state, active)) {
     return clearActiveEpisode(state, "already-personally-settled", nowMs, true);
   }
-  const expiresAtMs = eventExpiresAtMs(active);
-  if (expiresAtMs !== null && nowMs > expiresAtMs) {
-    return clearActiveEpisode(state, "announcement-expired", nowMs, true);
-  }
-
-  if (options.feedSucceeded) {
-    const matching = matchingFeedEvent(feedValue, id);
-    if (matching && negativeVerification(matching.reset_verification_status)) {
+  if (options.feedSucceeded || options.reconcileMatching) {
+    const feedRecords = feedRecordsForEvent(feedValue, id);
+    const matching = matchingFeedEvent(feedValue, id) || feedRecords[0] || null;
+    const temporalPhase = matching
+      ? consolidatedResetTemporalPhase(feedValue, matching, options.forecast)
+      : null;
+    if (matching && temporalPhase === "completed") {
+      const reconciliation = associateCompletedEventWithLocalEpisode(state, {
+        ...active,
+        ...matching,
+        id,
+        temporalPhase,
+      });
+      state.activeEpisode.temporalPhase = temporalPhase;
+      state.activeEpisode.accountDelivery = {
+        ...object(active.accountDelivery),
+        ...reconciliation.delivery,
+      };
+      if (reconciliation.tracked > 0 && reconciliation.matched === reconciliation.tracked) {
+        advanceGlobalSettlement(state, {
+          at: active.announcedAt,
+          cause: "global-manual",
+          eventId: id,
+        });
+        rememberClosedEvent(state, id);
+        rememberCompletedPublicEvent(state, { ...active, id });
+        invalidateEventPlanningState(state, id);
+        state.activeEpisode = null;
+        return { cleared: true, reason: "local-cycle-matched", event: active };
+      }
+    }
+    if (matching && temporalPhase === "terminal") {
       return clearActiveEpisode(
         state,
-        `website-${text(matching.reset_verification_status).toLowerCase()}`,
+        `website-${
+          text(matching.reset_verification_status || matching.verificationStatus).toLowerCase() ||
+          "terminal"
+        }`,
         nowMs,
         true,
       );
     }
-    if (!matching && active.source === "site-api") {
+    if (options.feedSucceeded && !feedRecords.length && active.source === "site-api") {
       const firstSeenAtMs = millis(active.firstSeenAt) || eventAtMs;
       if (firstSeenAtMs !== null && nowMs - firstSeenAtMs >= 15 * minute) {
         return clearActiveEpisode(state, "missing-from-fresh-feed", nowMs, true);
       }
     }
+  }
+  const expiresAtMs = eventExpiresAtMs(active);
+  if (expiresAtMs !== null && nowMs > expiresAtMs) {
+    return clearActiveEpisode(state, "announcement-expired", nowMs, true);
   }
   return { cleared: false, reason: null, event: active };
 }
@@ -2444,6 +3530,9 @@ function normalizeFeedEvent(value) {
     localizedSummary: text(event.localized_summary) || "",
     url: /^https:\/\//.test(text(event.url)) ? text(event.url) : "",
     source: "site-api",
+    temporalPhase: eventTemporalPhase(event),
+    verificationStatus: text(event.reset_verification_status) || null,
+    observationResult: text(event.observation_result) || null,
     bankedState: normalizedBankedLifecycleState(event.banked_state || event.bankedState),
     ...resetEventEffects(event),
   };
@@ -2464,7 +3553,7 @@ function locallyExplicitResetAnnouncement(value) {
   );
 }
 
-function latestExplicitFeedEvent(feed) {
+function latestExplicitFeedEvent(feed, forecastValue) {
   const source = object(feed) || {};
   const events = Array.isArray(source.events) ? source.events : [];
   const candidates = [];
@@ -2475,18 +3564,19 @@ function latestExplicitFeedEvent(feed) {
       effects.bankedGrantEffect === "announced" &&
       ["announced", "arriving", "available"].includes(
         normalizedBankedLifecycleState(item.banked_state || item.bankedState),
-      );
+    );
     const localExplicit = locallyExplicitResetAnnouncement(item);
+    const temporalPhase = consolidatedResetTemporalPhase(source, item, forecastValue);
     if (
       (text(item.announcement_state).toLowerCase() === "announced" ||
         isBankedLifecycle ||
         localExplicit) &&
-      !terminalVerification(item.reset_verification_status) &&
+      temporalPhase !== "terminal" &&
       (text(item.type).toLowerCase() === "reset" ||
         text(item.group).toLowerCase() === "reset" ||
         isBankedLifecycle)
     ) {
-      const normalized = normalizeFeedEvent(item);
+      const normalized = normalizeFeedEvent({ ...item, temporalPhase });
       if (normalized) candidates.push(normalized);
     }
   }
@@ -2536,6 +3626,7 @@ function parseAtomEntries(xml) {
       url: link && /^https:\/\//.test(decodeEntities(link[1])) ? decodeEntities(link[1]) : "",
       source: "atom",
     };
+    entry.temporalPhase = eventTemporalPhase(entry);
     if (trustedExplicitEvent(entry)) entries.push(entry);
   }
   entries.sort((left, right) => eventAnnouncedAtMs(right) - eventAnnouncedAtMs(left));
@@ -2570,6 +3661,7 @@ function parseXProfile(html) {
       url: `https://x.com/thsottiaux/status/${id}`,
       source: "push-x-one-shot",
     };
+    post.temporalPhase = eventTemporalPhase(post);
     if (trustedExplicitEvent(post)) posts.push(post);
   }
   posts.sort((left, right) => millis(right.announcedAt) - millis(left.announcedAt));
@@ -2579,6 +3671,14 @@ function parseXProfile(html) {
 function enrichEvent(primary, feedEvent) {
   if (!primary) return feedEvent;
   if (!feedEvent || primary.id !== feedEvent.id) return primary;
+  const phases = [eventTemporalPhase(primary), eventTemporalPhase(feedEvent)];
+  const temporalPhase = phases.includes("future")
+    ? "future"
+    : phases.includes("completed")
+      ? "completed"
+      : phases.includes("terminal")
+        ? "terminal"
+        : "in-progress";
   return {
     ...primary,
     windowStartAt: feedEvent.windowStartAt || primary.windowStartAt,
@@ -2587,6 +3687,7 @@ function enrichEvent(primary, feedEvent) {
     summary: feedEvent.summary.length > primary.summary.length ? feedEvent.summary : primary.summary,
     localizedSummary: feedEvent.localizedSummary || primary.localizedSummary,
     url: feedEvent.url || primary.url,
+    temporalPhase,
   };
 }
 
@@ -2596,12 +3697,28 @@ function notificationCopy(model, reason) {
   const behavior = model && model.behavior;
   const prediction = behavior && behavior.prediction;
   const sessionSuggestions = object(model && model.sessionSuggestions);
-  const sessionCount = Math.max(
-    0,
-    Number(sessionSuggestions && sessionSuggestions.candidateCount) || 0,
+  const availableMainlineCount = Math.max(
+    Array.isArray(sessionSuggestions && sessionSuggestions.mainlines)
+      ? sessionSuggestions.mainlines.length
+      : 0,
+    Number(sessionSuggestions && sessionSuggestions.mainlineCount) || 0,
   );
-  const resumeSuggestion = sessionCount
-    ? `可考虑续跑 ${sessionCount} 个近期 session 或新增任务；仍不足时开启 Fast。`
+  const targetReached = Boolean(
+    decision &&
+      (decision.targetReached === true ||
+        (model && model.usage && Number.isFinite(model.usage.usedPercent) &&
+          Number.isFinite(decision.targetUsed) &&
+          model.usage.usedPercent + 0.05 >= decision.targetUsed)),
+  );
+  const zone = decision && prediction ? behaviorZone(decision, prediction) : "unknown";
+  const mainlineLimit = targetReached || zone === "covered"
+    ? 1
+    : zone === "uncertain"
+      ? 3
+      : 5;
+  const recommendedMainlineCount = Math.min(availableMainlineCount, mainlineLimit);
+  const resumeSuggestion = recommendedMainlineCount
+    ? `可优先继续 ${recommendedMainlineCount} 条可靠主线；仍不足时开启 Fast。`
     : "可新增有价值任务；仍不足时开启 Fast。";
   if (reason === "banked-announced") {
     return {
@@ -2710,11 +3827,14 @@ function notificationCopy(model, reason) {
             1,
           )}%。${resumeSuggestion}`
         : "";
+    const candidateSuffix = Number(decision.candidateUse || 0) > 0.05
+      ? `，候选暗示独立预留 ${whole(decision.candidateUse)}%`
+      : "";
     return {
-      subtitle: "预测加速额度上调",
+      subtitle: "近期使用目标上调",
       body: `到 ${utc8(decision.deadlineMs)}，建议再用约 ${whole(
         decision.additionalTotal,
-      )}%（其中预测加速 ${whole(decision.predictionUse)}%）；24h 概率 ${whole(
+      )}%（其中预测加速 ${whole(decision.predictionUse)}%${candidateSuffix}）；24h 概率仍为 ${whole(
         forecast.p24,
       )}%。${behaviorSuffix}`,
     };
@@ -2761,7 +3881,9 @@ function notificationPlan(model, previous, nowMs) {
   const state = { ...(object(previous) || {}) };
   if (!model || !model.decision || !model.forecast) return { reason: null, state };
   const revision = text(model.forecast.updatedAt) || String(nowMs);
-  const displayedExtra = whole(model.decision.predictionUse);
+  const displayedExtra = whole(
+    Number(model.decision.predictionUse || 0) + Number(model.decision.candidateUse || 0),
+  );
   let reason = null;
   if (
     state.seeded &&
@@ -2784,7 +3906,10 @@ function behaviorPlanKey(model) {
   const usage = model && model.usage;
   if (!decision || !usage) return "";
   const signal = object(model.forecast && model.forecast.signal);
-  const signalKey = signal && text(signal.id) ? `signal:${text(signal.id)}` : "continuous";
+  const signalKey =
+    signal && ["explicit", "commitment"].includes(text(signal.level)) && text(signal.id)
+      ? `signal:${text(signal.id)}`
+      : "continuous";
   return `${Math.round(usage.resetsAtMs / minute)}|${signalKey}`;
 }
 
@@ -3114,7 +4239,7 @@ function createRuntime(logic, initialState) {
       const previous = normalizedTargetTrajectory(account.targetTrajectory);
       const next = updateTargetTrajectory(
         previous,
-        { usage: plan.usage, decision: plan.decision, forecast: draft.forecast },
+        { usage: plan.usage, decision: plan.decision, forecast: plan.forecast || draft.forecast },
         nowMs,
       );
       if (JSON.stringify(previous) !== JSON.stringify(next)) {
@@ -3334,7 +4459,12 @@ function createRuntime(logic, initialState) {
       save();
       return { isNew: false, event: null };
     }
-    event = { ...event, id: explicitEventID(event), ...resetEventEffects(event) };
+    event = {
+      ...event,
+      id: explicitEventID(event),
+      ...resetEventEffects(event),
+      temporalPhase: eventTemporalPhase(event),
+    };
     const settings = object(options) || {};
     const nowMs = Date.now();
     const eventAtMs = eventAnnouncedAtMs(event);
@@ -3424,6 +4554,40 @@ function createRuntime(logic, initialState) {
     }
     const previous = object(runtime.state.activeEpisode);
     const isSame = previous && previous.id === event.id;
+    const wasSeen = seen(event.id);
+    if (event.temporalPhase === "terminal") {
+      remember(event.id);
+      rememberClosedEvent(runtime.state, event.id);
+      invalidateEventPlanningState(runtime.state, event.id);
+      if (isSame) runtime.state.activeEpisode = null;
+      save();
+      return { isNew: false, event: null, kind: "terminal" };
+    }
+    const completedReconciliation =
+      event.temporalPhase === "completed"
+        ? associateCompletedEventWithLocalEpisode(runtime.state, event)
+        : { delivery: {}, matched: 0, tracked: 0 };
+    if (
+      completedReconciliation.tracked > 0 &&
+      completedReconciliation.matched === completedReconciliation.tracked
+    ) {
+      advanceGlobalSettlement(runtime.state, {
+        at: event.announcedAt,
+        cause: "global-manual",
+        eventId: event.id,
+      });
+      remember(event.id);
+      rememberClosedEvent(runtime.state, event.id);
+      rememberCompletedPublicEvent(runtime.state, event);
+      invalidateEventPlanningState(runtime.state, event.id);
+      runtime.state.activeEpisode = null;
+      runtime.state.events.lastEventId = event.id;
+      runtime.state.events.lastEventAt = event.announcedAt;
+      runtime.state.events.lastForcedEventId = event.id;
+      runtime.state.events.lastForcedEventAt = event.announcedAt;
+      save();
+      return { isNew: !wasSeen, event: null, kind: "completed" };
+    }
     const expiresAtMs = eventExpiresAtMs(event);
     if (expiresAtMs !== null && nowMs > expiresAtMs) {
       remember(event.id);
@@ -3450,7 +4614,7 @@ function createRuntime(logic, initialState) {
       save();
       return { isNew: false, event: null };
     }
-    const isNew = !seen(event.id);
+    const isNew = !wasSeen;
     let externallyNotified = settings.viaPush === true;
     if (isSame) {
       runtime.state.activeEpisode = {
@@ -3460,7 +4624,11 @@ function createRuntime(logic, initialState) {
         deliveryState: "pending",
         firstSeenAt: previous.firstSeenAt,
         baselineUsage: previous.baselineUsage,
-        accountDelivery: object(previous.accountDelivery) || {},
+        baselineGenerations: object(previous.baselineGenerations) || {},
+        accountDelivery: {
+          ...object(previous.accountDelivery),
+          ...completedReconciliation.delivery,
+        },
         globalNotifiedAt: previous.globalNotifiedAt,
       };
     } else {
@@ -3475,8 +4643,17 @@ function createRuntime(logic, initialState) {
         deliveryState: "pending",
         firstSeenAt: iso(nowMs),
         baselineUsage: object(runtime.state.usage.latest) || null,
+        baselineGenerations: Object.fromEntries(
+          Object.values(object(runtime.state.accountStates) || {}).map((account) => [
+            account.id,
+            Math.max(0, Math.floor(Number(account.cycleGeneration) || 0)),
+          ]),
+        ),
         accountDelivery: Object.fromEntries(
-          Object.keys(object(runtime.state.accountStates) || {}).map((id) => [id, "pending"]),
+          Object.keys(object(runtime.state.accountStates) || {}).map((id) => [
+            id,
+            completedReconciliation.delivery[id] || "pending",
+          ]),
         ),
         globalNotifiedAt:
           settings.viaPush || !settings.notify || coveredByRecentPush ? iso(nowMs) : null,
@@ -3538,6 +4715,7 @@ function createRuntime(logic, initialState) {
       let activeResetCause = null;
       let unknownCreditDisappearance = false;
       const capacityCandidates = [];
+      const globalResetFacts = [];
 
       for (const parsed of parsedAccounts) {
         const id = opaqueAccountID(
@@ -3561,7 +4739,11 @@ function createRuntime(logic, initialState) {
         const account = normalizedAccountState(prior || legacySeed, id);
         if (event) {
           event.accountDelivery = object(event.accountDelivery) || {};
-          if (!text(event.accountDelivery[id])) event.accountDelivery[id] = "pending";
+          const alreadyLinked = resetRecordsWithGenerations(account.personalResets).some(
+            (record) => record.cause === "global-manual" && record.eventId === event.id,
+          );
+          if (alreadyLinked) event.accountDelivery[id] = "landed";
+          else if (!text(event.accountDelivery[id])) event.accountDelivery[id] = "pending";
         }
         const previous = object(account.usage.latest);
         const previousPlanRank = Number(account.planRank) || 0;
@@ -3695,10 +4877,15 @@ function createRuntime(logic, initialState) {
           : null;
         if (reset) {
           const cause = reset.cause;
+          account.cycleGeneration = Math.max(
+            0,
+            Math.floor(Number(account.cycleGeneration) || 0),
+          ) + 1;
           const record = {
             at: iso(current.updatedAtMs || nowMs),
             cause,
             evidence: reset.evidence,
+            generation: account.cycleGeneration,
             eventId:
               cause === "global-manual" && event
                 ? event.id
@@ -3717,6 +4904,14 @@ function createRuntime(logic, initialState) {
           if (cause === "global-manual" && event) {
             event.accountDelivery = object(event.accountDelivery) || {};
             event.accountDelivery[id] = "landed";
+          }
+          if (cause === "global-manual") {
+            globalResetFacts.push({
+              accountId: id,
+              generation: account.cycleGeneration,
+              at: record.at,
+              eventId: record.eventId,
+            });
           }
         }
         if (planRank > 0) account.lastPaidPlanRank = planRank;
@@ -3756,6 +4951,8 @@ function createRuntime(logic, initialState) {
         if (isLive) runtime.state.activeAccountId = id;
         if (isSelected) runtime.state.selectedAccountId = id;
       }
+
+      recordLocalGlobalResetEpisode(runtime.state, globalResetFacts);
 
       if (costUpdate.deltaUSD > 0 && capacityCandidates.length === 1) {
         const candidate = capacityCandidates[0];
@@ -3833,6 +5030,8 @@ function createRuntime(logic, initialState) {
           };
           advanceGlobalSettlement(runtime.state, record);
           rememberClosedEvent(runtime.state, event.id);
+          rememberCompletedPublicEvent(runtime.state, event);
+          invalidateEventPlanningState(runtime.state, event.id);
           runtime.state.activeEpisode = null;
         }
       }
@@ -3865,6 +5064,8 @@ function createRuntime(logic, initialState) {
   function refreshSessions() {
     const nowMs = Date.now();
     const cycleStartMs = sessionCycleStart(runtime.state, nowMs);
+    const trendWindowStartMs = nowMs - sessionTrendWindow;
+    const intentWindowStartMs = nowMs - mainlineIntentWindow;
     try {
       const readSessions =
         typeof runtime.logic.readSessionRows === "function"
@@ -3872,7 +5073,40 @@ function createRuntime(logic, initialState) {
           : localSessionRows;
       const readGoals =
         typeof runtime.logic.readGoalRows === "function" ? runtime.logic.readGoalRows : localGoalRows;
-      const rows = readSessions(cycleStartMs);
+      const rows = readSessions(intentWindowStartMs);
+      let recentTokenRows = null;
+      let tokenLedgerFailed = false;
+      try {
+        const readRecentTokens =
+          typeof runtime.logic.readRecentSessionTokenRows === "function"
+            ? runtime.logic.readRecentSessionTokenRows
+            : runtime.logic.readSessionRows
+              ? null
+              : localRecentSessionTokenRows;
+        recentTokenRows = readRecentTokens
+          ? readRecentTokens(trendWindowStartMs, nowMs)
+          : null;
+      } catch {
+        tokenLedgerFailed = true;
+      }
+      const previousSessions = normalizedSessionState(runtime.state.sessions);
+      if (
+        tokenLedgerFailed &&
+        previousSessions.tokenSource === "cost-ledger" &&
+        (previousSessions.mainlines.length || previousSessions.candidates.length)
+      ) {
+        runtime.state.sessions = {
+          ...previousSessions,
+          status: "stale",
+          lastErrorAt: iso(nowMs),
+        };
+        healthFailure("sessions");
+        save();
+        return publicSessionSuggestions(
+          runtime.state.sessions,
+          runtime.state.mainlinePreferences,
+        );
+      }
       let goals = [];
       try {
         goals = readGoals();
@@ -3886,6 +5120,10 @@ function createRuntime(logic, initialState) {
         runtime.state.sessions,
         cycleStartMs,
         nowMs,
+        recentTokenRows,
+        trendWindowStartMs,
+        runtime.state.mainlinePreferences,
+        intentWindowStartMs,
       );
       runtime.state.sessions = {
         ...ranked,
@@ -3895,18 +5133,76 @@ function createRuntime(logic, initialState) {
       };
       healthSuccess("Sessions");
       save();
-      return publicSessionSuggestions(runtime.state.sessions);
+      return publicSessionSuggestions(runtime.state.sessions, runtime.state.mainlinePreferences);
     } catch (error) {
       const previous = normalizedSessionState(runtime.state.sessions);
       runtime.state.sessions = {
         ...previous,
-        status: previous.candidates.length ? "stale" : "unavailable",
+        status: previous.mainlines.length || previous.candidates.length ? "stale" : "unavailable",
         lastErrorAt: iso(nowMs),
       };
       healthFailure("sessions");
       save();
       throw error;
     }
+  }
+
+  function applyMainlineAction(actionValue, targetValue) {
+    const action = text(actionValue);
+    const targetId = text(targetValue);
+    const statusByAction = {
+      "mark-mainline": "mainline",
+      "not-mainline": "not-mainline",
+      snooze: "snoozed",
+      complete: "complete",
+    };
+    if (!targetId || (!statusByAction[action] && action !== "restore")) {
+      throw new Error("mainline_action_invalid");
+    }
+    runtime.state.mainlinePreferences = normalizedMainlinePreferences(
+      runtime.state.mainlinePreferences,
+    );
+    if (action === "restore") {
+      const before = runtime.state.mainlinePreferences.length;
+      runtime.state.mainlinePreferences = runtime.state.mainlinePreferences.filter(
+        (preference) => preference.targetId !== targetId,
+      );
+      if (runtime.state.mainlinePreferences.length === before) {
+        throw new Error("mainline_target_unknown");
+      }
+    } else {
+      const target = object(runtime.state.sessions.actionTargets)?.[targetId];
+      if (!target || (action === "mark-mainline" && target.kind !== "session")) {
+        throw new Error("mainline_target_unknown");
+      }
+      const preference = {
+        targetId,
+        kind: target.kind,
+        status: statusByAction[action],
+        label: target.label,
+        project: target.project,
+        updatedAt: iso(Date.now()),
+        snoozedUntil: null,
+      };
+      runtime.state.mainlinePreferences = [
+        preference,
+        ...runtime.state.mainlinePreferences.filter((item) => item.targetId !== targetId),
+      ].slice(0, 200);
+    }
+    save();
+    try {
+      refreshSessions();
+    } catch {
+      // The correction itself is durable. A busy local database should not
+      // make the user repeat the action; the scheduled refresh will reconcile.
+    }
+    return {
+      ok: true,
+      sessionSuggestions: publicSessionSuggestions(
+        runtime.state.sessions,
+        runtime.state.mainlinePreferences,
+      ),
+    };
   }
 
   function evaluateSignalNotification(startup) {
@@ -4004,11 +5300,14 @@ function createRuntime(logic, initialState) {
       runtime.state,
       feedSucceeded ? runtime.state.cache.feed : null,
       Date.now(),
-      { feedSucceeded },
+      { feedSucceeded, forecast: runtime.state.cache.forecast },
     );
     save();
 
-    const feedEvent = latestExplicitFeedEvent(runtime.state.cache.feed);
+    const feedEvent = latestExplicitFeedEvent(
+      runtime.state.cache.feed,
+      runtime.state.cache.forecast,
+    );
     const processed = feedEvent
       ? processEvent(feedEvent, {
           notify: shouldNotifyStartupEvent(
@@ -4039,7 +5338,10 @@ function createRuntime(logic, initialState) {
       healthSuccess("Atom");
       let processedEvent = null;
       if (latest) {
-        const feedEvent = latestExplicitFeedEvent(runtime.state.cache.feed);
+        const feedEvent = latestExplicitFeedEvent(
+          runtime.state.cache.feed,
+          runtime.state.cache.forecast,
+        );
         const enriched = enrichEvent(latest, feedEvent);
         processedEvent = processEvent(enriched, {
           notify: shouldNotifyStartupEvent(
@@ -4217,8 +5519,9 @@ function createRuntime(logic, initialState) {
         await Promise.resolve(refreshShortLoad(Date.now()));
       }
     });
-    // Reads only small metadata rows from Codex's local SQLite databases. It
-    // never scans rollout transcripts and never contacts a website.
+    // Reads small root-task rows plus bounded first-message/preview fields from
+    // Codex's local SQLite database. It never scans rollout transcripts,
+    // retains the excerpts, or contacts a website for mainline inference.
     scheduleLoop("sessions", sessionRefreshInterval, refreshSessions);
   }
 
@@ -4233,6 +5536,7 @@ function createRuntime(logic, initialState) {
     refreshUsage,
     refreshShortLoad,
     refreshSessions,
+    applyMainlineAction,
     refreshSite,
     refreshAtom,
     handlePush,
@@ -4271,6 +5575,27 @@ function createServer(service) {
           publicKey,
           capabilityToken: service.runtime.state.capabilityToken,
         });
+        return;
+      }
+      if (request.method === "POST" && requestURL.pathname === "/api/mainline-action") {
+        if (!originAllowed(request)) {
+          jsonResponse(response, 403, { error: "origin" });
+          return;
+        }
+        if (!timingSafeToken(request.headers["x-codex-reset-token"], service.runtime.state.capabilityToken)) {
+          jsonResponse(response, 403, { error: "token" });
+          return;
+        }
+        const body = object(await readBody(request, 8 * 1024)) || {};
+        try {
+          jsonResponse(
+            response,
+            200,
+            service.applyMainlineAction(text(body.action), text(body.targetId)),
+          );
+        } catch (error) {
+          jsonResponse(response, 400, { error: text(error && error.message) || "action" });
+        }
         return;
       }
       if (request.method === "POST" && requestURL.pathname === "/api/subscribe") {
@@ -4461,12 +5786,15 @@ module.exports = {
   createServer,
   decodeEntities,
   eventSettledByState,
+  eventTemporalPhase,
   globalSettlementFromState,
   inferDeadline,
   latestExplicitFeedEvent,
+  consolidatedResetTemporalPhase,
   notificationCopy,
   notificationPlan,
   normalizedTargetTrajectory,
+  normalizedLocalResetEpisodes,
   normalizedResetCreditInventory,
   resetEventEffects,
   appendUsageSample,
@@ -4484,10 +5812,12 @@ module.exports = {
   reconcileActiveEpisodeState,
   renewalObservationFromHistory,
   resetCause,
+  associateCompletedEventWithLocalEpisode,
   seedShortLoadPrediction,
   shouldNotifyStartupEvent,
   sessionCandidatesFromRows,
   sessionCycleStart,
+  localRecentSessionTokenRows,
   settleShortLoadPredictions,
   shortLoadShadowMetrics,
   trustedExplicitEvent,

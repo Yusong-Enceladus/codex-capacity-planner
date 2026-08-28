@@ -28,6 +28,12 @@ data when the service is unavailable.
 Probabilities are cumulative. A client must not invent confidence, extend the
 48-hour curve, or turn a text hint into a numeric probability.
 
+A structured candidate may still change the work plan without changing that
+probability. The reference client reserves 10% of the quota that would remain
+after the ordinary forecast adjustment and schedules that bounded amount
+earlier. It exposes this as a separate candidate reserve, never as forecast
+probability, and a candidate alone cannot drive a non-terminal target to 100%.
+
 ## Feed
 
 `GET /api/feed?locale=<locale>` returns an event list and an optional active
@@ -68,6 +74,22 @@ promoted this way. Authoritative replies count as announcements, and a later
 reply may refine the deadline of the same public promise. A public announcement
 and personal delivery are separate states.
 
+Clients reconcile all representations of one public ID before planning. Signal
+strength (`candidate`, commitment, explicit), temporal phase (future,
+in-progress, completed, terminal), and per-account delivery are separate axes.
+A completed confirmation may be paired with the latest unique unattributed
+local forced-reset episode by monotonic cycle generation and event ordering;
+this association must not depend on a fixed look-back duration. A structured
+future window prevents that backward association. Rejected or failed evidence
+is terminal, while local quota reconstruction remains authoritative when a
+public feed exposes conflicting pending/completed fields.
+
+An immediate 100% policy requires an explicit future/in-progress event and a
+pending delivery state for that account. Accounts already marked landed use
+their ordinary natural/forecast trajectory even if peers are still pending.
+Once every tracked account is landed, the public event becomes immutable
+history and the same ID cannot re-enter through another feed representation.
+
 If the public text contains an approximate time with an explicit timezone, the
 client preserves the original phrase and converts its stated center to one
 canonical display instant. That same instant drives the target trajectory,
@@ -77,6 +99,16 @@ deadline. “Within” windows retain their stated end as the deadline. If no ti
 is stated, the client omits the time row and does not manufacture a deadline.
 Each rendered public message keeps its own source link immediately adjacent;
 links from multiple posts are never pooled into an unlabeled footer.
+
+Signal strength and lifecycle are independent. Unknown objects do not default
+to hints: a hint requires `kind: candidate|hint`, `signal_type` for a supported
+candidate, or `announcement_state: hinted`. As a bounded compatibility path
+for delayed signal materialization, a retained Tibo corpus post may qualify
+only when it is a top-level post (`conversation_id == id`), the classifier lane
+is `reset_related`, and `explicit_reset_claim` is false. Replies never qualify
+through this fallback because their meaning depends on the parent post.
+Completed, rejected, expired, landed, unchanged, and otherwise terminal facts
+remain history and cannot become an active hint.
 
 ## Privacy
 

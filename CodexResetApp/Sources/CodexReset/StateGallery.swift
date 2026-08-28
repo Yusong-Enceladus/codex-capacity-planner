@@ -242,21 +242,21 @@ private enum ResetGalleryFixtures {
                 detail: "为什么这样建议", groups: ["summary"]),
             self.scenario(
                 "accelerate", "目标高于预测区间", phase: "加速",
-                explanation: "预计使用不足，推荐续跑已有任务，仍不足时才使用 Fast。", tint: .orange,
+                explanation: "预计使用不足，推荐继续跨日持续的可靠主线，仍不足时才使用 Fast。", tint: .orange,
                 snapshot: self.snapshot(
-                    action: "续跑近期任务，仍不足时开启 Fast",
+                    action: "继续可靠主线，仍不足时开启 Fast",
                     actionSecondary: "目标 78% 在预计 50%–65% 右侧",
                     extraMain: [
-                        self.row("任务 1", "完成容量异常状态机", "Goal 仍在进行 · CodexReset"),
-                        self.row("任务 2", "补齐重置公告详情", "本周期最近活跃 · CodexReset"),
-                        self.row("任务 3", "验证独立 App 与 CodexBar", "已置顶 · CodexReset"),
+                        self.row("主线 1", "CodexReset · 应用", "3 条相关任务跨 4 天持续推进"),
+                        self.row("主线 2", "Research · 论文", "进行中的 Goal"),
+                        self.row("主线 3", "Experiments · 实验", "你已明确标为主线"),
                         self.row("重置", "下次自然刷新 · \(self.natural)"),
                     ],
                     progress: self.progress(current: 42, target: 78, lower: 50, median: 58, upper: 65),
                     why: self.whyRows(
                         current: "已用 42% · 此刻目标 55%",
                         forecast: "刷新前预计 50%–65%",
-                        conclusion: "续跑近期任务，仍不足时开启 Fast",
+                        conclusion: "继续可靠主线，仍不足时开启 Fast",
                         explanation: "目标位于预计区间右侧"),
                     reset: [self.row("下次自然刷新", self.natural, group: "current")]),
                 detail: "为什么这样建议", groups: ["summary"]),

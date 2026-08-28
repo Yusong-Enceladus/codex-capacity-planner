@@ -11,7 +11,9 @@ const {
   communityCapacityPrior,
   classifyCapacityCohort,
   createRuntime,
+  consolidatedResetTemporalPhase,
   eventSettledByState,
+  eventTemporalPhase,
   globalSettlementFromState,
   inferDeadline,
   inferredDeadlineLabel,
@@ -56,6 +58,8 @@ const parseUsage = vm.runInContext("codexResetPickWeeklyUsage", context);
 const parseUsages = vm.runInContext("codexResetWeeklyUsages", context);
 const pickSignal = vm.runInContext("codexResetPickSignal", context);
 const bankedPlanFor = vm.runInContext("codexResetBankedPlan", context);
+const suggestionLimit = vm.runInContext("codexResetSuggestionLimit", context);
+const workspaceSuggestions = vm.runInContext("codexResetWorkspaceSuggestions", context);
 
 const hour = 60 * 60 * 1000;
 const minute = 60 * 1000;
@@ -113,6 +117,32 @@ close(higherProbability.targetNowUsed, ordinary.targetNowUsed);
 check(
   higherProbability.targetUsed > ordinary.targetUsed,
   "a higher forecast may raise the future red marker without moving the current target",
+);
+
+const candidate = decision({ signal: { level: "hint", deadlineMs: null } });
+equal(candidate.mode, "hint");
+close(candidate.probability, ordinary.probability, 0.0001);
+close(candidate.predictionUse, ordinary.predictionUse, 0.0001);
+close(candidate.candidateReservePercent, 10);
+close(candidate.candidateUse, 5.25);
+close(candidate.effectiveRiskPercent, 37);
+check(
+  candidate.targetUsed > ordinary.targetUsed,
+  "a real candidate must schedule more quota without rewriting forecast probability",
+);
+check(candidate.targetUsed < 100, "a candidate alone must not force a 100% target");
+
+const candidateWithoutForecast = decision({
+  p24: 0,
+  p48: 0,
+  forecastUsable: false,
+  signal: { level: "hint", deadlineMs: null },
+});
+close(candidateWithoutForecast.probability, 0);
+close(candidateWithoutForecast.candidateUse, 7.5);
+check(
+  candidateWithoutForecast.targetUsed > noForecast.targetUsed,
+  "candidate planning pressure must remain useful without a numeric forecast",
 );
 
 const afterUsage = decision({ usedPercent: 60 });
@@ -185,6 +215,9 @@ close(renewalBoundary.additionalTotal, 90);
 
 function trajectoryModel(overrides = {}) {
   const policy = overrides.policy || {};
+  const signalLevel =
+    overrides.signalLevel ||
+    (["deadline", "immediate"].includes(policy.kind) ? "explicit" : "none");
   return {
     usage: {
       usedPercent: overrides.usedPercent === undefined ? 10 : overrides.usedPercent,
@@ -192,7 +225,7 @@ function trajectoryModel(overrides = {}) {
       resetsAtMs: now + 6 * day,
       windowMinutes: 7 * 24 * 60,
     },
-    forecast: { signal: { id: overrides.signalId || null } },
+    forecast: { signal: { id: overrides.signalId || null, level: signalLevel } },
     planningDecision: {
       naturalResetAtMs: now + 6 * day,
       trajectoryPolicyKind: policy.kind || "hazard",
@@ -249,6 +282,129 @@ const explicitTrajectory = updateTargetTrajectory(
   policyChangeAt,
 );
 close(projectTargetTrajectory(explicitTrajectory, explicitDeadline), 0);
+
+const immediateTrajectory = updateTargetTrajectory(
+  trajectory,
+  trajectoryModel({
+    signalId: "2888888888888888800",
+    policy: { kind: "immediate", hazardPerHour: 0, source: "explicit-now" },
+  }),
+  policyChangeAt,
+);
+close(immediateTrajectory.anchorRemainingPercent, 0);
+const correctedAt = policyChangeAt + hour;
+const correctedTrajectory = updateTargetTrajectory(
+  immediateTrajectory,
+  trajectoryModel({ policy: { kind: "hazard", source: "forecast" } }),
+  correctedAt,
+);
+close(
+  correctedTrajectory.anchorRemainingPercent,
+  ((now + 6 * day - correctedAt) / (7 * day)) * 100,
+  0.0001,
+);
+
+const poisonedContinuousTrajectory = {
+  ...trajectory,
+  anchorRemainingPercent: 0,
+  policyKind: "hazard",
+  policySource: "forecast",
+  signalId: "retrospective-reply",
+};
+const healedContinuousTrajectory = updateTargetTrajectory(
+  poisonedContinuousTrajectory,
+  trajectoryModel({ policy: { kind: "hazard", source: "forecast" } }),
+  policyChangeAt,
+);
+close(
+  healedContinuousTrajectory.anchorRemainingPercent,
+  ((now + 6 * day - policyChangeAt) / (7 * day)) * 100,
+  0.0001,
+);
+check(
+  healedContinuousTrajectory.anchorRemainingPercent > 0,
+  "a downgraded zero-anchor hazard must self-heal instead of preserving a 100% target",
+);
+
+const hintTrajectory = updateTargetTrajectory(
+  null,
+  trajectoryModel({
+    signalId: "candidate-a",
+    signalLevel: "hint",
+    policy: { kind: "hazard", source: "hint" },
+  }),
+  now,
+);
+equal(hintTrajectory.signalId, null, "candidate post IDs must not become durable policy identity");
+const changedHintTrajectory = updateTargetTrajectory(
+  hintTrajectory,
+  trajectoryModel({
+    signalId: "candidate-b",
+    signalLevel: "hint",
+    policy: { kind: "hazard", source: "hint" },
+  }),
+  now,
+);
+assert.deepEqual(changedHintTrajectory, hintTrajectory);
+checks += 1;
+
+const screenshotNow = Date.parse("2026-08-27T08:08:14Z");
+const screenshotResetAt = Date.parse("2026-09-01T14:20:28Z");
+const screenshotCycleStartedAt = screenshotResetAt - 7 * day;
+const screenshotDraftDecision = compute({
+  nowMs: screenshotNow,
+  usedPercent: 9,
+  resetsAtMs: screenshotResetAt,
+  windowMinutes: 7 * 24 * 60,
+  p24: 23.680659343848395,
+  p48: 41.75,
+  commitmentFloor: 0,
+  signal: { level: "hint", deadlineMs: null },
+  forecastUsable: true,
+  plannedRemainingNow: 0,
+});
+const screenshotPoisonedTrajectory = {
+  version: 1,
+  anchorAt: "2026-08-26T05:58:03.497Z",
+  anchorRemainingPercent: 0,
+  naturalResetAt: new Date(screenshotResetAt).toISOString(),
+  cycleStartedAt: new Date(screenshotCycleStartedAt).toISOString(),
+  cycleResetAt: new Date(screenshotResetAt).toISOString(),
+  policyKind: "hazard",
+  policyHazardPerHour: 0.011260158253614426,
+  policyDeadlineAt: null,
+  policySource: "forecast",
+  signalId: "2092316228497063958",
+};
+const screenshotHealedTrajectory = updateTargetTrajectory(
+  screenshotPoisonedTrajectory,
+  {
+    usage: {
+      usedPercent: 9,
+      resetsAtMs: screenshotResetAt,
+      windowMinutes: 7 * 24 * 60,
+    },
+    planningDecision: screenshotDraftDecision,
+    forecast: { signal: { level: "hint", id: "2092862554632826968" } },
+  },
+  screenshotNow,
+);
+const screenshotFixedDecision = compute({
+  nowMs: screenshotNow,
+  usedPercent: 9,
+  resetsAtMs: screenshotResetAt,
+  windowMinutes: 7 * 24 * 60,
+  p24: 23.680659343848395,
+  p48: 41.75,
+  commitmentFloor: 0,
+  signal: { level: "hint", deadlineMs: null },
+  forecastUsable: true,
+  plannedRemainingNow: screenshotHealedTrajectory.anchorRemainingPercent,
+});
+check(
+  screenshotFixedDecision.targetUsed > 58 && screenshotFixedDecision.targetUsed < 59,
+  "the observed 9%-used poisoned plan must heal to a bounded candidate target, not 100%",
+);
 
 const usagePayload = [
   {
@@ -339,6 +495,74 @@ equal(signalAtEvent.id, tiboEvent.id);
 equal(signalAtEvent.deadlineMs, Date.parse("2026-08-13T02:01:37.000Z"));
 equal(signalAtEvent.summary, tiboEvent.summary, "confirmation strength must retain the full signal text");
 equal(signalAtEvent.localizedSummary, tiboEvent.localized_summary);
+equal(eventTemporalPhase(tiboEvent), "future", "a structured future window must remain future-facing");
+
+const completedConfirmationID = "2093014447833116908";
+const completedConfirmation = {
+  id: completedConfirmationID,
+  type: "reset",
+  group: "reset",
+  summary:
+    "Never slept better and feeling reseted. Brand new me and brand new usage for all ChatGPT Work and Codex users. Regaining my youth one button press at a time.",
+  localized_summary: "感觉焕然一新，所有用户都有了全新额度。",
+  url: `https://x.com/thsottiaux/status/${completedConfirmationID}`,
+  announced_at: "2026-08-27T16:35:05.000Z",
+  announcement_state: "announced",
+  reset_verification_status: "pending",
+};
+const conflictingCompletedFeed = {
+  signal: {
+    ...completedConfirmation,
+    tweet_id: completedConfirmationID,
+    kind: "candidate",
+    active: true,
+  },
+  events: [completedConfirmation],
+  tweets: [
+    {
+      ...completedConfirmation,
+      text: completedConfirmation.summary,
+      conversation_id: completedConfirmationID,
+      tibo_lane: "reset_announcement",
+      explicit_reset_claim: true,
+      reset_verification_status: "expired",
+    },
+  ],
+};
+const completedConfirmationForecast = {
+  ...forecastFixture("2026-08-28T03:43:04.403Z"),
+  last_reset_at: completedConfirmation.announced_at,
+  evidence: [
+    {
+      code: "last_reset",
+      href: completedConfirmation.url,
+    },
+  ],
+};
+equal(eventTemporalPhase(completedConfirmation), "completed");
+equal(
+  consolidatedResetTemporalPhase(
+    conflictingCompletedFeed,
+    completedConfirmation,
+    completedConfirmationForecast,
+  ),
+  "completed",
+  "completion evidence must win over a stale pending representation of the same public event",
+);
+equal(
+  latestExplicitFeedEvent(conflictingCompletedFeed, completedConfirmationForecast).temporalPhase,
+  "completed",
+);
+equal(
+  pickSignal(
+    completedConfirmationForecast,
+    conflictingCompletedFeed,
+    null,
+    Date.parse("2026-08-28T03:50:00.000Z"),
+  ).level,
+  "none",
+  "a negative terminal representation of the same ID must not become a fresh planning signal",
+);
 
 const receiverLanded = {
   currentEvent: {
@@ -355,11 +579,44 @@ const afterLanded = pickSignal(
 );
 equal(afterLanded.level, "none", "a locally observed arrival must close the matching global event");
 
+const partialDeliveryReceiver = {
+  activeAccountId: "account-a",
+  activeEpisode: {
+    ...tiboEvent,
+    id: tiboEvent.id,
+    announced_at: tiboEvent.announced_at,
+    source: "site-api",
+    status: "awaiting-personal",
+    account_delivery: { "account-a": "landed", "account-b": "pending" },
+  },
+};
+equal(
+  pickSignal(
+    forecastFixture(),
+    { events: [tiboEvent], signal: { ...tiboEvent, tweet_id: tiboEvent.id, active: true } },
+    partialDeliveryReceiver,
+    Date.parse("2026-08-13T01:15:00Z"),
+  ).level,
+  "none",
+  "an account that already landed must return to its normal cycle even while a peer is pending",
+);
+equal(
+  pickSignal(
+    forecastFixture(),
+    { events: [tiboEvent], signal: { ...tiboEvent, tweet_id: tiboEvent.id, active: true } },
+    { ...partialDeliveryReceiver, activeAccountId: "account-b" },
+    Date.parse("2026-08-13T01:15:00Z"),
+  ).level,
+  "explicit",
+  "the same public episode must remain active for an account that has not landed",
+);
+
 const landedAt = "2026-08-13T03:33:00.622Z";
 const previousHint = {
   id: "hint-before-confirmation",
   type: "reset",
   group: "reset",
+  kind: "candidate",
   announcement_state: "none",
   summary: "Little surprise for you tomorrow.",
   announced_at: "2026-08-12T06:20:37.000Z",
@@ -459,6 +716,58 @@ const commitmentSignal = pickSignal(
 );
 equal(commitmentSignal.level, "commitment");
 equal(commitmentSignal.commitmentFloor, 65);
+
+const retrospectiveReply = {
+  id: "2092316228497063958",
+  type: "reset",
+  group: "reset",
+  announcement_state: "none",
+  reset_verification_status: "pending",
+  summary: "@s_batzoglou Not so random, but yes",
+  announced_at: "2026-08-25T18:20:36.000Z",
+};
+equal(
+  pickSignal(
+    forecastFixture("2026-08-27T06:30:00Z"),
+    { events: [retrospectiveReply] },
+    null,
+    Date.parse("2026-08-27T07:00:00Z"),
+  ).level,
+  "none",
+  "an incomplete reset object must fail closed instead of defaulting to a hint",
+);
+
+const rawTopLevelCandidate = {
+  id: "2092862554632826968",
+  at: "2026-08-27T06:31:31.000Z",
+  kind: "other",
+  tibo_lane: "reset_related",
+  explicit_reset_claim: false,
+  conversation_id: "2092862554632826968",
+  in_reply_to_status_id: null,
+  in_reply_to_user_id: null,
+  text: "Intrigued to see if I can find the reset button tomorrow and dust it up",
+  localized_text: "反向翻译不应进入兼容候选",
+  url: "https://x.com/thsottiaux/status/2092862554632826968",
+};
+const rawRetrospectiveReply = {
+  ...rawTopLevelCandidate,
+  id: "2092316228497063958",
+  at: "2026-08-25T18:20:36.000Z",
+  kind: "candidate",
+  conversation_id: "2092256496063033418",
+  text: "@s_batzoglou Not so random, but yes",
+  url: "https://x.com/thsottiaux/status/2092316228497063958",
+};
+const corpusCandidate = pickSignal(
+  forecastFixture("2026-08-27T06:30:00Z"),
+  { tweets: [rawTopLevelCandidate, rawRetrospectiveReply] },
+  null,
+  Date.parse("2026-08-27T07:00:00Z"),
+);
+equal(corpusCandidate.level, "hint");
+equal(corpusCandidate.id, rawTopLevelCandidate.id);
+equal(corpusCandidate.localizedSummary, "", "an unverified reversed translation must be omitted");
 
 const model = build(usagePayload, forecastFixture(), null, now, null);
 check(model.decision, "fresh exact inputs should produce a decision");
@@ -1588,6 +1897,30 @@ equal(
   "a red target to the left of the whole blue interval should be clearly fast",
 );
 equal(
+  suggestionLimit(behaviorModel.decision, behaviorModel.behavior.prediction, 10),
+  5,
+  "a projected interval still below target should allow five reliable mainlines",
+);
+equal(
+  suggestionLimit(uncertainModel.decision, uncertainModel.behavior.prediction, 10),
+  3,
+  "an interval covering target should allow three reliable mainlines",
+);
+equal(
+  suggestionLimit(recoveredModel.decision, recoveredModel.behavior.prediction, 10),
+  1,
+  "an interval already beyond target should allow one reliable mainline",
+);
+equal(
+  suggestionLimit(
+    { ...behaviorModel.decision, targetReached: true },
+    behaviorModel.behavior.prediction,
+    behaviorModel.decision.targetUsed + 1,
+  ),
+  1,
+  "actual usage beyond target should allow only one reliable mainline",
+);
+equal(
   behaviorNotificationPlan(recoveredModel, behaviorBehind.state, now + 3 * minute).reason,
   "behavior-recovered",
 );
@@ -1609,10 +1942,10 @@ equal(
   "a red marker touching the blue boundary should remain basically suitable",
 );
 const slowCopy = notificationCopy(
-  { ...behaviorModel, sessionSuggestions: { candidateCount: 3 } },
+  { ...behaviorModel, sessionSuggestions: { mainlineCount: 3 } },
   "behavior-behind",
 );
-check(/续跑 3 个近期 session.*开启 Fast/.test(slowCopy.body));
+check(/优先继续 3 条可靠主线.*开启 Fast/.test(slowCopy.body));
 const fastCopy = notificationCopy(recoveredModel, "behavior-recovered");
 check(/切回 Standard/.test(fastCopy.subtitle));
 check(!/减少任务/.test(`${fastCopy.subtitle} ${fastCopy.body}`));
@@ -1723,7 +2056,7 @@ const rankedSessions = sessionCandidatesFromRows(
     {
       id: "thread-paused",
       display_title: "Paused research task",
-      cwd: "/synthetic-home/private-project",
+      cwd: "/synthetic-home/research-workspace",
       tokens_used: 500,
       created_at_ms: now - 10 * hour,
       recency_at_ms: now - 2 * hour,
@@ -1741,7 +2074,7 @@ const rankedSessions = sessionCandidatesFromRows(
     {
       id: "thread-recent",
       display_title: "Recent ordinary task",
-      cwd: "/synthetic-home/ordinary",
+      cwd: "/synthetic-home/research-workspace",
       tokens_used: 100,
       created_at_ms: now - 30 * minute,
       recency_at_ms: now - 5 * minute,
@@ -1768,16 +2101,243 @@ const rankedSessions = sessionCandidatesFromRows(
   },
   sessionStart,
   now,
+  [
+    { session_id: "thread-paused", recent_tokens: 100 },
+    { session_id: "thread-pinned", recent_tokens: 800 },
+    { session_id: "thread-recent", recent_tokens: 900 },
+    { session_id: "thread-complete", recent_tokens: 2_000 },
+  ],
+  now - day,
 );
 equal(rankedSessions.candidateCount, 3, "completed goals should not be suggested for resuming");
-equal(rankedSessions.candidates[0].title, "Paused research task");
-equal(rankedSessions.candidates[0].reason, "Goal 已暂停");
+equal(rankedSessions.tokenSource, "cost-ledger");
+equal(rankedSessions.workspaceCount, 2);
+equal(rankedSessions.candidates[0].title, "Recent ordinary task");
+equal(rankedSessions.candidates[0].workspaceObservedTokens, 1_000);
+equal(rankedSessions.candidates[0].workspaceRank, 1);
 equal(rankedSessions.candidates[1].title, "Pinned implementation task");
-equal(rankedSessions.candidates[1].observedTokens, 60);
+equal(rankedSessions.candidates[1].observedTokens, 800);
+equal(
+  rankedSessions.candidates[2].title,
+  "Paused research task",
+  "the second task from a high-volume workspace should wait until each workspace gets one slot",
+);
 equal(
   rankedSessions.candidates[2].observedTokens,
   100,
-  "a session created after local observation began may use its full cumulative count",
+  "precise rolling token deltas should replace cumulative thread counters",
+);
+
+const firstLocalTokenSample = sessionCandidatesFromRows(
+  [{
+    id: "thread-local-window",
+    display_title: "Locally sampled task",
+    cwd: "/synthetic-home/local-window",
+    tokens_used: 1_000,
+    created_at_ms: now - 2 * day,
+    recency_at_ms: now,
+    is_pinned: 0,
+  }],
+  [],
+  {
+    cycleStartAt: new Date(sessionStart).toISOString(),
+    observationStartedAt: new Date(now - 3 * hour).toISOString(),
+    baselines: { "thread-local-window": 900 },
+  },
+  sessionStart,
+  now,
+  [],
+  now - day,
+);
+equal(firstLocalTokenSample.tokenSource, "observation-fallback");
+equal(firstLocalTokenSample.candidates[0].observedTokens, 100);
+const secondLocalTokenSampleAt = now + 25 * hour;
+const matureLocalTokenSample = sessionCandidatesFromRows(
+  [{
+    id: "thread-local-window",
+    display_title: "Locally sampled task",
+    cwd: "/synthetic-home/local-window",
+    tokens_used: 1_600,
+    created_at_ms: now - 2 * day,
+    recency_at_ms: secondLocalTokenSampleAt,
+    is_pinned: 0,
+  }],
+  [],
+  firstLocalTokenSample,
+  sessionStart,
+  secondLocalTokenSampleAt,
+  [],
+  secondLocalTokenSampleAt - day,
+);
+equal(
+  matureLocalTokenSample.tokenSource,
+  "local-samples",
+  "the monitor's own token samples should become a true rolling window after one day",
+);
+equal(
+  matureLocalTokenSample.candidates[0].observedTokens,
+  600,
+  "rolling local samples should subtract the counter observed at the 24-hour boundary",
+);
+
+const mainlineRows = [
+  {
+    id: "paper-draft",
+    display_title: "Paper manuscript experiments",
+    first_user_message: "Continue the paper manuscript and evaluate experiments",
+    preview: "private paper preview must not leak",
+    cwd: "/synthetic-home/research",
+    tokens_used: 900,
+    created_at_ms: now - 5 * day,
+    recency_at_ms: now - 2 * day,
+    is_pinned: 0,
+  },
+  {
+    id: "paper-revision",
+    display_title: "Paper manuscript revision",
+    first_user_message: "Revise the paper manuscript after the experiments",
+    cwd: "/synthetic-home/research",
+    tokens_used: 800,
+    created_at_ms: now - 2 * day,
+    recency_at_ms: now - hour,
+    is_pinned: 0,
+  },
+  {
+    id: "temporary-author-removal",
+    display_title: "Remove author information",
+    first_user_message: "One-off anonymization before submission",
+    cwd: "/synthetic-home/research",
+    tokens_used: 50_000,
+    created_at_ms: now - hour,
+    recency_at_ms: now - 5 * minute,
+    is_pinned: 0,
+  },
+  {
+    id: "backend-one",
+    display_title: "Backend API reliability",
+    first_user_message: "Continue backend API reliability work",
+    cwd: "/synthetic-home/service",
+    tokens_used: 20_000,
+    created_at_ms: now - 4 * day,
+    recency_at_ms: now - day,
+    is_pinned: 0,
+  },
+  {
+    id: "backend-two",
+    display_title: "Backend API integration",
+    first_user_message: "Continue backend API integration work",
+    cwd: "/synthetic-home/service",
+    tokens_used: 20_000,
+    created_at_ms: now - day,
+    recency_at_ms: now - 2 * hour,
+    is_pinned: 0,
+  },
+  {
+    id: "explicit-roadmap",
+    display_title: "Capacity planning roadmap",
+    first_user_message: "Plan the next capacity planning milestones",
+    cwd: "/synthetic-home/planner",
+    tokens_used: 10,
+    created_at_ms: now - 3 * hour,
+    recency_at_ms: now - 10 * minute,
+    is_pinned: 0,
+  },
+];
+const mainlineTokenRows = [
+  { session_id: "paper-draft", recent_tokens: 20 },
+  { session_id: "paper-revision", recent_tokens: 30 },
+  { session_id: "temporary-author-removal", recent_tokens: 100_000 },
+  { session_id: "backend-one", recent_tokens: 10_000 },
+  { session_id: "backend-two", recent_tokens: 20_000 },
+  { session_id: "explicit-roadmap", recent_tokens: 1 },
+];
+const inferredMainlines = sessionCandidatesFromRows(
+  mainlineRows,
+  [],
+  {},
+  sessionStart,
+  now,
+  mainlineTokenRows,
+  now - day,
+  [],
+  now - 30 * day,
+);
+equal(inferredMainlines.mainlines.length, 2, "only repeated cross-day work should be inferred");
+check(
+  inferredMainlines.mainlines.some((mainline) => /论文/.test(mainline.label)),
+  "related paper work should become one logical mainline",
+);
+check(
+  !inferredMainlines.mainlines.some((mainline) => /author|Remove/i.test(mainline.label)),
+  "a one-off high-token session must not become a mainline",
+);
+const reversedLoadMainlines = sessionCandidatesFromRows(
+  mainlineRows,
+  [],
+  {},
+  sessionStart,
+  now,
+  mainlineTokenRows.map((row, index) => ({ ...row, recent_tokens: (index + 1) * 999_999 })),
+  now - day,
+  [],
+  now - 30 * day,
+);
+assert.deepEqual(
+  inferredMainlines.mainlines.map((mainline) => mainline.label),
+  reversedLoadMainlines.mainlines.map((mainline) => mainline.label),
+  "token volume must not change logical-mainline intent order",
+);
+checks += 1;
+const explicitTarget = inferredMainlines.candidates.find(
+  (candidate) => candidate.title === "Capacity planning roadmap",
+).actionId;
+const explicitMainlines = sessionCandidatesFromRows(
+  mainlineRows,
+  [],
+  {},
+  sessionStart,
+  now,
+  mainlineTokenRows,
+  now - day,
+  [{
+    targetId: explicitTarget,
+    kind: "session",
+    status: "mainline",
+    label: "Capacity planning roadmap",
+    project: "planner",
+    updatedAt: new Date(now).toISOString(),
+  }],
+  now - 30 * day,
+);
+equal(explicitMainlines.mainlines[0].label, "Capacity planning roadmap");
+equal(explicitMainlines.mainlines[0].source, "explicit");
+equal(
+  explicitMainlines.mainlines[0].observedTokens,
+  1,
+  "an explicit low-load mainline must outrank inferred high-load work",
+);
+const rejectedInferredTarget = inferredMainlines.mainlines[0].actionId;
+const correctedMainlines = sessionCandidatesFromRows(
+  mainlineRows,
+  [],
+  {},
+  sessionStart,
+  now,
+  mainlineTokenRows,
+  now - day,
+  [{
+    targetId: rejectedInferredTarget,
+    kind: "mainline",
+    status: "not-mainline",
+    label: inferredMainlines.mainlines[0].label,
+    project: inferredMainlines.mainlines[0].project,
+    updatedAt: new Date(now).toISOString(),
+  }],
+  now - 30 * day,
+);
+check(
+  !correctedMainlines.mainlines.some((mainline) => mainline.actionId === rejectedInferredTarget),
+  "a local correction must override automatic inference",
 );
 
 const publicRuntime = createRuntime(
@@ -1836,15 +2396,95 @@ equal(publicState.sessionSuggestions.candidateCount, 3);
 equal(publicState.sessionSuggestions.candidates.length, 3);
 check(
   publicState.sessionSuggestions.candidates.some(
-    (candidate) => candidate.title === "Paused research task" && candidate.project === "private-project",
+    (candidate) =>
+      candidate.title === "Paused research task" &&
+      candidate.project === "research-workspace" &&
+      candidate.workspaceObservedTokens === 1_000,
   ),
-  "the provider should receive only a title and project basename for a resumable candidate",
+  "the provider should receive workspace aggregates without the private workspace key or path",
 );
 check(!publicStateJSON.includes("thread-paused"), "thread IDs must stay private to the monitor");
 check(!publicStateJSON.includes("/synthetic-home"), "full project paths must stay private to the monitor");
 equal(publicState.usage, undefined, "raw usage samples must stay private to the monitor");
 equal(publicState.usageSnapshot.samples, undefined, "raw usage history must not enter the fallback snapshot");
 check(!publicStateJSON.includes("must-not-leak"), "the capability token must not enter public state");
+
+const mainlinePrivacyRuntime = createRuntime(
+  { buildModel() { return null; }, pickUsage() { return null; } },
+  {
+    sessions: {
+      ...explicitMainlines,
+      status: "ready",
+      updatedAt: new Date(now).toISOString(),
+    },
+    mainlinePreferences: [{
+      targetId: explicitTarget,
+      kind: "session",
+      status: "mainline",
+      label: "Capacity planning roadmap",
+      project: "planner",
+      updatedAt: new Date(now).toISOString(),
+    }],
+  },
+);
+const publicMainlineState = mainlinePrivacyRuntime.publicReceiverState();
+const publicMainlineJSON = JSON.stringify(publicMainlineState);
+equal(publicMainlineState.sessionSuggestions.mainlines[0].source, "explicit");
+equal(publicMainlineState.sessionSuggestions.corrections.length, 1);
+check(!publicMainlineJSON.includes("explicit-roadmap"), "raw thread IDs must not back action controls");
+check(!publicMainlineJSON.includes("/synthetic-home"), "mainline state must omit full paths");
+check(
+  !publicMainlineJSON.includes("private paper preview must not leak"),
+  "prompt and preview material used for local clustering must not enter public state",
+);
+check(
+  !publicMainlineJSON.includes("actionTargets"),
+  "the opaque-to-raw action target map must remain private",
+);
+
+const actionNow = Date.now();
+let persistedMainlineState = null;
+const actionRuntime = createRuntime(
+  {
+    buildModel() { return null; },
+    pickUsage() { return null; },
+    readSessionRows() {
+      return [{
+        id: "local-action-thread",
+        display_title: "Explicit product roadmap",
+        first_user_message: "Continue the product roadmap",
+        cwd: "/synthetic-home/product",
+        tokens_used: 12,
+        created_at_ms: actionNow - hour,
+        recency_at_ms: actionNow - minute,
+        is_pinned: 0,
+      }];
+    },
+    readRecentSessionTokenRows() {
+      return [{ session_id: "local-action-thread", recent_tokens: 2 }];
+    },
+    readGoalRows() { return []; },
+    writeState(value) { persistedMainlineState = JSON.parse(JSON.stringify(value)); },
+  },
+  {},
+);
+actionRuntime.refreshSessions();
+const localActionTarget = actionRuntime.publicReceiverState()
+  .sessionSuggestions.candidates[0].actionId;
+actionRuntime.applyMainlineAction("mark-mainline", localActionTarget);
+equal(
+  actionRuntime.publicReceiverState().sessionSuggestions.mainlines[0].source,
+  "explicit",
+  "marking a recovery session should immediately create an explicit mainline",
+);
+equal(persistedMainlineState.mainlinePreferences[0].status, "mainline");
+actionRuntime.applyMainlineAction("restore", localActionTarget);
+equal(actionRuntime.publicReceiverState().sessionSuggestions.corrections.length, 0);
+equal(
+  actionRuntime.publicReceiverState().sessionSuggestions.mainlines.length,
+  0,
+  "restoring automatic judgment should remove a one-off explicit line",
+);
 
 const resetCreditPrivacyRuntime = createRuntime(
   { buildModel() { return null; }, pickUsage() { return null; } },
@@ -2010,13 +2650,241 @@ const staleEpisodeRuntime = createRuntime(
   },
 );
 const staleEpisodeState = staleEpisodeRuntime.publicReceiverState();
-equal(staleEpisodeState.version, 16);
+equal(staleEpisodeState.version, 20);
 equal(staleEpisodeState.activeEpisode, null, "migration must clear an already-settled episode");
 equal(staleEpisodeState.signalSettlement.throughAt, landedAt);
 check(
   staleEpisodeState.closedEventIds.includes("1999999999999999991"),
   "migration must remember the stale episode so a restart cannot revive it",
 );
+
+const completedConfirmationTrajectory = {
+  version: 1,
+  anchorAt: "2026-08-28T03:18:59.648Z",
+  anchorRemainingPercent: 0,
+  naturalResetAt: "2026-09-04T03:18:51.000Z",
+  cycleStartedAt: "2026-08-28T03:18:51.000Z",
+  cycleResetAt: "2026-09-04T03:18:51.000Z",
+  policyKind: "immediate",
+  policyHazardPerHour: 0,
+  policyDeadlineAt: null,
+  policySource: "explicit-now",
+  signalId: completedConfirmationID,
+};
+const completedConfirmationRuntime = createRuntime(
+  { buildModel() { return null; }, pickUsage() { return null; } },
+  {
+    cache: {
+      feed: conflictingCompletedFeed,
+      forecast: completedConfirmationForecast,
+    },
+    activeEpisode: {
+      id: completedConfirmationID,
+      announcedAt: completedConfirmation.announced_at,
+      summary: completedConfirmation.summary,
+      localizedSummary: completedConfirmation.localized_summary,
+      url: completedConfirmation.url,
+      source: "site-api",
+      status: "awaiting-personal",
+      firstSeenAt: "2026-08-27T17:26:32.013Z",
+      accountDelivery: { "account-a": "pending", "account-b": "pending" },
+    },
+    events: {
+      globalSettledThroughAt: "2026-08-24T00:44:29.666Z",
+      globalSettlementEventId: "2091412393368945027",
+    },
+    accountStates: {
+      "account-a": {
+        id: "account-a",
+        live: true,
+        present: true,
+        cycleGeneration: 4,
+        personalResets: [
+          {
+            at: "2026-08-27T16:25:36.000Z",
+            cause: "global-manual",
+            evidence: "forced-window-rebuilt:usage-decreased",
+            eventId: null,
+            generation: 4,
+          },
+        ],
+        targetTrajectory: completedConfirmationTrajectory,
+      },
+      "account-b": {
+        id: "account-b",
+        present: true,
+        cycleGeneration: 3,
+        personalResets: [
+          {
+            at: "2026-08-27T16:25:39.000Z",
+            cause: "global-manual",
+            evidence: "forced-window-rebuilt:usage-decreased",
+            eventId: null,
+            generation: 3,
+          },
+        ],
+        targetTrajectory: completedConfirmationTrajectory,
+      },
+    },
+    activeAccountId: "account-a",
+    selectedAccountId: "account-a",
+    targetTrajectory: completedConfirmationTrajectory,
+  },
+);
+const completedConfirmationState = completedConfirmationRuntime.publicReceiverState();
+equal(
+  completedConfirmationState.activeEpisode,
+  null,
+  "a completed public confirmation must not open a second reset after the local cycle already advanced",
+);
+equal(completedConfirmationState.signalSettlement.eventId, completedConfirmationID);
+check(completedConfirmationState.closedEventIds.includes(completedConfirmationID));
+equal(completedConfirmationState.accounts[0].lastPersonalReset.eventId, completedConfirmationID);
+equal(completedConfirmationState.accounts[1].lastPersonalReset.eventId, completedConfirmationID);
+equal(completedConfirmationState.accounts[0].targetTrajectory, null);
+equal(completedConfirmationState.accounts[1].targetTrajectory, null);
+equal(completedConfirmationState.completedPublicEvents[0].id, completedConfirmationID);
+const correctedConfirmationNow = Date.parse("2026-08-28T03:50:00.000Z");
+const correctedConfirmationModel = build(
+  [
+    {
+      provider: "codex",
+      accountId: "account-a",
+      accountActive: true,
+      accountLive: true,
+      usage: {
+        updatedAt: "2026-08-28T03:49:00.000Z",
+        dataConfidence: "exact",
+        secondary: {
+          usedPercent: 1,
+          windowMinutes: 10080,
+          resetsAt: "2026-09-04T03:19:46.000Z",
+        },
+      },
+    },
+  ],
+  completedConfirmationForecast,
+  conflictingCompletedFeed,
+  correctedConfirmationNow,
+  completedConfirmationState,
+);
+equal(correctedConfirmationModel.forecast.signal.level, "none");
+check(
+  correctedConfirmationModel.decision.targetUsed > 30 &&
+    correctedConfirmationModel.decision.targetUsed < 45,
+  "the reconciled 1%-used account must return to an ordinary bounded 24-hour target",
+);
+check(
+  correctedConfirmationModel.decision.targetUsed < 100,
+  "a completed confirmation must not keep the fresh cycle at a 100% target",
+);
+
+const thresholdFreeConfirmationID = "2999999999999988888";
+const thresholdFreeNow = Date.now();
+const thresholdFreeResetAt = new Date(thresholdFreeNow - 5 * day).toISOString();
+const thresholdFreeAnnouncedAt = new Date(thresholdFreeNow - minute).toISOString();
+const thresholdFreeEvent = {
+  id: thresholdFreeConfirmationID,
+  type: "reset",
+  group: "reset",
+  summary: "The usage reset has landed. Brand new usage is available.",
+  url: `https://x.com/thsottiaux/status/${thresholdFreeConfirmationID}`,
+  announced_at: thresholdFreeAnnouncedAt,
+  announcement_state: "announced",
+  reset_verification_status: "confirmed",
+};
+const thresholdFreeRuntime = createRuntime(
+  { buildModel() { return null; }, pickUsage() { return null; } },
+  {
+    cache: { feed: { events: [thresholdFreeEvent] } },
+    activeEpisode: {
+      id: thresholdFreeConfirmationID,
+      announcedAt: thresholdFreeAnnouncedAt,
+      summary: thresholdFreeEvent.summary,
+      url: thresholdFreeEvent.url,
+      source: "site-api",
+      status: "awaiting-personal",
+      firstSeenAt: thresholdFreeAnnouncedAt,
+    },
+    accountStates: {
+      "account-a": {
+        id: "account-a",
+        live: true,
+        present: true,
+        personalResets: [
+          {
+            at: thresholdFreeResetAt,
+            cause: "global-manual",
+            evidence: "forced-window-rebuilt:usage-decreased",
+            eventId: null,
+            generation: 1,
+          },
+        ],
+      },
+    },
+    activeAccountId: "account-a",
+  },
+);
+equal(
+  thresholdFreeRuntime.publicReceiverState().activeEpisode,
+  null,
+  "causal episode matching must not depend on a fixed number of minutes between delivery and confirmation",
+);
+
+const partialCompletedID = "2999999999999988887";
+const partialCompletedAt = new Date(Date.now() - minute).toISOString();
+const partialCompletedEvent = {
+  id: partialCompletedID,
+  type: "reset",
+  group: "reset",
+  summary: "The usage reset has landed. Brand new usage is available.",
+  url: `https://x.com/thsottiaux/status/${partialCompletedID}`,
+  announced_at: partialCompletedAt,
+  announcement_state: "announced",
+  reset_verification_status: "confirmed",
+};
+const partialCompletedRuntime = createRuntime(
+  { buildModel() { return null; }, pickUsage() { return null; } },
+  {
+    cache: { feed: { events: [partialCompletedEvent] } },
+    activeEpisode: {
+      id: partialCompletedID,
+      announcedAt: partialCompletedAt,
+      summary: partialCompletedEvent.summary,
+      url: partialCompletedEvent.url,
+      source: "site-api",
+      status: "awaiting-personal",
+      firstSeenAt: partialCompletedAt,
+    },
+    accountStates: {
+      "account-a": {
+        id: "account-a",
+        live: true,
+        present: true,
+        personalResets: [
+          {
+            at: new Date(Date.now() - day).toISOString(),
+            cause: "global-manual",
+            evidence: "forced-window-rebuilt:usage-decreased",
+            eventId: null,
+            generation: 1,
+          },
+        ],
+      },
+      "account-b": { id: "account-b", present: true, personalResets: [] },
+    },
+    activeAccountId: "account-a",
+  },
+);
+const partialCompletedState = partialCompletedRuntime.publicReceiverState();
+equal(partialCompletedState.activeEpisode.account_delivery["account-a"], "landed");
+equal(partialCompletedState.activeEpisode.account_delivery["account-b"], "pending");
+equal(
+  partialCompletedState.activeEpisode.temporal_phase,
+  "in-progress",
+  "a completed public event becomes in-progress delivery only for accounts whose generation has not advanced",
+);
+equal(partialCompletedState.activeEpisode.public_temporal_phase, "completed");
 
 const staleReplay = staleEpisodeRuntime.processEvent(
   {
@@ -2326,6 +3194,136 @@ assert.deepEqual(JSON.parse(JSON.stringify(provider.endpoints)), [
 checks += 1;
 
 const seenURLs = [];
+const providerRankedBase = rankedSessions.candidates.map(({ id, ...candidate }) => candidate);
+const providerSessionCandidates = [
+  {
+    ...providerRankedBase[0],
+    title: "Remove author information",
+  },
+  providerRankedBase[1],
+  {
+    actionId: "session-capacity-planner",
+    title: "Continue capacity planner UI",
+    project: "CodexReset",
+    lastActiveAt: new Date(now - 12 * minute).toISOString(),
+    pinned: false,
+    goalStatus: "active",
+    observedTokens: 520,
+    workspaceRank: 3,
+    workspaceObservedTokens: 520,
+    workspaceSharePercent: 12,
+    reason: "近 24 小时工作区活跃度第 3 · Goal 仍在进行",
+  },
+  {
+    actionId: "session-embodied",
+    title: "Review embodied experiments",
+    project: "Embodied26",
+    lastActiveAt: new Date(now - 20 * minute).toISOString(),
+    pinned: false,
+    goalStatus: null,
+    observedTokens: 360,
+    workspaceRank: 4,
+    workspaceObservedTokens: 360,
+    workspaceSharePercent: 8,
+    reason: "近 24 小时工作区活跃度第 4",
+  },
+  {
+    actionId: "session-course-notes",
+    title: "Finish course notes",
+    project: "26fall_courses",
+    lastActiveAt: new Date(now - 25 * minute).toISOString(),
+    pinned: false,
+    goalStatus: null,
+    observedTokens: 240,
+    workspaceRank: 5,
+    workspaceObservedTokens: 240,
+    workspaceSharePercent: 5,
+    reason: "近 24 小时工作区活跃度第 5",
+  },
+  providerRankedBase[2],
+];
+const providerMainlines = [
+  {
+    actionId: "mainline-explicit-planner",
+    label: "CodexReset · 容量规划",
+    project: "CodexReset",
+    lastActiveAt: new Date(now - 12 * minute).toISOString(),
+    source: "explicit",
+    confidence: "high",
+    sessionCount: 1,
+    activeDayCount: 1,
+    observedTokens: 5,
+    loadSharePercent: 1,
+    goalStatus: null,
+    reason: "你已明确标为主线",
+  },
+  {
+    actionId: "mainline-paper",
+    label: "research-workspace · 论文",
+    project: "research-workspace",
+    lastActiveAt: new Date(now - hour).toISOString(),
+    source: "inferred",
+    confidence: "high",
+    sessionCount: 4,
+    activeDayCount: 5,
+    observedTokens: 1_000,
+    loadSharePercent: 40,
+    goalStatus: "active",
+    reason: "Goal 仍在进行，且已跨 5 天持续推进",
+  },
+  {
+    actionId: "mainline-embodied",
+    label: "Embodied26 · 机器人",
+    project: "Embodied26",
+    lastActiveAt: new Date(now - 2 * hour).toISOString(),
+    source: "inferred",
+    confidence: "high",
+    sessionCount: 3,
+    activeDayCount: 4,
+    observedTokens: 800,
+    loadSharePercent: 30,
+    goalStatus: null,
+    reason: "3 条相关任务跨 4 天持续推进",
+  },
+  {
+    actionId: "mainline-course",
+    label: "26fall_courses · 课程",
+    project: "26fall_courses",
+    lastActiveAt: new Date(now - 3 * hour).toISOString(),
+    source: "inferred",
+    confidence: "medium",
+    sessionCount: 2,
+    activeDayCount: 2,
+    observedTokens: 600,
+    loadSharePercent: 20,
+    goalStatus: null,
+    reason: "2 条相关任务跨 2 天持续推进",
+  },
+  {
+    actionId: "mainline-analysis",
+    label: "analysis · 实验",
+    project: "analysis",
+    lastActiveAt: new Date(now - 4 * hour).toISOString(),
+    source: "inferred",
+    confidence: "medium",
+    sessionCount: 2,
+    activeDayCount: 2,
+    observedTokens: 400,
+    loadSharePercent: 9,
+    goalStatus: null,
+    reason: "2 条相关任务跨 2 天持续推进",
+  },
+];
+const groupedProviderWorkspaces = workspaceSuggestions({ candidates: providerSessionCandidates });
+equal(groupedProviderWorkspaces.length, 5, "temporary sessions must collapse into workspaces");
+equal(groupedProviderWorkspaces[0].project, "research-workspace");
+equal(groupedProviderWorkspaces[0].recentActivities.length, 2);
+check(
+  groupedProviderWorkspaces[0].recentActivities.some(
+    (activity) => activity.title === "Remove author information",
+  ),
+  "a temporary session may remain local activity evidence without becoming the recommendation",
+);
 const receiverState = {
   push: { registered: true, registeredAt: "2026-08-12T08:00:00Z" },
   health: {
@@ -2354,11 +3352,25 @@ const receiverState = {
   sessionSuggestions: {
     status: "ready",
     cycleStartAt: new Date(sessionStart).toISOString(),
+    trendWindowStartAt: new Date(now - day).toISOString(),
+    trendWindowHours: 24,
+    tokenSource: "cost-ledger",
     observationStartedAt: new Date(now - 3 * hour).toISOString(),
     updatedAt: new Date(now - minute).toISOString(),
-    candidateCount: 3,
+    candidateCount: providerSessionCandidates.length,
+    workspaceCount: 5,
+    mainlineCount: providerMainlines.length,
     observationReady: true,
-    candidates: rankedSessions.candidates.map(({ id, ...candidate }) => candidate).slice(0, 3),
+    mainlines: providerMainlines,
+    corrections: [{
+      targetId: "mainline-explicit-planner",
+      kind: "mainline",
+      status: "mainline",
+      label: "CodexReset · 容量规划",
+      project: "CodexReset",
+      updatedAt: new Date(now - minute).toISOString(),
+    }],
+    candidates: providerSessionCandidates,
   },
   cache: { forecast: forecastFixture(), feed: { stale: false, signal: null, events: [] } },
 };
@@ -2467,6 +3479,41 @@ const ctx = {
   );
   global.fetch = originalFetch;
 
+  const staleTokenRuntime = createRuntime(
+    {
+      buildModel() {
+        return null;
+      },
+      pickUsage() {
+        return null;
+      },
+      readSessionRows() {
+        return [];
+      },
+      readRecentSessionTokenRows() {
+        throw new Error("cost ledger busy");
+      },
+      readGoalRows() {
+        return [];
+      },
+      writeState() {},
+    },
+    {
+      sessions: {
+        ...rankedSessions,
+        status: "ready",
+        updatedAt: new Date(now).toISOString(),
+      },
+    },
+  );
+  staleTokenRuntime.refreshSessions();
+  equal(staleTokenRuntime.publicReceiverState().sessionSuggestions.status, "stale");
+  equal(
+    staleTokenRuntime.publicReceiverState().sessionSuggestions.candidates[0].title,
+    "Recent ordinary task",
+    "a busy exact token ledger should retain the latest reliable recovery context",
+  );
+
   const failingSessionRuntime = createRuntime(
     {
       buildModel() {
@@ -2514,20 +3561,22 @@ const ctx = {
   equal(snapshot.details[0].title, "现在");
   equal(
     snapshot.details[0].rows.length,
-    6,
-    "the main card should show the decision, three named tasks, account and reset context",
+    8,
+    "a projected shortfall should show the decision, five mainlines, account and reset context",
   );
   equal(snapshot.details[0].rows[0].label, "建议");
-  equal(snapshot.details[0].rows[1].label, "任务 1");
-  equal(snapshot.details[0].rows[2].label, "任务 2");
-  equal(snapshot.details[0].rows[3].label, "任务 3");
-  equal(snapshot.details[0].rows[4].label, "账户");
-  equal(snapshot.details[0].rows[5].label, "重置");
+  equal(snapshot.details[0].rows[1].label, "主线 1");
+  equal(snapshot.details[0].rows[2].label, "主线 2");
+  equal(snapshot.details[0].rows[3].label, "主线 3");
+  equal(snapshot.details[0].rows[4].label, "主线 4");
+  equal(snapshot.details[0].rows[5].label, "主线 5");
+  equal(snapshot.details[0].rows[6].label, "账户");
+  equal(snapshot.details[0].rows[7].label, "重置");
   check(
-    /续跑近期任务.*开启 Fast/.test(
+    /优先继续以下 5 条可靠主线/.test(
       snapshot.details[0].rows.find((row) => row.label === "建议").value,
     ),
-    "a fully-right red target should recommend useful work before Fast mode",
+    "a fully-right red target should name five logical-mainline recommendations",
   );
 
   const offlineSnapshot = await provider.fetchUsage({
@@ -2549,10 +3598,10 @@ const ctx = {
     "a first-run signal outage must retain local natural-reset planning",
   );
   check(
-    /红线目标 47\.5% 在蓝区 22\.0%–46\.0% 右侧/.test(
+    /自然使用趋势仍可能达不到目标/.test(
       snapshot.details[0].rows.find((row) => row.label === "建议").secondaryValue,
     ),
-    "the state wording must be derived from the same red and blue geometry as the chart",
+    "the main recommendation should explain the red/blue geometry in plain language",
   );
   check(
     !snapshot.details[0].rows.some((row) =>
@@ -2626,9 +3675,31 @@ const ctx = {
   equal(resetHomeRow.relativeTimePrefix, "下次自然刷新 · ");
   check(
     snapshot.details[0].rows.some(
-      (row) => row.label === "任务 1" && /Paused research task/.test(row.value),
+      (row) => row.label === "主线 1" && row.value === "CodexReset · 容量规划",
     ),
-    "the core recommendation must name the first sessions to resume",
+    "an explicit low-token mainline must remain ahead of inferred high-token work",
+  );
+  check(
+    !snapshot.details[0].rows.some((row) => /Remove author information/.test(row.value)),
+    "a temporary session title must never become a main recommendation",
+  );
+  check(
+    snapshot.submenuDetails[1].rows.some(
+      (row) =>
+        row.label === "近期 session（仅供定位）" &&
+        /Remove author information/.test(row.value) &&
+        /不会直接进入推荐/.test(row.secondaryValue) &&
+        row.actions.some((action) => action.operation === "mark-mainline"),
+    ),
+    "session titles may appear only as recovery context with explicit correction actions",
+  );
+  const mainlineDetailRow = snapshot.submenuDetails[1].rows.find(
+    (row) => row.label === "主线 1" && row.group === "work",
+  );
+  equal(
+    mainlineDetailRow.actions.map((action) => action.operation).join(","),
+    "snooze,not-mainline,complete",
+    "every recommended mainline should expose reversible local correction actions",
   );
   equal(snapshot.submenuDetails[0].title, "账户");
   equal(snapshot.submenuDetails[1].title, "为什么这样建议");
@@ -2643,9 +3714,42 @@ const ctx = {
   equal(nextResetDetailRow.relativeTimePrefix, "");
   check(
     snapshot.submenuDetails[1].rows.some(
-      (row) => row.label === "如何继续" && /不会自动发消息或启动任务/.test(row.secondaryValue),
+      (row) =>
+        row.label === "主线排序原则" &&
+        /token 只描述负载/.test(row.secondaryValue) &&
+        /低置信候选会主动缺席/.test(row.secondaryValue),
     ),
-    "the recommendation evidence must retain the complete resumable-session list",
+    "the recommendation evidence must separate intent ranking from token load",
+  );
+  equal(snapshot.mainlineCorrections.length, 1);
+  const sparseReceiverState = {
+    ...receiverState,
+    sessionSuggestions: {
+      ...receiverState.sessionSuggestions,
+      mainlineCount: 2,
+      mainlines: providerMainlines.slice(0, 2),
+    },
+  };
+  const sparseSnapshot = await provider.fetchUsage({
+    ...ctx,
+    http: {
+      async getJSON(url) {
+        if (url === "http://127.0.0.1:18765/usage?provider=codex") return { json: usagePayload };
+        if (url === "http://127.0.0.1:18765/api/state") return { json: sparseReceiverState };
+        throw new Error("snapshot fast path unavailable");
+      },
+    },
+  });
+  equal(
+    sparseSnapshot.details[0].rows.filter((row) => /^主线 \d+$/.test(row.label)).length,
+    2,
+    "five is a maximum; a sparse reliable set must not be filled with sessions",
+  );
+  check(
+    /不会用临时 session 凑满/.test(
+      sparseSnapshot.details[0].rows.find((row) => row.label === "建议").secondaryValue,
+    ),
+    "the plan should explain why fewer than the maximum are shown",
   );
   const forecastSection = snapshot.submenuDetails.find(
     (section) => section.title === "为什么这样建议",
@@ -2670,8 +3774,18 @@ const ctx = {
   );
   equal(
     forecastSection.rows.filter((row) => row.group === "summary").map((row) => row.label).join("→"),
-    "当前→预计→因此",
-    "the default explanation must be a three-step causal chain",
+    "为什么→所以",
+    "the explanation must answer why in plain language before showing the action",
+  );
+  check(
+    forecastSection.rows.some(
+      (row) =>
+        row.group === "summary" &&
+        row.label === "为什么" &&
+        /当前用量还没有达到本轮目标/.test(row.value) &&
+        /没有未兑现的官方/.test(row.value),
+    ),
+    "the causal summary must mention the actual quota and reset-signal state without leading with numbers",
   );
   check(
     !snapshot.submenuDetails.some((section) => section.title === "数据状态"),
@@ -2710,9 +3824,9 @@ const ctx = {
     "resumable sessions should not clutter a suitable state",
   );
   equal(
-    suitableSnapshot.details[0].rows.filter((row) => /^任务 \d+$/.test(row.label)).length,
+    suitableSnapshot.details[0].rows.filter((row) => /^主线 \d+$/.test(row.label)).length,
     3,
-    "while useful work remains, the home card must keep three to five concrete tasks visible even when pace is suitable",
+    "when the forecast interval covers target, the home card must show at most three mainlines",
   );
 
   receiverState.usageBehavior = {
@@ -2726,10 +3840,15 @@ const ctx = {
   };
   const fastSnapshot = await provider.fetchUsage(ctx);
   check(
-    /若正在使用 Fast，切回 Standard/.test(
+    /只保留最重要的 1 条主线，保持 Standard/.test(
       fastSnapshot.details[0].rows.find((row) => row.label === "建议").value,
     ),
-    "a red target left of the blue range should recommend only returning to Standard",
+    "a red target left of the blue range should retain only the top mainline",
+  );
+  equal(
+    fastSnapshot.details[0].rows.filter((row) => /^主线 \d+$/.test(row.label)).length,
+    1,
+    "a projected interval beyond target must show exactly one mainline",
   );
   check(
     !/减少任务/.test(JSON.stringify(fastSnapshot.details[0].rows)),
@@ -2758,16 +3877,21 @@ const ctx = {
   close(reachedSnapshot.decisionProgress.currentPercent, 60);
   close(reachedSnapshot.decisionProgress.targetPercent, 47.5);
   check(
-    /无需再为预测继续加速/.test(
+    /只保留最重要的 1 条主线，保持 Standard/.test(
       reachedSnapshot.details[0].rows.find((row) => row.label === "建议").value,
     ),
     "crossing the independent red line must be represented as reaching the comparison target",
   );
+  equal(
+    reachedSnapshot.details[0].rows.filter((row) => /^主线 \d+$/.test(row.label)).length,
+    1,
+    "actual usage beyond target must show exactly one mainline",
+  );
   check(
-    /已超红线 12\.5%/.test(
-      reachedSnapshot.details[0].rows.find((row) => row.label === "建议").secondaryValue,
-    ),
-    "the card should quantify how far actual usage has crossed the fixed target",
+    reachedSnapshot.submenuDetails
+      .find((section) => section.title === "为什么这样建议")
+      .rows.some((row) => row.label === "同截止点目标" && /已超红线 12\.5%/.test(row.secondaryValue)),
+    "numeric target-overrun evidence should move to Usage & Target instead of the plain-language rationale",
   );
   usagePayload[0].usage.secondary.usedPercent = 10;
   receiverState.usageSnapshot.usedPercent = 10;
@@ -2926,6 +4050,15 @@ const ctx = {
   );
   check(
     signalEventSection.rows.some(
+      (row) =>
+        row.label === "官方摘要" &&
+        row.group === "current" &&
+        /完整原文见“官方消息”/.test(row.secondaryValue),
+    ),
+    "the current reset state must include a concise official summary before the full official post",
+  );
+  check(
+    signalEventSection.rows.some(
       (row) => row.label === "官方预计时间" && row.relativeTimeAt === "2026-08-12T09:50:00.000Z",
     ),
     "the converted official time must drive the reset detail countdown",
@@ -2954,6 +4087,7 @@ const ctx = {
         planType: "plus",
         targetTrajectory: targetTrajectoryFixture,
         usageSnapshot: receiverState.usageSnapshot,
+        usageBehavior,
         resetCredits: {
           reliable: true,
           updatedAt: "2026-08-12T08:59:00Z",
@@ -2974,6 +4108,19 @@ const ctx = {
         planType: "pro",
         targetTrajectory: { ...targetTrajectoryFixture, anchorRemainingPercent: 70 },
         usageSnapshot: { ...receiverState.usageSnapshot, usedPercent: 30 },
+        usageBehavior: {
+          ...usageBehavior,
+          prediction: {
+            ...usageBehavior.prediction,
+            additionalLower: 8,
+            additionalMedian: 18,
+            additionalUpper: 28,
+            endpointLower: 38,
+            endpointMedian: 48,
+            endpointUpper: 58,
+            targetGap: 29.2,
+          },
+        },
         resetCredits: {
           reliable: true,
           updatedAt: "2026-08-12T08:59:00Z",
@@ -3047,6 +4194,70 @@ const ctx = {
       multiPlanSection.rows.some((row) => /third@example\.test · 5x/.test(row.label)) &&
       multiPlanSection.rows.some((row) => row.label === "另外 1 个账号"),
     "the submenu must show three named accounts and fold overflow without disabling the plan",
+  );
+  const visibleAccountRows = multiPlanSection.rows.filter((row) => row.progress);
+  equal(
+    visibleAccountRows.length,
+    3,
+    "each visible account must render its own progress model instead of a text-only percentage",
+  );
+  check(
+    visibleAccountRows.every(
+      (row) =>
+        Number.isFinite(row.progress.currentPercent) &&
+        Number.isFinite(row.progress.targetPercent),
+    ) &&
+      visibleAccountRows.slice(0, 2).every(
+        (row) =>
+          Number.isFinite(row.progress.projectedLowerPercent) &&
+          Number.isFinite(row.progress.projectedUpperPercent),
+      ),
+    "account bars must keep current usage, target and each account's own forecast separate",
+  );
+  const partialDeliveryEvent = {
+    id: tiboEvent.id,
+    type: "reset",
+    group: "reset",
+    announcement_state: "announced",
+    reset_verification_status: "pending",
+    announced_at: "2026-08-12T08:50:00.000Z",
+    official_window: {
+      label: "within an hour",
+      start_at: "2026-08-12T08:50:00.000Z",
+      end_at: "2026-08-12T09:50:00.000Z",
+    },
+    summary: tiboEvent.summary,
+    localized_summary: tiboEvent.localized_summary,
+    url: tiboEvent.url,
+    temporal_phase: "in-progress",
+    account_delivery: { "account-a": "landed", "account-b": "pending" },
+    source: "site-api",
+  };
+  const partialDeliverySnapshot = await provider.fetchUsage({
+    ...ctx,
+    http: {
+      async getJSON(url) {
+        if (url === "http://127.0.0.1:18765/api/state") {
+          return {
+            json: {
+              ...multiReceiverState,
+              activeEpisode: partialDeliveryEvent,
+              currentEvent: partialDeliveryEvent,
+            },
+          };
+        }
+        throw new Error(`Unexpected partial-delivery URL: ${url}`);
+      },
+    },
+  });
+  const partialResetRow = partialDeliverySnapshot.details[0].rows.find(
+    (row) => row.label === "重置",
+  );
+  check(
+    /明确重置公告 · 1\/2 账号到账/.test(partialResetRow.value) &&
+      !/下次自然刷新/.test(partialResetRow.value) &&
+      /Enjoy|重置/.test(partialResetRow.secondaryValue),
+    "an unresolved public event must stay ahead of natural refresh even after the current account has landed",
   );
   const multiResetSection = multiSnapshot.submenuDetails.find(
     (section) => section.title === "重置",

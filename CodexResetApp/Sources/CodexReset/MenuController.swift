@@ -18,6 +18,14 @@ enum ResetBrandAssets {
     }
 }
 
+private final class DetailActionBox: NSObject {
+    let action: DetailAction
+
+    init(_ action: DetailAction) {
+        self.action = action
+    }
+}
+
 @MainActor
 final class MenuController: NSObject, NSMenuDelegate {
     private static let cardWidth: CGFloat = 310
@@ -195,6 +203,7 @@ final class MenuController: NSObject, NSMenuDelegate {
             submenu.addItem(self.makeDetailContentItem(section))
         }
         self.appendLinks(from: grouped.count == 1 ? section.rows : summaryRows, to: submenu)
+        self.appendActions(from: grouped.count == 1 ? section.rows : summaryRows, to: submenu)
         return submenu
     }
 
@@ -208,6 +217,7 @@ final class MenuController: NSObject, NSMenuDelegate {
             }
             submenu.addItem(self.makeDetailContentItem(DetailSection(title: section.title, rows: [row])))
             self.appendLinks(from: [row], to: submenu)
+            self.appendActions(from: [row], to: submenu)
         }
         return submenu
     }
@@ -238,13 +248,36 @@ final class MenuController: NSObject, NSMenuDelegate {
         }
     }
 
+    private func appendActions(from rows: [DetailRow], to submenu: NSMenu) {
+        let actions = rows.flatMap { $0.actions ?? [] }
+        var seen = Set<String>()
+        for action in actions where seen.insert("\(action.operation):\(action.targetId)").inserted {
+            if submenu.items.last?.isSeparatorItem != true { submenu.addItem(.separator()) }
+            let item = NSMenuItem(
+                title: action.title,
+                action: #selector(self.performDetailAction(_:)),
+                keyEquivalent: "")
+            item.target = self
+            item.representedObject = DetailActionBox(action)
+            let symbol = action.operation == "mark-mainline"
+                ? "star"
+                : action.operation == "complete"
+                    ? "checkmark.circle"
+                    : action.operation == "snooze"
+                        ? "moon.zzz"
+                        : "minus.circle"
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            submenu.addItem(item)
+        }
+    }
+
     private static func detailGroupTitle(
         _ key: String,
         language: ResetPresentationLanguage) -> String
     {
         switch key {
         case "calculation": language.text("使用与目标", "Usage & Target")
-        case "work": language.text("建议任务", "Suggested Tasks")
+        case "work": language.text("建议主线", "Suggested Mainlines")
         case "data": language.text("计算与数据", "Calculation & Data")
         case "assets": language.text("可用重置", "Available Resets")
         case "history": language.text("重置历史", "Reset History")
@@ -267,7 +300,7 @@ final class MenuController: NSObject, NSMenuDelegate {
 
     private static func symbolName(for title: String) -> String {
         switch title {
-        case "可继续的任务", "Suggested Tasks": "play.circle"
+        case "建议主线", "Suggested Mainlines", "可继续的任务", "Suggested Tasks": "play.circle"
         case "账户", "Accounts": "person.2"
         case "为什么这样建议", "Why This Plan": "chart.line.uptrend.xyaxis"
         case "重置", "Resets": "clock.arrow.circlepath"
@@ -314,6 +347,11 @@ final class MenuController: NSObject, NSMenuDelegate {
         guard let raw = sender.representedObject as? String,
               let url = URL(string: raw), url.scheme == "https" else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    @objc private func performDetailAction(_ sender: NSMenuItem) {
+        guard let box = sender.representedObject as? DetailActionBox else { return }
+        Task { await self.store.perform(box.action) }
     }
 
     private func showPreviewWindow() {

@@ -57,6 +57,20 @@ Same-tier restoration before the old cooldown ends is not a plan upgrade and
 does not create a refresh. A monthly renewal date is not a weekly quota-reset
 boundary.
 
+Each account also owns a monotonic quota-cycle generation. A proven window
+rebuild advances that generation, and global-manual advances observed in one
+collection pass form a local reset episode. Public posts are reconciled with
+those episodes by event order, reset cause, structured future windows, and
+per-account generation—not by a fixed number of minutes between the post and
+the observation. A delayed confirmation can therefore attach to the latest
+unique unattributed episode even when the reset arrived before the post.
+
+Signal strength, temporal direction, and personal delivery are independent.
+Only an explicit future or in-progress event that is still pending for a given
+account can create an immediate 100% policy for that account. A landed account
+returns to its normal cycle even while another tracked account remains pending.
+Local quota facts outrank inconsistent public lifecycle fields.
+
 ## Reset-credit planning
 
 A reset credit is a finite-lived capacity option, not an isolated countdown.
@@ -76,6 +90,47 @@ busywork, or treat expiry as successful planning.
 `workAction`, `accountAction`, and `creditAction` are projections of one
 `capacityPlan`. Presentation and notifications may explain that plan but may
 not recompute an action with a separate formula.
+
+## Logical mainline suggestions
+
+The recommendation unit is a logical work mainline, not a session and not a
+filesystem workspace. The monitor looks back across root Codex tasks, clusters
+related work only within the same local workspace, and admits an inferred
+mainline conservatively: it must have an ongoing Goal or repeated related
+tasks with cross-day continuity and recent activity. A one-off task is omitted
+even when it consumed many tokens. Archived, completed, and subagent tasks are
+excluded.
+
+Intent order and load evidence are deliberately separate. Explicit local
+labels rank first, then an ongoing Goal, cross-day continuity, repeated related
+tasks, and recency. Rolling 24-hour input-plus-output growth is retained only as
+load/confidence evidence and never directly changes that order. The exact cost
+ledger is preferred; bounded local counter samples preserve the same window
+when the ledger is delayed. Session titles may appear in details only as
+recovery and correction context, never as an automatic recommendation.
+
+The user can locally mark a session as a mainline, mark a session or inferred
+line as not a mainline, temporarily hide a line, mark it complete, or restore
+automatic judgment. These corrections are durable, take precedence over
+inference, and never leave the loopback service. The system abstains when
+evidence is weak instead of filling the menu with low-confidence guesses.
+
+The natural-use interval controls only a maximum visible count: five when its
+upper bound is below target, three when it covers target, and one when its lower
+bound or actual use has passed target. Fewer reliable mainlines are valid; the
+remaining capacity is described as room for new valuable work.
+
+## Presentation contract
+
+The plan explanation begins with causal prose about cycle state, natural-use
+trend, and any real reset signal. Percentages, probabilities, token totals, and
+formulas live in the usage/target, suggested-work, and calculation groups.
+Each account row carries its own current usage, target, and optional natural
+forecast range; account forecasts are never shared. An unresolved explicit
+announcement, commitment, or candidate hint is the primary reset state ahead
+of natural refresh. Its concise source summary appears with the state, while
+the full source and resolved local outcome remain in official updates and
+reset history respectively.
 
 ## Real capacity and account scheduling
 

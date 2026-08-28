@@ -30,7 +30,7 @@
 ## What it provides
 
 - **Usage plan**: shows current usage, target usage, and expected usage, then recommends maintaining or increasing pace.
-- **Recent-work suggestions**: lists 3–5 recent tasks on the home view when additional usage would be useful.
+- **Recent-work suggestions**: identifies up to 5/3/1 logical mainlines from explicit labels, Goals, and cross-day continuity. Tokens describe load only, and temporary sessions never fill the list.
 - **Reset management**: keeps natural resets, official resets, plan upgrades, reset credits, and account delivery status together.
 - **Multiple accounts**: uses each account's available quota, usage, and reset timing to recommend account use and switching.
 - **Reset-credit planning**: combines existing quota, future resets, and work demand to recommend holding, preparing, or using a credit.
@@ -44,10 +44,6 @@ Current quota, usage, recent work, reset information, and reset credits form one
 ## Standalone app and CodexBar
 
 The macOS app works independently. When using the CodexBar integration included in the source tree, both interfaces read the same local plan and recommendations.
-
-<p align="center">
-  <img src="docs/assets/codex-capacity-planner-codexbar-en.png" width="620" alt="Codex Capacity Planner real English menu inside CodexBar">
-</p>
 
 ## Install
 
@@ -73,7 +69,7 @@ Intel users can build the matching architecture from source.
 
 ## Privacy
 
-Quota, account, reset time, predictions, and task information are processed locally. The planner does not need prompt or response text, source code, tool output, authentication tokens, or browser cookies.
+Quota, account, reset time, predictions, and task information are processed locally. Mainline inference reads task titles and bounded first-message/preview excerpts locally and immediately reduces them to topic features; the original excerpts are not retained in planner state or exposed by its local API. The planner does not read response text, source code, tool output, authentication tokens, or browser cookies.
 
 External reset-signal requests do not include account identifiers, email addresses, quota, personal reset times, task information, or recommendations. The default signal source, `codex-reset.com`, is an independent third-party service not operated by this project. If unavailable, planning continues from local quota, natural-reset, and personal-usage information.
 

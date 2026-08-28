@@ -124,10 +124,50 @@ struct SettingsView: View {
                         self.launchAtLogin = SMAppService.mainApp.status == .enabled
                     }
                 }
+            if let corrections = self.store.snapshot?.mainlineCorrections,
+               !corrections.isEmpty
+            {
+                Section("主线纠偏（仅保存在本机）") {
+                    ForEach(corrections.prefix(20)) { correction in
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(correction.label).lineLimit(1)
+                                Text(self.correctionStatus(correction.status))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("恢复自动判断") {
+                                Task {
+                                    await self.store.perform(DetailAction(
+                                        title: "恢复自动判断",
+                                        operation: "restore",
+                                        targetId: correction.targetId))
+                                }
+                            }
+                        }
+                    }
+                    if corrections.count > 20 {
+                        Text("另有 \(corrections.count - 20) 条纠偏记录")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
             if let launchError {
                 Text(launchError).foregroundStyle(.red).font(.caption)
             }
         }
         .onChange(of: self.refreshInterval) { _, _ in self.store.reschedule() }
+    }
+
+    private func correctionStatus(_ status: String) -> String {
+        switch status {
+        case "mainline": "已明确标为主线"
+        case "not-mainline": "已标为不是主线"
+        case "snoozed": "已暂不推荐"
+        case "complete": "已标为完成"
+        default: status
+        }
     }
 }

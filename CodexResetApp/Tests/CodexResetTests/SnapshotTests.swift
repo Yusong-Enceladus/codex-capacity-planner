@@ -20,8 +20,9 @@ import Testing
         "targetLabel":"红线 39.8%",
         "projectedLabel":"自然预计 20.0%–41.0%"
       },
+      "mainlineCorrections":[{"targetId":"opaque-mainline","label":"论文主线","project":"Research","status":"snoozed","updatedAt":"2026-08-21T14:00:00.000Z"}],
       "details":[{"title":"现在","rows":[{"label":"建议","value":"保持当前节奏","secondaryValue":"目标位于蓝区","group":"summary"},{"label":"重置","value":"下次自然刷新 · 08-28 10:48 UTC+8","relativeTimeAt":"2026-08-28T02:48:00Z","relativeTimePrefix":"下次自然刷新 · "}]}],
-      "submenuDetails":[{"title":"模型诊断","rows":[]}]
+      "submenuDetails":[{"title":"账户","rows":[{"label":"工作账户 · 20x","value":"还需 20.0% · 已用 10.0%","progress":{"title":"工作账户的使用计划","alternateTitle":null,"currentPercent":10,"targetPercent":30,"projectedPercent":28,"projectedLowerPercent":22,"projectedUpperPercent":35,"currentLabel":"当前 10.0%","targetLabel":"目标 30.0%","projectedLabel":"预计 22.0%–35.0%"},"actions":[{"title":"暂不推荐","operation":"snooze","targetId":"opaque-mainline"}]}]}]
     }
     """#.utf8)
     let value = try JSONDecoder().decode(ResetSnapshot.self, from: data)
@@ -30,7 +31,11 @@ import Testing
     #expect(value.details.first?.rows.first?.label == "建议")
     #expect(value.details.first?.rows.first?.group == "summary")
     #expect(value.details.first?.rows.last?.relativeTimeAt == "2026-08-28T02:48:00Z")
-    #expect(value.submenuDetails.first?.title == "模型诊断")
+    #expect(value.submenuDetails.first?.title == "账户")
+    #expect(value.submenuDetails.first?.rows.first?.progress?.currentPercent == 10)
+    #expect(value.submenuDetails.first?.rows.first?.progress?.projectedUpperPercent == 35)
+    #expect(value.submenuDetails.first?.rows.first?.actions?.first?.operation == "snooze")
+    #expect(value.mainlineCorrections?.first?.targetId == "opaque-mainline")
 }
 
 @Test func `alternating display uses a stable ten second phase and coarse countdown`() {

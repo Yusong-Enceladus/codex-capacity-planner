@@ -33,10 +33,10 @@ enum ResetDemoFixtures {
                     rows: [
                         DetailRow(
                             label: language.text("建议", "Plan"),
-                            value: language.text("继续完成近期任务", "Continue recent tasks"),
+                            value: language.text("继续可靠主线", "Continue reliable mainlines"),
                             secondaryValue: language.text(
-                                "当前速度略慢，先继续已有工作",
-                                "Usage is slightly behind; continue existing work")),
+                                "当前速度略慢，优先推进跨日持续的真实工作",
+                                "Usage is slightly behind; prioritize work sustained across days")),
                         DetailRow(
                             label: language.text("账户", "Account"),
                             value: language.text("工作账户 · Pro", "Work account · Pro"),
@@ -46,17 +46,17 @@ enum ResetDemoFixtures {
                             value: language.text("1 次可用", "1 available"),
                             secondaryValue: language.text("当前账号持有 · 暂时保留", "Current account · Keep for now")),
                         DetailRow(
-                            label: language.text("任务 1", "Task 1"),
-                            value: language.text("完善搜索结果页", "Improve search results"),
-                            secondaryValue: language.text("最近活跃 · 继续进行", "Recently active · Continue")),
+                            label: language.text("主线 1", "Mainline 1"),
+                            value: language.text("搜索体验 · 质量改进", "Search Experience · Quality"),
+                            secondaryValue: language.text("3 条相关任务跨 4 天持续推进", "3 related tasks sustained across 4 days")),
                         DetailRow(
-                            label: language.text("任务 2", "Task 2"),
-                            value: language.text("整理本周数据", "Organize weekly data"),
-                            secondaryValue: language.text("已置顶 · 等待完成", "Pinned · Ready to continue")),
+                            label: language.text("主线 2", "Mainline 2"),
+                            value: language.text("数据分析 · 实验", "Data Analysis · Experiments"),
+                            secondaryValue: language.text("进行中的 Goal", "Ongoing Goal")),
                         DetailRow(
-                            label: language.text("任务 3", "Task 3"),
-                            value: language.text("检查桌面端体验", "Review desktop experience"),
-                            secondaryValue: language.text("本周期内活跃", "Active this cycle")),
+                            label: language.text("主线 3", "Mainline 3"),
+                            value: language.text("桌面端 · 应用", "Desktop App · Application"),
+                            secondaryValue: language.text("你已明确标为主线", "Explicitly marked as a mainline")),
                         DetailRow(
                             label: language.text("重置", "Reset"),
                             value: language.text("下次自然刷新 · 4 天 18 小时后", "Next natural reset · in 4 days 18 hr"),
@@ -94,7 +94,7 @@ enum ResetDemoFixtures {
         DetailSection(title: language.text("为什么这样建议", "Why This Plan"), rows: [
             DetailRow(
                 label: language.text("结论", "Summary"),
-                value: language.text("继续完成近期任务", "Continue recent tasks"),
+                value: language.text("继续可靠主线", "Continue reliable mainlines"),
                 secondaryValue: language.text("当前无需切换账号或使用重置券", "No account switch or reset credit is needed"),
                 group: "summary"),
             DetailRow(
@@ -106,8 +106,9 @@ enum ResetDemoFixtures {
                 value: language.text("24 小时后预计使用 54%–66%", "Expected usage in 24 hours: 54%–66%"),
                 group: "calculation"),
             DetailRow(
-                label: language.text("任务", "Work"),
-                value: language.text("3 个近期任务可以继续", "3 recent tasks can continue"),
+                label: language.text("主线", "Mainlines"),
+                value: language.text("3 条可靠主线可以继续", "3 reliable mainlines can continue"),
+                secondaryValue: language.text("token 只作负载证据；近期 session 仅供定位", "Tokens show load only; recent sessions are context"),
                 group: "work"),
             DetailRow(
                 label: language.text("数据", "Data"),

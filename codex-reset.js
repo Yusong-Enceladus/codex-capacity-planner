@@ -349,20 +349,88 @@ function codexResetSignalLevel(signal) {
   ) {
     return "explicit";
   }
-  if (["explicit", "confirmed", "reset", "completed"].includes(kind)) return "explicit";
+  if (["explicit", "confirmed", "reset"].includes(kind)) return "explicit";
   if (signalType === "dated_commitment" || ["promise", "commitment"].includes(kind)) {
     return "commitment";
   }
-  return "hint";
+  if (
+    announcement === "hinted" ||
+    ["candidate", "hint", "possible"].includes(kind) ||
+    ["candidate", "hint", "reset_hint", "possible_reset"].includes(signalType)
+  ) {
+    return "hint";
+  }
+  return "none";
 }
 
 function codexResetSignalIsTerminal(signal) {
+  const kind = codexResetText(signal && signal.kind).toLowerCase();
+  const announcement = codexResetText(signal && signal.announcement_state).toLowerCase();
   const verification = codexResetText(
     signal && signal.reset_verification_status,
   ).toLowerCase();
-  return ["confirmed", "verified", "rejected", "failed", "expired", "completed", "landed"].includes(
-    verification,
+  const observation = codexResetText(signal && signal.observation_result).toLowerCase();
+  return (
+    ["completed", "rejected", "failed", "expired", "landed"].includes(kind) ||
+    ["completed", "rejected", "expired"].includes(announcement) ||
+    ["confirmed", "verified", "rejected", "failed", "expired", "completed", "landed"].includes(
+      verification,
+    ) ||
+    ["confirmed", "reset_observed", "rejected", "unchanged", "expired", "unverified"].includes(
+      observation,
+    )
   );
+}
+
+function codexResetSignalIsNegativeTerminal(signal) {
+  const kind = codexResetText(signal && signal.kind).toLowerCase();
+  const announcement = codexResetText(signal && signal.announcement_state).toLowerCase();
+  const verification = codexResetText(
+    signal && signal.reset_verification_status,
+  ).toLowerCase();
+  const observation = codexResetText(signal && signal.observation_result).toLowerCase();
+  return (
+    ["rejected", "failed", "expired"].includes(kind) ||
+    ["rejected", "expired"].includes(announcement) ||
+    ["rejected", "failed", "expired"].includes(verification) ||
+    ["rejected", "unchanged", "expired", "unverified"].includes(observation)
+  );
+}
+
+// The hosted feed retains every observed Tibo post, including replies and
+// corpus-only records. A raw post may fill a delayed `feed.signal` only when
+// the server has already put it in the reset-related lane and the post is a
+// top-level, non-explicit statement. Replies are deliberately excluded: their
+// meaning depends on the parent conversation and cannot be recovered safely
+// from a standalone sentence such as "Not so random, but yes".
+function codexResetCandidateFromTweet(value) {
+  const tweet = codexResetObject(value);
+  if (!tweet || codexResetSignalIsTerminal(tweet)) return null;
+  const id = codexResetSignalID(tweet);
+  const conversationID = codexResetText(tweet.conversation_id);
+  const lane = codexResetText(tweet.tibo_lane).toLowerCase();
+  if (
+    !/^\d{15,22}$/.test(id) ||
+    conversationID !== id ||
+    codexResetText(tweet.in_reply_to_status_id) ||
+    codexResetText(tweet.in_reply_to_user_id) ||
+    lane !== "reset_related" ||
+    tweet.explicit_reset_claim === true
+  ) {
+    return null;
+  }
+  return {
+    ...tweet,
+    id,
+    kind: "candidate",
+    announcement_state: "hinted",
+    active: true,
+    summary: codexResetText(tweet.text),
+    // Do not forward an unverified machine translation from the corpus
+    // fallback. The original public text is safer than a reversed meaning.
+    localized_summary: "",
+    source: "site-api-corpus",
+  };
 }
 
 function codexResetSignalID(signalValue) {
@@ -511,11 +579,30 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
   if (lastPersonalReset && codexResetText(lastPersonalReset.eventId)) {
     closedEventIDs.add(codexResetText(lastPersonalReset.eventId));
   }
+  const activeAccountID = codexResetText(receiver.activeAccountId);
+  const activeDelivery = codexResetObject(activeEpisode && activeEpisode.account_delivery) || {};
+  if (
+    activeEpisode &&
+    activeAccountID &&
+    codexResetText(activeDelivery[activeAccountID]).toLowerCase() === "landed"
+  ) {
+    closedEventIDs.add(codexResetSignalID(activeEpisode));
+  }
   const settlement = codexResetSignalSettlement(receiver);
   const publicResetAtMs = codexResetMillis(forecast.last_reset_at);
   if (settlement.eventId) closedEventIDs.add(settlement.eventId);
   const choices = [];
   const rank = { none: 0, hint: 1, commitment: 2, explicit: 3 };
+  const negativeTerminalIDs = new Set(
+    [
+      codexResetObject(feed.signal),
+      ...(Array.isArray(feed.events) ? feed.events : []),
+      ...(Array.isArray(feed.tweets) ? feed.tweets : []),
+    ]
+      .filter((entry) => entry && codexResetSignalIsNegativeTerminal(entry))
+      .map(codexResetSignalID)
+      .filter(Boolean),
+  );
 
   function addChoice(value, options) {
     const signal = codexResetObject(value);
@@ -536,6 +623,7 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
 
     const id = codexResetSignalID(signal) || signal.at || signal.announced_at;
     if (closedEventIDs.has(id)) return;
+    if (negativeTerminalIDs.has(id)) return;
     if (
       settlement.atMs !== null &&
       atMs <= settlement.atMs &&
@@ -552,6 +640,7 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
     }
 
     const level = codexResetSignalLevel(signal);
+    if (level === "none") return;
     if (
       level === "explicit" &&
       settings.source === "receiver" &&
@@ -597,6 +686,11 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
   const events = Array.isArray(feed.events) ? feed.events : [];
   for (const event of events.slice(0, 16)) {
     addChoice(event, { latestEvent: true, source: "event" });
+  }
+  const tweets = Array.isArray(feed.tweets) ? feed.tweets : [];
+  for (const tweet of tweets.slice(0, 16)) {
+    const candidate = codexResetCandidateFromTweet(tweet);
+    if (candidate) addChoice(candidate, { source: "tweet" });
   }
   if (
     activeEpisode &&
@@ -726,6 +820,13 @@ function codexResetLocalOnlyForecast(nowMs) {
 //   planned remaining = Q * natural-time survival * manual-reset survival
 // Actual usage is deliberately absent. It is compared with the target, never
 // fed back into it, so the white bar can naturally pass the red marker.
+// A candidate hint owns a separate, deliberately bounded planning reserve. It
+// does not alter the hosted forecast probability: 10% of the quota that would
+// remain after the ordinary forecast adjustment is scheduled earlier. This
+// keeps the action monotonic and explainable while preventing a hint alone
+// from turning the target into 100%.
+const CODEX_RESET_CANDIDATE_RESERVE_FRACTION = 0.1;
+
 function codexResetComputeDecision(input) {
   const nowMs = input.nowMs;
   const usedPercent = codexResetClamp(input.usedPercent, 0, 100);
@@ -777,6 +878,8 @@ function codexResetComputeDecision(input) {
   const signal = input.signal || { level: "none" };
   const explicit = signal.level === "explicit";
   const commitment = signal.level === "commitment";
+  const hint = signal.level === "hint";
+  const candidateReserveFraction = hint ? CODEX_RESET_CANDIDATE_RESERVE_FRACTION : 0;
   const p24 = codexResetClamp(codexResetFinite(input.p24) || 0, 0, 100);
   const p48 = codexResetClamp(codexResetFinite(input.p48) || p24, p24, 100);
   const commitmentFloor = codexResetClamp(
@@ -785,16 +888,17 @@ function codexResetComputeDecision(input) {
     100,
   );
 
-  let mode = input.forecastUsable ? "forecast" : "baseline";
+  let mode = hint ? "hint" : input.forecastUsable ? "forecast" : "baseline";
   let deadlineMs = Math.min(nowMs + dayMs, naturalResetAtMs);
   let probability = 0;
   let waitsForNaturalReset = false;
   let immediate = false;
-  let trajectoryPolicyKind = input.forecastUsable ? "hazard" : "baseline";
+  const forecastRiskFraction = input.forecastUsable ? Math.min(p24, 99.999999) / 100 : 0;
+  const combinedRiskFraction =
+    1 - (1 - forecastRiskFraction) * (1 - candidateReserveFraction);
+  let trajectoryPolicyKind = input.forecastUsable || hint ? "hazard" : "baseline";
   let trajectoryHazardPerHour =
-    input.forecastUsable && p24 > 0
-      ? -Math.log1p(-Math.min(p24, 99.999999) / 100) / 24
-      : 0;
+    combinedRiskFraction > 0 ? -Math.log1p(-combinedRiskFraction) / 24 : 0;
   let trajectoryDeadlineMs = null;
 
   if (explicit) {
@@ -863,7 +967,13 @@ function codexResetComputeDecision(input) {
   const normalUse = Math.max(0, plannedRemainingNow - normalRemainingAtDeadline);
   const otherwiseWasted = normalRemainingAtDeadline;
   const predictionUse = (probability / 100) * otherwiseWasted;
-  const targetRemaining = Math.max(0, normalRemainingAtDeadline - predictionUse);
+  const remainingAfterForecast = Math.max(0, normalRemainingAtDeadline - predictionUse);
+  const candidateUse = candidateReserveFraction * remainingAfterForecast;
+  const targetRemaining = Math.max(0, remainingAfterForecast - candidateUse);
+  const effectiveRiskBudget = predictionUse + candidateUse;
+  const effectiveRiskPercent = otherwiseWasted > 0
+    ? codexResetClamp((effectiveRiskBudget / otherwiseWasted) * 100, 0, 100)
+    : 0;
   const targetUsed = Math.min(100, 100 - targetRemaining);
   const plannedAdditional = Math.max(0, targetUsed - targetNowUsed);
   const additionalTotal = Math.max(0, targetUsed - usedPercent);
@@ -876,11 +986,11 @@ function codexResetComputeDecision(input) {
   let hazardPerHour = null;
   let recommendedRate = requiredAverageRate;
   if (horizonHours > 0) {
-    if (probability < 100 - 1e-9) {
-      hazardPerHour = -Math.log1p(-probability / 100) / horizonHours;
+    if (effectiveRiskPercent < 100 - 1e-9) {
+      hazardPerHour = -Math.log1p(-effectiveRiskPercent / 100) / horizonHours;
     }
   }
-  const downsideHours = normalRate > 0 ? predictionUse / normalRate : 0;
+  const downsideHours = normalRate > 0 ? effectiveRiskBudget / normalRate : 0;
 
   return {
     mode,
@@ -891,8 +1001,12 @@ function codexResetComputeDecision(input) {
     normalUse,
     otherwiseWasted,
     predictionUse,
+    candidateUse,
+    candidateReservePercent: candidateReserveFraction * 100,
+    effectiveRiskPercent,
     additionalBaseline: normalUse,
     additionalPrediction: predictionUse,
+    additionalCandidate: candidateUse,
     plannedAdditional,
     additionalTotal,
     targetUsed,
@@ -1179,6 +1293,23 @@ function codexResetBehaviorZone(decisionValue, predictionValue) {
   return "uncertain";
 }
 
+function codexResetSuggestionLimit(decisionValue, predictionValue, usedPercentValue) {
+  const decision = codexResetObject(decisionValue);
+  if (!decision) return 0;
+  const usedPercent = codexResetFinite(usedPercentValue);
+  const target = codexResetFinite(decision.targetUsed);
+  if (
+    decision.targetReached === true ||
+    (usedPercent !== null && target !== null && usedPercent + 0.05 >= target)
+  ) {
+    return 1;
+  }
+  const zone = codexResetBehaviorZone(decision, predictionValue);
+  if (zone === "covered") return 1;
+  if (zone === "uncertain") return 3;
+  return 5;
+}
+
 function codexResetSessionSuggestions(receiverValue) {
   const receiver = codexResetObject(receiverValue);
   const source = codexResetObject(receiver && receiver.sessionSuggestions);
@@ -1190,28 +1321,170 @@ function codexResetSessionSuggestions(receiverValue) {
       const lastActiveAtMs = codexResetMillis(candidate && candidate.lastActiveAt);
       if (!title || lastActiveAtMs === null) return null;
       return {
+        actionId: codexResetText(candidate.actionId).slice(0, 80),
         title: title.slice(0, 300),
         project: codexResetText(candidate.project).slice(0, 120),
         lastActiveAtMs,
         pinned: candidate.pinned === true,
         goalStatus: codexResetText(candidate.goalStatus),
         observedTokens: Math.max(0, codexResetFinite(candidate.observedTokens) || 0),
-        reason: codexResetText(candidate.reason).slice(0, 120) || "本周期最近活跃",
+        workspaceRank: Math.max(1, codexResetFinite(candidate.workspaceRank) || 1),
+        workspaceObservedTokens: Math.max(
+          0,
+          codexResetFinite(candidate.workspaceObservedTokens) || 0,
+        ),
+        workspaceSharePercent: codexResetClamp(
+          codexResetFinite(candidate.workspaceSharePercent) || 0,
+          0,
+          100,
+        ),
+        reason: codexResetText(candidate.reason).slice(0, 120) || "近 24 小时活跃工作区",
       };
     })
     .filter(Boolean)
-    .slice(0, 5);
+    .slice(0, 12);
+  const mainlines = (Array.isArray(source.mainlines) ? source.mainlines : [])
+    .map((value) => {
+      const mainline = codexResetObject(value);
+      const actionId = codexResetText(mainline && mainline.actionId).slice(0, 80);
+      const label = codexResetText(mainline && mainline.label).replace(/\s+/g, " ");
+      const lastActiveAtMs = codexResetMillis(mainline && mainline.lastActiveAt);
+      if (!actionId || !label || lastActiveAtMs === null) return null;
+      return {
+        actionId,
+        label: label.slice(0, 300),
+        project: codexResetText(mainline.project).slice(0, 120),
+        lastActiveAtMs,
+        source: codexResetText(mainline.source) === "explicit" ? "explicit" : "inferred",
+        confidence: ["high", "medium"].includes(codexResetText(mainline.confidence))
+          ? codexResetText(mainline.confidence)
+          : "medium",
+        sessionCount: Math.max(1, codexResetFinite(mainline.sessionCount) || 1),
+        activeDayCount: Math.max(1, codexResetFinite(mainline.activeDayCount) || 1),
+        observedTokens: Math.max(0, codexResetFinite(mainline.observedTokens) || 0),
+        loadSharePercent: codexResetClamp(
+          codexResetFinite(mainline.loadSharePercent) || 0,
+          0,
+          100,
+        ),
+        goalStatus: codexResetText(mainline.goalStatus),
+        reason: codexResetText(mainline.reason).slice(0, 180) || "近期持续推进",
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 12);
+  const corrections = (Array.isArray(source.corrections) ? source.corrections : [])
+    .map((value) => {
+      const correction = codexResetObject(value);
+      const targetId = codexResetText(correction && correction.targetId).slice(0, 80);
+      const status = codexResetText(correction && correction.status);
+      if (
+        !targetId ||
+        !["mainline", "not-mainline", "snoozed", "complete"].includes(status)
+      ) {
+        return null;
+      }
+      return {
+        targetId,
+        kind: codexResetText(correction.kind) === "session" ? "session" : "mainline",
+        status,
+        label: codexResetText(correction.label).slice(0, 300),
+        project: codexResetText(correction.project).slice(0, 120),
+        updatedAtMs: codexResetMillis(correction.updatedAt),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 200);
   return {
     status: ["ready", "stale", "unavailable"].includes(codexResetText(source.status))
       ? codexResetText(source.status)
       : "unavailable",
     updatedAtMs: codexResetMillis(source.updatedAt),
     cycleStartAtMs: codexResetMillis(source.cycleStartAt),
+    trendWindowStartAtMs: codexResetMillis(source.trendWindowStartAt),
+    trendWindowHours: Math.max(1, codexResetFinite(source.trendWindowHours) || 24),
+    intentWindowStartAtMs: codexResetMillis(source.intentWindowStartAt),
+    intentWindowDays: Math.max(1, codexResetFinite(source.intentWindowDays) || 30),
+    tokenSource: ["cost-ledger", "hybrid", "local-samples", "observation-fallback"].includes(
+      codexResetText(source.tokenSource),
+    )
+      ? codexResetText(source.tokenSource)
+      : "observation-fallback",
     observationStartedAtMs: codexResetMillis(source.observationStartedAt),
     observationReady: source.observationReady === true,
     candidateCount: Math.max(candidates.length, codexResetFinite(source.candidateCount) || 0),
+    workspaceCount: Math.max(0, codexResetFinite(source.workspaceCount) || 0),
+    mainlineCount: Math.max(mainlines.length, codexResetFinite(source.mainlineCount) || 0),
+    mainlines,
+    corrections,
     candidates,
   };
+}
+
+function codexResetWorkspaceSuggestions(sessionSuggestionsValue) {
+  const source = codexResetObject(sessionSuggestionsValue);
+  if (!source) return [];
+  const grouped = new Map();
+  for (const candidateValue of Array.isArray(source.candidates) ? source.candidates : []) {
+    const candidate = codexResetObject(candidateValue);
+    if (!candidate) continue;
+    const workspaceRank = Math.max(1, codexResetFinite(candidate.workspaceRank) || 1);
+    const project = codexResetText(candidate.project).replace(/\s+/g, " ") || "未命名工作区";
+    const key = `${workspaceRank}:${project}`;
+    const current = grouped.get(key) || {
+      project,
+      workspaceRank,
+      observedTokens: 0,
+      sharePercent: 0,
+      lastActiveAtMs: null,
+      recentActivities: [],
+    };
+    current.observedTokens = Math.max(
+      current.observedTokens,
+      Math.max(0, codexResetFinite(candidate.workspaceObservedTokens) || 0),
+    );
+    current.sharePercent = Math.max(
+      current.sharePercent,
+      codexResetClamp(codexResetFinite(candidate.workspaceSharePercent) || 0, 0, 100),
+    );
+    const numericLastActiveAtMs = codexResetFinite(candidate.lastActiveAtMs);
+    const lastActiveAtMs = numericLastActiveAtMs === null
+      ? codexResetMillis(candidate.lastActiveAt)
+      : numericLastActiveAtMs;
+    if (lastActiveAtMs !== null) {
+      current.lastActiveAtMs = current.lastActiveAtMs === null
+        ? lastActiveAtMs
+        : Math.max(current.lastActiveAtMs, lastActiveAtMs);
+    }
+    const title = codexResetText(candidate.title).replace(/\s+/g, " ");
+    if (title) {
+      current.recentActivities.push({
+        title: title.slice(0, 300),
+        observedTokens: Math.max(0, codexResetFinite(candidate.observedTokens) || 0),
+        lastActiveAtMs,
+      });
+    }
+    grouped.set(key, current);
+  }
+  return [...grouped.values()]
+    .sort(
+      (left, right) =>
+        left.workspaceRank - right.workspaceRank ||
+        right.observedTokens - left.observedTokens ||
+        (right.lastActiveAtMs || 0) - (left.lastActiveAtMs || 0) ||
+        left.project.localeCompare(right.project),
+    )
+    .map((workspace) => ({
+      ...workspace,
+      recentActivities: workspace.recentActivities
+        .sort(
+          (left, right) =>
+            right.observedTokens - left.observedTokens ||
+            (right.lastActiveAtMs || 0) - (left.lastActiveAtMs || 0) ||
+            left.title.localeCompare(right.title),
+        )
+        .slice(0, 3),
+    }));
 }
 
 function codexResetTargetTrajectory(receiverValue, usage, naturalResetAtMs, nowMs) {
@@ -1895,6 +2168,14 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
   const behavior = decision ? planningBehavior : null;
   const accountPlans = usages.map((accountUsage) => {
     const accountReceiver = codexResetReceiverAccountForUsage(receiverAccounts, accountUsage);
+    const accountForecast = receiver
+      ? codexResetForecastModel(
+          forecastPayload,
+          feedPayload,
+          { ...receiver, activeAccountId: accountUsage.accountId },
+          nowMs,
+        ) || forecast
+      : forecast;
     const accountTrajectory = codexResetTargetTrajectory(
       accountReceiver || {},
       accountUsage,
@@ -1902,20 +2183,23 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
       nowMs,
     );
     const accountDecision =
-      accountUsage.exact && accountUsage.fresh && forecast
+      accountUsage.exact && accountUsage.fresh && accountForecast
         ? codexResetComputeDecision({
             nowMs,
             usedPercent: accountUsage.usedPercent,
             resetsAtMs: accountUsage.resetsAtMs,
             windowMinutes: accountUsage.windowMinutes,
-            p24: forecast.p24,
-            p48: forecast.p48,
-            commitmentFloor: forecast.commitmentFloor,
-            signal: forecast.signal,
-            forecastUsable: forecast.fresh,
+            p24: accountForecast.p24,
+            p48: accountForecast.p48,
+            commitmentFloor: accountForecast.commitmentFloor,
+            signal: accountForecast.signal,
+            forecastUsable: accountForecast.fresh,
             plannedRemainingNow: accountTrajectory && accountTrajectory.remainingPercent,
           })
         : null;
+    const accountBehavior = accountDecision
+      ? codexResetBehaviorModel(accountReceiver || {}, accountUsage, accountDecision, nowMs)
+      : null;
     const accountPace = codexResetPaceModel(accountReceiver || {});
     const capacityEstimate = codexResetCapacityEstimate(accountReceiver, accountUsage.planType);
     const fullCapacityUSD = codexResetFinite(capacityEstimate && capacityEstimate.estimateUSD);
@@ -1931,17 +2215,17 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
     const cycleAverageRate = codexResetClamp(accountUsage.usedPercent / elapsedHours, 0, 20);
     const projectionRate = observedRate === null ? cycleAverageRate : observedRate;
     const explicitForcedDeadlineMs =
-      forecast && forecast.signal && forecast.signal.level === "explicit" &&
-      Number.isFinite(forecast.signal.deadlineMs) && forecast.signal.deadlineMs > nowMs
-        ? forecast.signal.deadlineMs
+      accountForecast && accountForecast.signal && accountForecast.signal.level === "explicit" &&
+      Number.isFinite(accountForecast.signal.deadlineMs) && accountForecast.signal.deadlineMs > nowMs
+        ? accountForecast.signal.deadlineMs
         : null;
     const explicitForcedWindowStartMs =
-      explicitForcedDeadlineMs !== null && Number.isFinite(forecast.signal.windowStartMs)
-        ? forecast.signal.windowStartMs
+      explicitForcedDeadlineMs !== null && Number.isFinite(accountForecast.signal.windowStartMs)
+        ? accountForecast.signal.windowStartMs
         : explicitForcedDeadlineMs;
     const explicitForcedWindowEndMs =
-      explicitForcedDeadlineMs !== null && Number.isFinite(forecast.signal.windowEndMs)
-        ? forecast.signal.windowEndMs
+      explicitForcedDeadlineMs !== null && Number.isFinite(accountForecast.signal.windowEndMs)
+        ? accountForecast.signal.windowEndMs
         : explicitForcedDeadlineMs;
     const freeResetDeadlineMs = explicitForcedDeadlineMs !== null
       ? Math.min(accountUsage.resetsAtMs, explicitForcedDeadlineMs)
@@ -1968,7 +2252,9 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
       planType: accountUsage.planType,
       planLabel: codexResetPlanLabel(accountUsage.planType),
       usage: accountUsage,
+      forecast: accountForecast,
       decision: accountDecision,
+      behavior: accountBehavior,
       targetTrajectory: accountTrajectory,
       pace: accountPace,
       capacityEstimate,
@@ -2199,6 +2485,13 @@ defineProvider({
       return `${Math.max(0, value).toFixed(places)}%`;
     }
 
+    function compactTokens(value) {
+      const tokens = Math.max(0, Number(value) || 0);
+      if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1)}M`;
+      if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(tokens >= 100_000 ? 0 : 1)}K`;
+      return `${Math.round(tokens)}`;
+    }
+
     function twoDigits(value) {
       return String(Math.max(0, Math.min(23, Math.round(value)))).padStart(2, "0");
     }
@@ -2259,12 +2552,6 @@ defineProvider({
       if (normalized.startsWith("behavior-")) return "使用节奏变化";
       if (normalized === "forecast") return "预测上调";
       return normalized || "未知";
-    }
-
-    function sessionMainSummary(candidates, candidateCount) {
-      const shown = candidates.slice(0, 2).map((candidate) => clip(candidate.title, 34));
-      const hidden = Math.max(0, candidateCount - shown.length);
-      return clip(`${shown.join("；")}${hidden ? `；另有 ${hidden} 个` : ""}`, 120);
     }
 
     const bridgeSetting = codexResetText(ctx.settings.get("CODEXBAR_BRIDGE_URL"));
@@ -2368,10 +2655,18 @@ defineProvider({
     const receiverEvent =
       codexResetObject(model.receiver && model.receiver.activeEpisode) ||
       codexResetObject(model.receiver && model.receiver.currentEvent);
+    const completedPublicEvents = Array.isArray(
+      model.receiver && model.receiver.completedPublicEvents,
+    )
+      ? model.receiver.completedPublicEvents
+      : [];
     const bankedCampaign = codexResetObject(model.receiver && model.receiver.bankedCampaign);
     const accountDelivery = codexResetObject(receiverEvent && receiverEvent.account_delivery) || {};
     const deliveryValues = Object.values(accountDelivery);
     const deliveredAccounts = deliveryValues.filter((value) => value === "landed").length;
+    const receiverEventLabel = receiverEvent
+      ? `明确重置公告${deliveryValues.length ? ` · ${deliveredAccounts}/${deliveryValues.length} 账号到账` : ""}`
+      : null;
     const lastPersonalReset = codexResetObject(model.receiver && model.receiver.lastPersonalReset);
     const signalLabel =
       forecast.signal.level === "explicit"
@@ -2393,12 +2688,22 @@ defineProvider({
     const usingLastGoodUsage = model.usageSource === "last-good" && Boolean(model.usage);
     const actionRows = [];
     const sessionSuggestions = model.sessionSuggestions;
-    const sessionCandidates = sessionSuggestions ? sessionSuggestions.candidates : [];
+    const mainlineSuggestions = sessionSuggestions && Array.isArray(sessionSuggestions.mainlines)
+      ? sessionSuggestions.mainlines
+      : [];
+    const mainlineTokenWindowLabel =
+      sessionSuggestions && sessionSuggestions.tokenSource === "observation-fallback"
+        ? "本机观察期"
+        : "近 24 小时";
     const shortLoad = model.shortLoad;
     const shortLoadPrediction = shortLoad && shortLoad.prediction;
     const currentAccount = model.accounts.find((account) => account.live) || null;
     const selectedAccount = model.accounts.find((account) => account.selected) || null;
-    let showSessionSuggestions = false;
+    let showMainlineSuggestions = false;
+    let suggestionLimit = 0;
+    let visibleMainlineSuggestions = [];
+    let whyReasonText = null;
+    let whyActionText = null;
     let decisionProgress = null;
     let accountSummaryRow = null;
     let creditSummaryRow = null;
@@ -2467,11 +2772,13 @@ defineProvider({
       const prediction = behavior && behavior.prediction;
       const behaviorZone = prediction ? codexResetBehaviorZone(decision, prediction) : "unknown";
       const targetReached = decision.targetReached === true;
-      showSessionSuggestions =
-        sessionCandidates.length > 0 &&
-        (!targetReached ||
-          (model.devicePlan && model.devicePlan.shouldSwitch) ||
-          (model.bankedPlan && model.bankedPlan.status === "must-form-node"));
+      suggestionLimit = codexResetSuggestionLimit(
+        decision,
+        prediction,
+        model.usage.usedPercent,
+      );
+      visibleMainlineSuggestions = mainlineSuggestions.slice(0, suggestionLimit);
+      showMainlineSuggestions = visibleMainlineSuggestions.length > 0;
       const deadlineLabel = decision.immediate ? "现在" : utc8(decision.deadlineMs);
       const progressTitle = decision.immediate
         ? "现在的使用计划 · Tibo 已明确"
@@ -2487,71 +2794,98 @@ defineProvider({
 
       let recommendationValue;
       let recommendationSecondary;
+      const unfilledMainlineNote = visibleMainlineSuggestions.length < suggestionLimit
+        ? visibleMainlineSuggestions.length
+          ? `只识别出 ${visibleMainlineSuggestions.length} 条可靠主线，不会用临时 session 凑满；其余容量可安排新增有价值任务。`
+          : "当前没有足够可靠的主线，不会拿最近 session 凑数；可安排新增有价值任务。"
+        : null;
       if (targetReached) {
-        recommendationValue = "无需再为预测继续加速";
+        recommendationValue = visibleMainlineSuggestions.length
+          ? "只保留最重要的 1 条主线，保持 Standard"
+          : "目标已经达到，保持 Standard";
         recommendationSecondary =
-          decision.targetExceededBy > 0.05
-            ? `当前已超红线 ${percent(decision.targetExceededBy, 1)}；若正在使用 Fast，请切回 Standard`
-            : "当前已到达红线；正常任务可以继续，若在 Fast 请切回 Standard";
+          "当前用量已经越过本轮目标，无需再为刷新风险额外加速。";
       } else if (decision.immediate) {
-        recommendationValue = sessionCandidates.length
-          ? "续跑近期任务或新增有价值任务"
+        recommendationValue = visibleMainlineSuggestions.length
+          ? `优先继续以下 ${visibleMainlineSuggestions.length} 条可靠主线`
           : "新增有价值任务，需要时开启 Fast";
-        recommendationSecondary = `Tibo 已明确公告且尚未到账；可优先使用剩余 ${percent(
-          decision.remaining,
-          1,
-        )} 周额度`;
+        recommendationSecondary =
+          "明确重置公告尚未在当前账号到账，剩余容量可能很快清零。";
       } else if (prediction) {
         if (behaviorZone === "behind") {
-          recommendationValue = sessionCandidates.length
-            ? "续跑近期任务，仍不足时开启 Fast"
+          recommendationValue = visibleMainlineSuggestions.length
+            ? `优先继续以下 ${visibleMainlineSuggestions.length} 条可靠主线`
             : "新增有价值任务，仍不足时开启 Fast";
-          recommendationSecondary = `红线目标 ${percent(
-            decision.targetUsed,
-            1,
-          )} 在蓝区 ${percent(prediction.endpointLower, 1)}–${percent(
-            prediction.endpointUpper,
-            1,
-          )} 右侧`;
+          recommendationSecondary =
+            "按近期自然使用趋势仍可能达不到目标；先继续持续推进的主线，仍不足再开启 Fast。";
         } else if (behaviorZone === "covered") {
-          recommendationValue = "若正在使用 Fast，切回 Standard";
-          recommendationSecondary = `红线目标 ${percent(
-            decision.targetUsed,
-            1,
-          )} 在蓝区 ${percent(prediction.endpointLower, 1)}–${percent(
-            prediction.endpointUpper,
-            1,
-          )} 左侧；若已是 Standard 则保持`;
+          recommendationValue = visibleMainlineSuggestions.length
+            ? "只保留最重要的 1 条主线，保持 Standard"
+            : "自然趋势已经超过目标，保持 Standard";
+          recommendationSecondary =
+            "近期自然使用趋势已经越过目标，不需要继续加速。";
         } else {
-          recommendationValue = "保持当前节奏";
-          recommendationSecondary = `红线目标 ${percent(
-            decision.targetUsed,
-            1,
-          )} 位于蓝区 ${percent(prediction.endpointLower, 1)}–${percent(
-            prediction.endpointUpper,
-            1,
-          )} 内`;
+          recommendationValue = visibleMainlineSuggestions.length
+            ? `保持当前节奏，优先继续以下 ${visibleMainlineSuggestions.length} 条主线`
+            : "保持当前节奏";
+          recommendationSecondary =
+            "近期自然使用范围已经覆盖目标，正常推进即可。";
         }
       } else {
-        recommendationValue = `计划再用 ${percent(decision.additionalTotal, 1)} 周额度`;
+        recommendationValue = visibleMainlineSuggestions.length
+          ? `优先继续以下 ${visibleMainlineSuggestions.length} 条可靠主线`
+          : "按确定目标继续安排真实工作";
         recommendationSecondary = behavior
-          ? `行为预测${behavior.status === "stale" ? "已过期" : "暂不可靠"}；不拿短时速度外推全天`
-          : "长期行为预测准备中；当前只显示确定目标";
+          ? `长期使用趋势${behavior.status === "stale" ? "已经过期" : "暂不可靠"}，当前不会拿短时速度冒充全天趋势。`
+          : "长期使用趋势仍在学习，当前先按确定目标继续。";
       }
+
+      const cycleStartMs =
+        model.usage.resetsAtMs - model.usage.windowMinutes * 60_000;
+      const cycleProgress = codexResetClamp(
+        (nowMs - cycleStartMs) / Math.max(1, model.usage.windowMinutes * 60_000),
+        0,
+        1,
+      );
+      const cycleContext =
+        cycleProgress <= 0.08 && model.usage.usedPercent < Math.min(20, decision.targetUsed)
+          ? "本周期刚开始，当前用量还比较少。"
+          : targetReached
+            ? "当前用量已经达到本轮目标。"
+            : "当前用量还没有达到本轮目标。";
+      const trendContext = prediction
+        ? behaviorZone === "behind"
+          ? "按近期自然使用趋势，计划窗口结束时仍可能达不到目标。"
+          : behaviorZone === "covered"
+            ? "按近期自然使用趋势，计划窗口结束前大概率会超过目标。"
+            : "近期自然使用范围已经覆盖目标。"
+        : "长期自然使用趋势还没有形成可靠判断。";
+      const resetContext =
+        forecast.signal.level === "explicit"
+          ? "同时存在尚未兑现的明确重置公告，剩余容量可能提前清零。"
+          : forecast.signal.level === "commitment"
+            ? "同时存在带期限的重置承诺，提前刷新的风险高于平时。"
+            : forecast.signal.level === "hint"
+              ? "目前只有候选重置暗示，系统会留出少量使用空间，但不会把它当成确定刷新。"
+              : forecast.p24 >= 60
+                ? "当前没有未兑现的官方公告，但公开预测认为近期刷新可能性偏高。"
+                : forecast.p24 >= 25
+                  ? "当前没有未兑现的官方公告，计划仍保留了一定的近期刷新风险。"
+                  : "当前没有未兑现的官方重置信号，计划主要依据自然刷新和本机使用趋势。";
+      whyReasonText = `${cycleContext}${trendContext}${resetContext}`;
       const recommended = model.devicePlan.shouldSwitch
         ? model.accounts.find((item) => item.id === model.devicePlan.recommendedAccountId)
         : null;
       if (recommended) {
         recommendationValue = `切到 ${recommended.label} · ${recommended.planLabel} 继续工作`;
-        const proof = codexResetObject(model.devicePlan.switchProof);
         recommendationSecondary = model.devicePlan.switchReason === "current-blocked"
           ? "当前账号额度或短窗口已经阻塞；该账号仍可工作。切号只需重新登录，不会自动执行"
-          : proof
-            ? `${utc8(proof.recommendedResetAtMs)} 免费刷新前预计仍有 $${proof.recommendedAtRiskCapacityUSD.toFixed(0)} API 等价容量会被清掉；当前账号对应约 $${(proof.currentAtRiskCapacityUSD || 0).toFixed(0)} · ${codexResetCapacitySourceLabel(proof.capacitySource)}，不会自动切号`
-            : "另一个账号在更早免费刷新前有更多真实容量会被清掉；不会自动切号";
+          : "另一个账号在更早刷新前有更多真实容量可能被清掉；建议先在那里继续，但不会自动切号";
+        whyReasonText = recommendationSecondary;
       } else if (model.bankedPlan && model.bankedPlan.status === "interruption-now") {
         recommendationValue = `所有账号都已阻塞，使用 ${model.bankedPlan.accountLabel || "当前账号"} 的重置券`;
         recommendationSecondary = "所有账号均已无容量，且未来 24 小时没有非券刷新；统一容量链确认兑换能承接足够真实工作，只提示、不自动兑换";
+        whyReasonText = recommendationSecondary;
       } else if (model.bankedPlan && model.bankedPlan.status === "free-reset-first") {
         recommendationSecondary = `${recommendationSecondary}；明确强制刷新先到，重置券保持不动并在到账后重新规划`;
       } else if (
@@ -2559,13 +2893,18 @@ defineProvider({
         model.bankedPlan.status === "must-form-node" &&
         !targetReached
       ) {
-        recommendationValue = sessionCandidates.length
-          ? "安排以下真实任务，提前形成安全兑换点"
+        recommendationValue = mainlineSuggestions.length
+          ? "安排以下真实主线工作，提前形成安全兑换点"
           : "增加有价值工作，提前形成安全兑换点";
         recommendationSecondary = model.bankedPlan.expiresAtMs
-          ? `券最早 ${utc8(model.bankedPlan.expiresAtMs)} 到期；系统不会让其他账号容量或更早免费刷新排在券之后`
+          ? "重置券正在接近可用节点；先安排真实工作，同时保证其他账号容量和更早免费刷新优先使用"
           : "当前尚未形成安全兑换点；不制造任务，也不编造券到期时间";
+        whyReasonText = recommendationSecondary;
       }
+      if (unfilledMainlineNote && !targetReached) {
+        recommendationSecondary = `${recommendationSecondary} ${unfilledMainlineNote}`;
+      }
+      whyActionText = recommendationValue;
       actionRows.push({
         label: "建议",
         value: recommendationValue,
@@ -2588,7 +2927,9 @@ defineProvider({
               prediction.endpointUpper,
               1,
             )} · 中心 ${percent(prediction.endpointMedian, 1)}`
-          : "自然使用预测暂不可用",
+          : decision.immediate
+            ? "即时公告覆盖自然使用预测"
+            : "自然使用预测暂不可用",
       };
     } else {
       actionRows.push({
@@ -2621,15 +2962,14 @@ defineProvider({
       };
     }
 
-    if (showSessionSuggestions && sessionCandidates.length) {
-      for (const [index, candidate] of sessionCandidates.slice(0, 5).entries()) {
+    if (showMainlineSuggestions && mainlineSuggestions.length) {
+      for (const [index, mainline] of visibleMainlineSuggestions.entries()) {
         actionRows.push({
-          label: `任务 ${index + 1}`,
-          value: clip(candidate.title, 120),
-          secondaryValue: clip(
-            [candidate.reason, candidate.project || null].filter(Boolean).join(" · "),
-            120,
-          ),
+          label: `主线 ${index + 1}`,
+          value: clip(mainline.label, 120),
+          secondaryValue: `建议继续 · ${mainline.reason}${
+            mainline.source === "explicit" ? " · 你已确认" : " · 本机保守推断"
+          }`,
         });
       }
     }
@@ -2640,21 +2980,44 @@ defineProvider({
         secondaryValue: `该账号已用完，旧周冷却要到 ${utc8(model.subscriptionAdvice.oldCooldownEndsAtMs)}；续回同档也不会提前刷新。只提示，不自动取消或购买`,
       });
     }
-    if (forecast.signal.level !== "none") {
+    if (forecast.signal.level !== "none" || receiverEvent) {
+      const receiverWindow = codexResetObject(
+        receiverEvent && (receiverEvent.official_window || receiverEvent.window),
+      );
+      const resetLabel = forecast.signal.level !== "none"
+        ? signalLabel
+        : receiverEventLabel || "明确重置公告";
+      const resetDeadlineMs = forecast.signal.level !== "none"
+        ? forecast.signal.deadlineMs
+        : stateTime(
+            (receiverWindow && (receiverWindow.end_at || receiverWindow.endAt)) ||
+              (receiverEvent && (receiverEvent.deadline_at || receiverEvent.deadlineAt)),
+          );
+      const resetPublishedAtMs = forecast.signal.level !== "none"
+        ? forecast.signal.atMs
+        : stateTime(receiverEvent && (receiverEvent.announced_at || receiverEvent.announcedAt));
+      const resetSummary = forecast.signal.level !== "none"
+        ? forecast.signal.summary || forecast.signal.localizedSummary
+        : codexResetText(
+            receiverEvent &&
+              (receiverEvent.localized_summary ||
+                receiverEvent.localizedSummary ||
+                receiverEvent.summary),
+          );
       actionRows.push({
         label: "重置",
-        value: forecast.signal.deadlineMs
-          ? `${signalLabel} · 约 ${utc8(forecast.signal.deadlineMs)}`
-          : signalLabel,
-        relativeTimeAt: forecast.signal.deadlineMs
-          ? new Date(forecast.signal.deadlineMs).toISOString()
+        value: resetDeadlineMs
+          ? `${resetLabel} · 约 ${utc8(resetDeadlineMs)}`
+          : resetLabel,
+        relativeTimeAt: resetDeadlineMs
+          ? new Date(resetDeadlineMs).toISOString()
           : null,
-        relativeTimePrefix: forecast.signal.deadlineMs ? `${signalLabel} · 约 ` : null,
+        relativeTimePrefix: resetDeadlineMs ? `${resetLabel} · 约 ` : null,
         secondaryValue: signalSecondary(
-          forecast.signal.summary,
-          forecast.signal.deadlineMs
-            ? `截止 ${utc8(forecast.signal.deadlineMs)}`
-            : `发布 ${utc8(forecast.signal.atMs)}`,
+          resetSummary || "Tibo 发布了新的重置消息",
+          resetDeadlineMs
+            ? `截止 ${utc8(resetDeadlineMs)}`
+            : `发布 ${utc8(resetPublishedAtMs)}`,
         ),
       });
     } else if (
@@ -2710,8 +3073,8 @@ defineProvider({
     };
     actionRows.sort(
       (left, right) =>
-        (left.label.startsWith("任务 ") ? 1 : (mainRowPriority[left.label] === undefined ? 9 : mainRowPriority[left.label])) -
-        (right.label.startsWith("任务 ") ? 1 : (mainRowPriority[right.label] === undefined ? 9 : mainRowPriority[right.label])),
+        (left.label.startsWith("主线 ") ? 1 : (mainRowPriority[left.label] === undefined ? 9 : mainRowPriority[left.label])) -
+        (right.label.startsWith("主线 ") ? 1 : (mainRowPriority[right.label] === undefined ? 9 : mainRowPriority[right.label])),
     );
 
     const submenuEventRows = [];
@@ -2719,21 +3082,42 @@ defineProvider({
     const submenuAccountRows = [];
     const submenuForecastRows = [];
     const submenuDiagnosticRows = [];
-    if (forecast.signal.level !== "none") {
+    if (forecast.signal.level !== "none" || receiverEvent) {
       submenuEventRows.push({
         label: "当前状态",
-        value: signalLabel,
+        value: receiverEventLabel || signalLabel,
         group: "current",
         secondaryValue:
-          forecast.signal.level === "explicit"
-            ? receiverEvent
-              ? "全局事件仍在等待个人到账；本机额度跳变后关闭"
-              : "确认公告按 100% 处理；个人到账由本机额度另行确认"
+          receiverEvent
+            ? deliveredAccounts > 0
+              ? "已到账账号恢复普通周期计划；只有尚未到账账号继续等待本机额度重建"
+              : "全局事件仍在等待个人到账；本机额度周期推进后关闭"
+            : forecast.signal.level === "explicit"
+              ? "确认公告按 100% 处理；个人到账由本机额度另行确认"
             : forecast.signal.level === "commitment"
               ? "承诺概率下限与历史模型取较高值，不当作已经到账"
-              : "普通暗示只展示，不擅自给概率加权",
+              : "候选暗示不改服务端概率；规划器独立预留届时剩余额度的 10%，候选本身不会把目标推到 100%",
       });
-      if (forecast.signal.deadlineMs) {
+      const currentOfficialSummary = forecast.signal.level !== "none"
+        ? forecast.signal.localizedSummary || forecast.signal.summary
+        : codexResetText(
+            receiverEvent &&
+              (receiverEvent.localized_summary ||
+                receiverEvent.localizedSummary ||
+                receiverEvent.summary),
+          );
+      const currentOfficialAtMs = forecast.signal.level !== "none"
+        ? forecast.signal.atMs
+        : stateTime(receiverEvent && (receiverEvent.announced_at || receiverEvent.announcedAt));
+      if (currentOfficialSummary) {
+        submenuEventRows.push({
+          label: "官方摘要",
+          value: signalTeaser(currentOfficialSummary, 180),
+          group: "current",
+          secondaryValue: `发布 ${utc8(currentOfficialAtMs)} · 完整原文见“官方消息”`,
+        });
+      }
+      if (forecast.signal.level !== "none" && forecast.signal.deadlineMs) {
         submenuEventRows.push({
           label: "官方预计时间",
           value: `约 ${utc8(forecast.signal.deadlineMs)}`,
@@ -2763,15 +3147,27 @@ defineProvider({
           label: "对当前计划的影响",
           value: `目标已用 ${percent(model.decision.targetUsed, 1)} · 当前已用 ${percent(model.usage.usedPercent, 1)}`,
           group: "current",
-          secondaryValue: forecast.signal.deadlineMs
+          secondaryValue: receiverEvent && forecast.signal.level === "none"
+            ? "当前账号已经到账，因此使用新周期普通计划；其他账号继续独立等待"
+            : forecast.signal.deadlineMs
             ? "系统使用同一个官方截止点计算红线、任务建议和跨账号容量损失"
-            : "官方没有提供时间，因此不生成公告倒计时；只保留明确公告状态",
+            : forecast.signal.level === "hint"
+              ? `没有官方截止时间，因此使用 24 小时观察窗；候选额外安排 ${percent(
+                  model.decision.candidateUse,
+                  1,
+                )} 周额度，不改写公开预测概率`
+              : "官方没有提供时间，因此不生成公告倒计时；只保留明确公告状态",
         });
       }
     }
     if (forecast.signal.level !== "none") {
       submenuEventRows.push({
-        label: "强制重置公告",
+        label:
+          forecast.signal.level === "explicit"
+            ? "强制重置公告"
+            : forecast.signal.level === "commitment"
+              ? "重置承诺原文"
+              : "候选暗示原文",
         value: clip([
           forecast.signal.summary,
           forecast.signal.localizedSummary && forecast.signal.localizedSummary !== forecast.signal.summary
@@ -2787,6 +3183,59 @@ defineProvider({
           .filter(Boolean)
           .join(" · "),
         link: forecast.signal.url ? { label: "打开这条 Tibo 原帖", url: forecast.signal.url } : null,
+      });
+    } else if (receiverEvent) {
+      const receiverSummary =
+        codexResetText(receiverEvent.summary) || "Tibo 发布了明确重置公告";
+      const receiverLocalized = codexResetText(
+        receiverEvent.localized_summary || receiverEvent.localizedSummary,
+      );
+      submenuEventRows.push({
+        label: "强制重置公告",
+        value: clip(
+          [
+            receiverSummary,
+            receiverLocalized && receiverLocalized !== receiverSummary
+              ? `中文摘要：${receiverLocalized}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+          1900,
+        ),
+        group: "official",
+        secondaryValue: `发布 ${utc8(stateTime(receiverEvent.announced_at || receiverEvent.announcedAt))}`,
+        link: receiverEvent.url
+          ? { label: "打开这条 Tibo 原帖", url: receiverEvent.url }
+          : null,
+      });
+    }
+    const latestCompletedPublicEvent = completedPublicEvents
+      .slice()
+      .sort((left, right) => stateTime(right.announcedAt) - stateTime(left.announcedAt))[0];
+    if (
+      latestCompletedPublicEvent &&
+      codexResetSignalID(latestCompletedPublicEvent) !== forecast.signal.id
+    ) {
+      submenuEventRows.push({
+        label: "最近重置确认",
+        value: clip(
+          [
+            latestCompletedPublicEvent.summary,
+            latestCompletedPublicEvent.localizedSummary &&
+            latestCompletedPublicEvent.localizedSummary !== latestCompletedPublicEvent.summary
+              ? `中文摘要：${latestCompletedPublicEvent.localizedSummary}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+          1900,
+        ),
+        group: "official",
+        secondaryValue: `发布 ${utc8(stateTime(latestCompletedPublicEvent.announcedAt))} · 已与本机刷新对账`,
+        link: latestCompletedPublicEvent.url
+          ? { label: "打开这条 Tibo 原帖", url: latestCompletedPublicEvent.url }
+          : null,
       });
     }
     if (bankedCampaign) {
@@ -2840,18 +3289,32 @@ defineProvider({
       .sort((left, right) => stateTime(right.at) - stateTime(left.at))
       .slice(0, 5);
     for (const [index, reset] of resetHistory.entries()) {
+      const matchingPublicEvent = reset.eventId
+        ? completedPublicEvents.find(
+            (event) => codexResetSignalID(event) === codexResetText(reset.eventId),
+          )
+        : null;
+      const resetEvidence =
+        reset.cause === "banked-redeem"
+          ? "券库存减少、额度恢复与周刷新时间后移共同确认"
+          : reset.cause === "automatic"
+            ? "刷新发生在上一周期的自然到期窗口"
+            : reset.cause === "upgrade"
+              ? "账号付费档位上升后，额度与刷新窗口实际重建"
+              : "未使用重置券、未到自然刷新时间且额度窗口已经重建";
       submenuEventRows.push({
         label: index === 0 ? "最近一次刷新" : `历史刷新 ${index + 1}`,
         value: `${resetCauseLabel(reset.cause)} · ${utc8(stateTime(reset.at))}`,
         group: "history",
-        secondaryValue:
-          reset.cause === "banked-redeem"
-            ? "券库存减少、额度恢复与周刷新时间后移共同确认"
-            : reset.cause === "automatic"
-              ? "刷新发生在上一周期的自然到期窗口"
-              : reset.cause === "upgrade"
-                ? "账号付费档位上升后，额度与刷新窗口实际重建"
-                : "未使用重置券、未到自然刷新时间且额度窗口已经重建",
+        secondaryValue: matchingPublicEvent
+          ? `${resetEvidence} · 对应官方消息：${signalTeaser(
+              matchingPublicEvent.localizedSummary || matchingPublicEvent.summary,
+              92,
+            )}`
+          : resetEvidence,
+        link: matchingPublicEvent && matchingPublicEvent.url
+          ? { label: "打开对应的 Tibo 原帖", url: matchingPublicEvent.url }
+          : null,
       });
     }
     if (!resetHistory.length) {
@@ -2956,6 +3419,28 @@ defineProvider({
         const markers = [account.live ? "当前登录" : null, account.selected ? "CodexBar 查看" : null]
           .filter(Boolean)
           .join(" · ");
+        const accountPrediction = account.behavior && account.behavior.prediction;
+        const accountProgress = account.decision
+          ? {
+              title: `${account.label} 的使用计划`,
+              alternateTitle: null,
+              currentPercent: account.usage.usedPercent,
+              targetPercent: account.decision.targetUsed,
+              projectedPercent: accountPrediction ? accountPrediction.endpointMedian : null,
+              projectedLowerPercent: accountPrediction ? accountPrediction.endpointLower : null,
+              projectedUpperPercent: accountPrediction ? accountPrediction.endpointUpper : null,
+              currentLabel: account.decision.targetReached
+                ? `当前 ${percent(account.usage.usedPercent, 1)} · 已达标`
+                : `当前 ${percent(account.usage.usedPercent, 1)}`,
+              targetLabel: `目标 ${percent(account.decision.targetUsed, 1)}`,
+              projectedLabel: accountPrediction
+                ? `预计 ${percent(accountPrediction.endpointLower, 1)}–${percent(
+                    accountPrediction.endpointUpper,
+                    1,
+                  )} · 中心 ${percent(accountPrediction.endpointMedian, 1)}`
+                : "自然使用预测准备中",
+            }
+          : null;
         submenuAccountRows.push({
           label: `${account.label} · ${account.planLabel}${markers ? ` · ${markers}` : ""}`,
           value: account.decision
@@ -2973,6 +3458,7 @@ defineProvider({
                   : `完整容量约 $${account.fullCapacityUSD.toFixed(0)}，届时预计被清掉约 $${account.atRiskCapacityUSD.toFixed(0)} · ${codexResetCapacitySourceLabel(account.capacitySource)}`
               }`
             : "账号身份已隔离；等待精确且新鲜的额度数据",
+          progress: accountProgress,
         });
       }
       if (model.accounts.length > visibleAccounts.length) {
@@ -3108,9 +3594,15 @@ defineProvider({
     } else {
       submenuForecastRows.push({
         label: "自然使用预测",
-        value: behavior ? `当前${behavior.status === "stale" ? "已过期" : "不可用"}` : "准备中",
+        value: model.decision && model.decision.immediate
+          ? "被即时公告覆盖"
+          : behavior
+            ? `当前${behavior.status === "stale" ? "已过期" : "不可用"}`
+            : "准备中",
         secondaryValue:
-          behavior && behavior.reasons.length
+          model.decision && model.decision.immediate
+            ? "当前计划期限被明确公告压缩为现在；这不表示预测数据断开"
+            : behavior && behavior.reasons.length
             ? clip(behavior.reasons.join("；"), 120)
             : "不使用短时速度替代全天行为预测",
       });
@@ -3164,12 +3656,27 @@ defineProvider({
           )} + 正常 ${percent(
             model.decision.normalUse,
             1,
-          )} + 预测加速 ${percent(model.decision.predictionUse, 1)}`,
+          )} + 预测加速 ${percent(model.decision.predictionUse, 1)}${
+            model.decision.candidateUse > 0
+              ? ` + 候选预留 ${percent(model.decision.candidateUse, 1)}`
+              : ""
+          }`,
           secondaryValue: model.decision.targetReached
             ? `当前已用 ${percent(model.usage.usedPercent, 1)}，已超红线 ${percent(
                 model.decision.targetExceededBy,
                 1,
               )}；红线仍按时间和风险独立演进`
+            : model.decision.candidateUse > 0
+              ? `当前还差 ${percent(
+                  model.decision.additionalTotal,
+                  1,
+                )}；预测概率保持 ${percent(
+                  model.decision.probability,
+                  1,
+                )}，候选另预留预测调整后剩余额度的 ${percent(
+                  model.decision.candidateReservePercent,
+                  0,
+                )}`
             : `当前还差 ${percent(
                 model.decision.additionalTotal,
                 1,
@@ -3186,39 +3693,54 @@ defineProvider({
       );
     }
 
-    const submenuSessionRows = [];
-    if (showSessionSuggestions && sessionCandidates.length) {
-      for (const [index, candidate] of sessionCandidates.entries()) {
-        const metadata = [
-          candidate.reason,
-          candidate.project || null,
-          `最后活动 ${utc8(candidate.lastActiveAtMs)}`,
-          candidate.observedTokens > 0
-            ? `本机观察期新增 ${Math.round(candidate.observedTokens)} token`
-            : null,
-        ]
-          .filter(Boolean)
-          .join(" · ");
-        submenuSessionRows.push({
-          label: `候选 ${index + 1}`,
-          value: clip(candidate.title, 1900),
-          secondaryValue: clip(metadata, 120),
+    const submenuMainlineRows = [];
+    if (visibleMainlineSuggestions.length) {
+      for (const [index, mainline] of visibleMainlineSuggestions.entries()) {
+        const loadEvidence = mainline.observedTokens > 0
+          ? `${mainlineTokenWindowLabel} ${compactTokens(mainline.observedTokens)} token · 仅作负载证据，不参与主线优先级`
+          : `${mainlineTokenWindowLabel}负载样本仍在形成，不影响已确认的持续性`;
+        submenuMainlineRows.push({
+          label: `主线 ${index + 1}`,
+          value: clip(mainline.label, 1900),
+          secondaryValue: clip(
+            `${mainline.reason} · ${loadEvidence} · 最后活动 ${utc8(mainline.lastActiveAtMs)}`,
+            220,
+          ),
+          actions: [
+            { title: "暂不推荐", operation: "snooze", targetId: mainline.actionId },
+            { title: "不是主线", operation: "not-mainline", targetId: mainline.actionId },
+            { title: "标为已完成", operation: "complete", targetId: mainline.actionId },
+          ],
         });
       }
-      submenuSessionRows.push({
-        label: "如何继续",
-        value: "在 Codex 中打开对应任务；CLI 可使用 /resume 或 codex resume",
-        secondaryValue: `${
-          sessionSuggestions.status === "stale"
-            ? "当前沿用最近可靠候选 · "
-            : ""
-        }系统只给建议，不会自动发消息或启动任务 · 候选 ${updatedFreshness(
+    } else if (sessionSuggestions && sessionSuggestions.status !== "unavailable") {
+      submenuMainlineRows.push({
+        label: "可靠主线",
+        value: "当前没有足够证据，不用最近 session 凑数",
+        secondaryValue: "可以从下面的近期 session 中明确标出主线；其余容量用于新增有价值任务。",
+      });
+    }
+    if (sessionSuggestions && sessionSuggestions.candidates.length) {
+      for (const candidate of sessionSuggestions.candidates.slice(0, 6)) {
+        if (!candidate.actionId) continue;
+        submenuMainlineRows.push({
+          label: "近期 session（仅供定位）",
+          value: clip(`${candidate.project ? `${candidate.project} · ` : ""}${candidate.title}`, 1900),
+          secondaryValue: "不会直接进入推荐；只有明确标注或形成跨日持续证据后才会成为主线。",
+          actions: [
+            { title: "标为主线", operation: "mark-mainline", targetId: candidate.actionId },
+            { title: "不是主线", operation: "not-mainline", targetId: candidate.actionId },
+          ],
+        });
+      }
+    }
+    if (sessionSuggestions) {
+      submenuMainlineRows.push({
+        label: "主线排序原则",
+        value: "明确标注 > 进行中的 Goal > 跨日持续性 > 最近仍在推进",
+        secondaryValue: `token 只描述负载与数据把握，不直接决定优先级；5/3/1 是最多展示数，低置信候选会主动缺席 · ${updatedFreshness(
           sessionSuggestions.updatedAtMs,
         )}`,
-        link: {
-          label: "查看 Codex 继续任务说明",
-          url: "https://learn.chatgpt.com/docs/projects",
-        },
       });
     }
 
@@ -3273,29 +3795,21 @@ defineProvider({
     const recommendationRow = actionRows.find((row) =>
       ["建议", "建议暂不可用"].includes(row.label),
     );
-    const whySummaryRows = decisionProgress
+    const whySummaryRows = decisionProgress && whyReasonText
       ? [
           {
-            label: "当前",
-            value: `${decisionProgress.currentLabel} · ${decisionProgress.targetLabel}`,
-            secondaryValue: "先比较真实用量与此刻目标，不把套餐名称当作容量",
+            label: "为什么",
+            value: whyReasonText,
+            secondaryValue:
+              "只使用当前周期、自然使用趋势和真实重置信号；详细数字放在“使用与目标”。",
             group: "summary",
           },
           {
-            label: "预计",
-            value: decisionProgress.projectedLabel,
-            secondaryValue: shortLoadPrediction
-              ? `未来 1 小时预计再用 ${percent(shortLoadPrediction.additionalLower, 1)}–${percent(
-                  shortLoadPrediction.additionalUpper,
-                  1,
-                )}`
-              : "等待足够的行为与任务负载样本",
-            group: "summary",
-          },
-          {
-            label: "因此",
-            value: recommendationRow ? recommendationRow.value : "继续观察",
-            secondaryValue: recommendationRow && recommendationRow.secondaryValue,
+            label: "所以",
+            value: whyActionText || (recommendationRow ? recommendationRow.value : "继续观察"),
+            secondaryValue: showMainlineSuggestions
+              ? `本轮最多展示 ${suggestionLimit} 条，实际只显示 ${visibleMainlineSuggestions.length} 条可靠主线；token 不参与意图排序。`
+              : recommendationRow && recommendationRow.secondaryValue,
             group: "summary",
           },
         ]
@@ -3316,7 +3830,7 @@ defineProvider({
       ...row,
       group: calculationLabels.has(row.label) ? "calculation" : "data",
     }));
-    const whySessionRows = submenuSessionRows.map((row) => ({ ...row, group: "work" }));
+    const whyMainlineRows = submenuMainlineRows.map((row) => ({ ...row, group: "work" }));
     const whyDataRows = [...submenuDiagnosticRows, ...submenuDataRows].map((row) => ({
       ...row,
       group: "data",
@@ -3327,11 +3841,22 @@ defineProvider({
         (resetGroupOrder[left.group] === undefined ? 9 : resetGroupOrder[left.group]) -
         (resetGroupOrder[right.group] === undefined ? 9 : resetGroupOrder[right.group]),
     );
+    const mainlineCorrections = sessionSuggestions
+      ? sessionSuggestions.corrections.map((correction) => ({
+          targetId: correction.targetId,
+          label: correction.label || correction.project || "未命名主线",
+          project: correction.project || null,
+          status: correction.status,
+          updatedAt:
+            correction.updatedAtMs === null ? null : new Date(correction.updatedAtMs).toISOString(),
+        }))
+      : [];
 
     return {
       updatedAt: model.usage ? model.usage.updatedAt : undefined,
       dataConfidence: "estimated",
       decisionProgress,
+      mainlineCorrections,
       details: [
         { title: "现在", rows: actionRows },
       ],
@@ -3339,13 +3864,13 @@ defineProvider({
         ...(submenuAccountRows.length
           ? [{ title: "账户", rows: submenuAccountRows }]
           : []),
-        ...(submenuForecastRows.length || submenuSessionRows.length
+        ...(submenuForecastRows.length || submenuMainlineRows.length
           ? [{
               title: "为什么这样建议",
               rows: [
                 ...whySummaryRows,
                 ...whyCalculationRows,
-                ...whySessionRows,
+                ...whyMainlineRows,
                 ...whyDataRows,
               ],
             }]

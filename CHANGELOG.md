@@ -5,6 +5,46 @@ versioning once the first public release is tagged.
 
 ## Unreleased
 
+- Recommend logical work mainlines—not sessions or raw workspaces—using
+  explicit local labels, ongoing Goals, related-task repetition, cross-day
+  continuity, and recency. Rolling token growth remains load evidence and does
+  not choose intent; one-off high-token sessions are omitted.
+- Treat five/three/one as maximum reliable-mainline counts as the natural-use
+  interval moves from below target, through target, to beyond target. Weak
+  candidates are not used to fill the list.
+- Add local reversible corrections for marking a mainline, rejecting one,
+  temporarily hiding it, or completing it. The native menu performs actions
+  through an authenticated loopback endpoint and Settings can restore automatic
+  judgment.
+- Lead plan details with a plain-language causal explanation, render an
+  independent current/target/forecast bar for every visible account, and keep
+  the highest-priority unresolved official reset signal ahead of natural
+  refresh with a concise source summary.
+- Reconcile public reset confirmations with monotonic local quota-cycle
+  generations, so a delayed celebratory post cannot open a second pending
+  reset after the accounts have already refreshed.
+- Keep signal strength, temporal direction, and per-account delivery separate;
+  only an explicit future/in-progress event that has not landed on that account
+  may produce an immediate 100% target.
+- Merge same-ID feed, signal, tweet, and forecast lifecycle evidence; retain a
+  completed public confirmation in reset history while preventing terminal
+  representations from re-entering the plan.
+- Preserve partial delivery per account: landed accounts return to their normal
+  cycle while pending accounts retain the explicit reset plan.
+- Reject incomplete reset objects instead of silently downgrading them to
+  candidate hints; admit only explicit candidate lifecycle fields or a
+  top-level, reset-related corpus fallback, so retrospective replies cannot
+  become future signals.
+- Give a real candidate a separate bounded 10% capacity reserve without
+  rewriting the hosted 24-hour probability or allowing a hint alone to target
+  100% usage.
+- Rebase a zeroed immediate/deadline trajectory when the signal is corrected
+  to a continuous policy, automatically repairing previously poisoned plans.
+- Keep candidate post IDs out of durable trajectory and behavior-notification
+  identities while retaining their risk effect through the continuous hazard.
+- Label candidate, commitment, and explicit source text separately and expose
+  the candidate reserve in the target equation.
+
 ## 0.1.5 - 2026-08-23
 
 - Replace the isolated reset-credit cycle-age heuristic with one capacity-chain
@@ -22,9 +62,9 @@ versioning once the first public release is tagged.
   attempt so delivery can be inspected without retaining message content.
 - Recover an unresolved explicit announcement once when an older Monitor saw
   it but never delivered a notification, with a private per-event dedupe set.
-- Keep three to five concrete recent tasks on the home card whenever work is
+- Keep the target-dependent workspace set on the home card whenever work is
   still required, an account switch is recommended, or a credit node must be
-  formed.
+  formed, without elevating a recent session into the recommendation.
 - Advance the capacity simulation only at real state transitions so month-long
   credit horizons remain responsive without changing the decision result.
 
