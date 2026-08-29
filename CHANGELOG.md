@@ -5,6 +5,12 @@ versioning once the first public release is tagged.
 
 ## Unreleased
 
+- Let all home-card plan text wrap to its measured height instead of truncating
+  dynamic values after one or two lines. Possible-reset summaries now use a
+  compact complete date range that keeps the UTC+8 label visible.
+- Refresh the bilingual README gallery with anonymous current-state captures
+  of the home plan, per-account progress bars, the reset timeline, and the
+  reset-credit hold decision.
 - Make the reset timeline flow monotonically from past through “Now” to the
   future. An active possible-reset interval now renders with explicit start and
   end boundaries and contains the “Now” marker instead of appearing as a point

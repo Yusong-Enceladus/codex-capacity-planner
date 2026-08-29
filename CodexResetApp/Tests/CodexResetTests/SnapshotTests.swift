@@ -220,6 +220,15 @@ import Testing
 
 @Test func `reset fixture keeps timeline compact and sources in official updates`() throws {
     let snapshot = ResetDemoFixtures.primarySnapshot(.english)
+    let homeReset = try #require(snapshot.details.first?.rows.first(where: { $0.label == "Reset" }))
+    #expect(homeReset.value.hasPrefix("Possible reset · "))
+    #expect(homeReset.value.hasSuffix(" (PT)"))
+    #expect(homeReset.value.contains("…") == false)
+
+    let accounts = try #require(snapshot.submenuDetails.first(where: { $0.title == "Accounts" }))
+    #expect(accounts.rows.filter { $0.progress != nil }.count == 2)
+    #expect(accounts.rows.allSatisfy { $0.group == nil })
+
     let reset = try #require(snapshot.submenuDetails.first(where: { $0.title == "Resets" }))
     let timeline = try #require(reset.visualizations?.first(where: { $0.group == "timeline" }))
 
@@ -228,6 +237,11 @@ import Testing
     #expect(reset.rows.contains(where: { $0.group == "current" }) == false)
     #expect(reset.rows.contains(where: { $0.label == "Possible reset window" }))
     #expect(reset.rows.contains(where: { $0.label == "Next natural reset" }) == false)
+    #expect(reset.rows.contains(where: {
+        $0.group == "assets" &&
+            $0.label == "Reset-credit plan" &&
+            $0.value.contains("Hold the credit")
+    }))
 
     let sourceLabels = reset.rows
         .filter { $0.group == "official" }

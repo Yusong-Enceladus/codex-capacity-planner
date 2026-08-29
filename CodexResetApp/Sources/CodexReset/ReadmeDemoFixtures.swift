@@ -6,6 +6,8 @@ enum ResetDemoFixtures {
     static func primarySnapshot(_ language: ResetPresentationLanguage) -> ResetSnapshot {
         let now = Date()
         let resetAt = now.addingTimeInterval(4 * 86_400 + 18 * 3_600)
+        let possibleResetStart = now.addingTimeInterval(-2 * 3_600)
+        let possibleResetEnd = now.addingTimeInterval(22 * 3_600)
         let updatedAt = ISO8601DateFormatter().string(from: now)
         return ResetSnapshot(
             updatedAt: updatedAt,
@@ -59,9 +61,10 @@ enum ResetDemoFixtures {
                             secondaryValue: language.text("你已明确标为主线", "Explicitly marked as a mainline")),
                         DetailRow(
                             label: language.text("重置", "Reset"),
-                            value: language.text(
-                                "可能重置 · 时间范围尚未确认（UTC+8）",
-                                "Possible reset · Window is unconfirmed (PT)"),
+                            value: self.possibleResetSummary(
+                                start: possibleResetStart,
+                                end: possibleResetEnd,
+                                language: language),
                             secondaryValue: language.text(
                                 "“很快，但不是今天”——还不是正式公告。",
                                 "Tibo: “soon, not today”; no official announcement yet.")),
@@ -70,7 +73,12 @@ enum ResetDemoFixtures {
             submenuDetails: [
                 self.accountSection(language),
                 self.whySection(language),
-                self.resetSection(language, now: now, resetAt: resetAt),
+                self.resetSection(
+                    language,
+                    now: now,
+                    resetAt: resetAt,
+                    candidateStart: possibleResetStart,
+                    candidateEnd: possibleResetEnd),
             ])
     }
 
@@ -80,17 +88,40 @@ enum ResetDemoFixtures {
                 label: language.text("工作账户 · Pro", "Work account · Pro"),
                 value: language.text("当前已用 42%", "42% used"),
                 secondaryValue: language.text("4 天 18 小时后刷新", "Resets in 4 days 18 hr"),
-                group: "current"),
+                progress: DecisionProgress(
+                    title: language.text("工作账户的使用计划", "Work account usage plan"),
+                    alternateTitle: nil,
+                    currentPercent: 42,
+                    targetPercent: 68,
+                    projectedPercent: 60,
+                    projectedLowerPercent: 54,
+                    projectedUpperPercent: 66,
+                    currentLabel: language.text("当前 42.0%", "Current 42.0%"),
+                    targetLabel: language.text("目标 68.0%", "Target 68.0%"),
+                    projectedLabel: language.text(
+                        "预计 54.0%–66.0% · 中心 60.0%",
+                        "Forecast 54.0%–66.0% · Midpoint 60.0%"))),
             DetailRow(
                 label: language.text("备用账户 · Pro", "Backup account · Pro"),
                 value: language.text("当前已用 31%", "31% used"),
                 secondaryValue: language.text("3 天 20 小时后刷新", "Resets in 3 days 20 hr"),
-                group: "history"),
+                progress: DecisionProgress(
+                    title: language.text("备用账户的使用计划", "Backup account usage plan"),
+                    alternateTitle: nil,
+                    currentPercent: 31,
+                    targetPercent: 52,
+                    projectedPercent: 49,
+                    projectedLowerPercent: 44,
+                    projectedUpperPercent: 58,
+                    currentLabel: language.text("当前 31.0%", "Current 31.0%"),
+                    targetLabel: language.text("目标 52.0%", "Target 52.0%"),
+                    projectedLabel: language.text(
+                        "预计 44.0%–58.0% · 中心 49.0%",
+                        "Forecast 44.0%–58.0% · Midpoint 49.0%"))),
             DetailRow(
                 label: language.text("建议", "Plan"),
                 value: language.text("继续使用工作账户", "Keep using the work account"),
-                secondaryValue: language.text("当前无需切换", "No switch needed now"),
-                group: "history"),
+                secondaryValue: language.text("当前无需切换", "No switch needed now")),
         ])
     }
 
@@ -126,11 +157,11 @@ enum ResetDemoFixtures {
     private static func resetSection(
         _ language: ResetPresentationLanguage,
         now: Date,
-        resetAt: Date) -> DetailSection
+        resetAt: Date,
+        candidateStart: Date,
+        candidateEnd: Date) -> DetailSection
     {
         let formatter = ISO8601DateFormatter()
-        let candidateStart = now.addingTimeInterval(-2 * 3_600)
-        let candidateEnd = now.addingTimeInterval(22 * 3_600)
         let candidatePublished = now.addingTimeInterval(-3 * 3_600)
         let previousReset = now.addingTimeInterval(-3 * 86_400)
         let candidateItem = DetailTimelineItem(
@@ -157,6 +188,24 @@ enum ResetDemoFixtures {
                     label: language.text("当前账户", "Current account"),
                     value: language.text("1 次可用", "1 available"),
                     secondaryValue: language.text("暂时保留", "Keep for now"),
+                    group: "assets"),
+                DetailRow(
+                    label: language.text("重置策略", "Reset-credit plan"),
+                    value: language.text(
+                        "先等可能重置的时间范围结束，券保持不动",
+                        "Hold the credit until the possible-reset window ends"),
+                    secondaryValue: language.text(
+                        "现在兑换可能被免费刷新覆盖；范围结束或本机更早确认刷新后，再按两个结果重算",
+                        "A free reset could overwrite a redemption; recalculate after the window ends or a local reset is confirmed sooner"),
+                    group: "assets"),
+                DetailRow(
+                    label: language.text("两种结果", "Two outcomes"),
+                    value: language.text(
+                        "发生免费刷新 / 没有发生免费刷新",
+                        "Free reset happens / No free reset happens"),
+                    secondaryValue: language.text(
+                        "暗示强度不是概率，不做加权平均",
+                        "Signal strength is not a probability, so the outcomes are not probability-weighted"),
                     group: "assets"),
                 DetailRow(
                     label: language.text("最近一次刷新", "Latest reset"),
@@ -229,6 +278,48 @@ enum ResetDemoFixtures {
                             link: nil),
                     ]),
             ])
+    }
+
+    private static func possibleResetSummary(
+        start: Date,
+        end: Date,
+        language: ResetPresentationLanguage) -> String
+    {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = language.timeZone
+        let startParts = calendar.dateComponents([.month, .day], from: start)
+        let endParts = calendar.dateComponents([.month, .day], from: end)
+        guard let startMonth = startParts.month,
+              let startDay = startParts.day,
+              let endMonth = endParts.month,
+              let endDay = endParts.day
+        else {
+            return language.text(
+                "可能重置 · 时间暂不确定",
+                "Possible reset · Timing unknown")
+        }
+
+        if language == .simplifiedChinese {
+            let range = startMonth == endMonth
+                ? startDay == endDay
+                    ? "\(startMonth)月\(startDay)日"
+                    : "\(startMonth)月\(startDay)日至\(endDay)日"
+                : "\(startMonth)月\(startDay)日至\(endMonth)月\(endDay)日"
+            return "可能重置 · \(range)（UTC+8）"
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = language.timeZone
+        formatter.dateFormat = "MMM"
+        let startName = formatter.string(from: start)
+        let endName = formatter.string(from: end)
+        let range = startMonth == endMonth
+            ? startDay == endDay
+                ? "\(startName) \(startDay)"
+                : "\(startName) \(startDay)–\(endDay)"
+            : "\(startName) \(startDay)–\(endName) \(endDay)"
+        return "Possible reset · \(range) (PT)"
     }
 
 }

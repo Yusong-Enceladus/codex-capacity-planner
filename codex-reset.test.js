@@ -60,6 +60,7 @@ const pickSignal = vm.runInContext("codexResetPickSignal", context);
 const bankedPlanFor = vm.runInContext("codexResetBankedPlan", context);
 const suggestionLimit = vm.runInContext("codexResetSuggestionLimit", context);
 const workspaceSuggestions = vm.runInContext("codexResetWorkspaceSuggestions", context);
+const compactAccountLabel = vm.runInContext("codexResetCompactAccountLabel", context);
 
 const hour = 60 * 60 * 1000;
 const minute = 60 * 1000;
@@ -97,6 +98,12 @@ function decision(overrides = {}) {
     ...overrides,
   });
 }
+
+equal(
+  compactAccountLabel("encela…ng@example.test"),
+  "encela•••ng@example.test",
+  "a legacy account abbreviation must become an explicit privacy mask instead of an ellipsis",
+);
 
 // Planned Q=90, T=144h, d=24h: normal N=15, otherwise wasted W=75.
 const noForecast = decision({ p24: 0, p48: 0 });
@@ -4012,8 +4019,9 @@ const ctx = {
   });
   const teaserHomeReset = teaserSnapshot.details[0].rows.find((row) => row.label === "重置");
   check(
-    /可能重置的暗示 · 可能在 .+刷新（UTC\+8）/.test(teaserHomeReset.value),
-    "the structured tease must outrank the natural refresh in plain language and UTC+8",
+    /可能重置 · .+（UTC\+8）/.test(teaserHomeReset.value) &&
+      !/暗示|可能在|刷新（/.test(teaserHomeReset.value),
+    "the structured tease must outrank the natural refresh with a compact, complete UTC+8 summary",
   );
   check(
     /Tibo 说“很快，但不是今天”/.test(teaserHomeReset.secondaryValue) &&
@@ -4331,7 +4339,17 @@ const ctx = {
   }
   const tiboMainRow = signalSnapshot.details[0].rows.find((row) => row.label === "重置");
   equal(tiboMainRow.relativeTimeAt, "2026-08-12T09:50:00.000Z");
-  check(/截止 08-12 17:50 UTC\+8/.test(tiboMainRow.secondaryValue), "Tibo metadata must survive clipping");
+  check(
+    /截止 08-12 17:50 UTC\+8/.test(tiboMainRow.secondaryValue),
+    "Tibo metadata must survive home-card summarization",
+  );
+  check(
+    !signalSnapshot.details[0].rows.some((row) =>
+      [row.value, row.secondaryValue].some(
+        (value) => typeof value === "string" && value.includes("…"),
+      )),
+    "the home card must summarize long values without rendering an ellipsis",
+  );
   const signalEventSection = signalSnapshot.submenuDetails.find(
     (section) => section.title === "重置",
   );
@@ -4468,9 +4486,9 @@ const ctx = {
   });
   check(
     multiSnapshot.details[0].rows.some(
-      (row) => row.label === "账户" && /averyl…me@example\.test · 5x/.test(row.value),
+      (row) => row.label === "账户" && /averyl•••me@example\.test · 5x/.test(row.value),
     ),
-    "the main card must name the live account with a recognizable abbreviation and multiplier",
+    "the main card must name the live account with an explicit privacy mask and multiplier",
   );
   check(
     !multiSnapshot.details[0].rows.some((row) => row.label === "本机多账号计划"),
@@ -4492,11 +4510,18 @@ const ctx = {
     (section) => section.title === "账户",
   );
   check(
-    multiPlanSection.rows.some((row) => /averyl…me@example\.test · 5x · 当前登录/.test(row.label)) &&
+    multiPlanSection.rows.some((row) => /averyl•••me@example\.test · 5x · 当前登录/.test(row.label)) &&
       multiPlanSection.rows.some((row) => /second@example\.test · 20x · CodexBar 查看/.test(row.label)) &&
       multiPlanSection.rows.some((row) => /third@example\.test · 5x/.test(row.label)) &&
       multiPlanSection.rows.some((row) => row.label === "另外 1 个账号"),
     "the submenu must show three named accounts and fold overflow without disabling the plan",
+  );
+  check(
+    !multiSnapshot.details[0].rows.some((row) =>
+      [row.value, row.secondaryValue].some(
+        (value) => typeof value === "string" && value.includes("…"),
+      )),
+    "privacy masking on the home card must not resemble UI truncation",
   );
   const visibleAccountRows = multiPlanSection.rows.filter((row) => row.progress);
   equal(

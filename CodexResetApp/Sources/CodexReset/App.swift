@@ -22,6 +22,10 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
     private var demoBackdropWindows: [NSWindow] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let showcase = Self.readmeShowcase() {
+            self.showReadmeShowcase(page: showcase.page, language: showcase.language)
+            return
+        }
         if let demoLanguage = Self.readmeDemoLanguage() {
             let store = SnapshotStore(snapshot: ResetDemoFixtures.primarySnapshot(demoLanguage))
             self.store = store
@@ -62,12 +66,55 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
+    private func showReadmeShowcase(
+        page: ResetReadmeShowcasePage,
+        language: ResetPresentationLanguage)
+    {
+        NSApplication.shared.setActivationPolicy(.regular)
+        let controller = NSHostingController(
+            rootView: ResetReadmeShowcase(page: page, language: language)
+                .environment(\.resetPresentationLanguage, language)
+                .environment(\.locale, language.locale))
+        controller.view.layoutSubtreeIfNeeded()
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: controller.view.fittingSize),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false)
+        window.contentViewController = controller
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        self.galleryWindow = window
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
     private static func readmeDemoLanguage() -> ResetPresentationLanguage? {
         guard let rawValue = ProcessInfo.processInfo.arguments
             .first(where: { $0.hasPrefix("--readme-demo=") })?
             .split(separator: "=", maxSplits: 1).last
         else { return nil }
         return rawValue == "en" ? .english : .simplifiedChinese
+    }
+
+    private static func readmeShowcase() -> (
+        page: ResetReadmeShowcasePage,
+        language: ResetPresentationLanguage)?
+    {
+        guard let rawValue = ProcessInfo.processInfo.arguments
+            .first(where: { $0.hasPrefix("--readme-showcase=") })?
+            .split(separator: "=", maxSplits: 1).last.map(String.init)
+        else { return nil }
+        let language: ResetPresentationLanguage = rawValue.hasSuffix("-en")
+            ? .english
+            : .simplifiedChinese
+        let page: ResetReadmeShowcasePage = rawValue.hasPrefix("accounts")
+            ? .accounts
+            : .resets
+        return (page, language)
     }
 
     private func showDemoBackdropIfAvailable() {

@@ -112,7 +112,8 @@ struct ResetMenuCard: View {
     private func decisionProgress(_ progress: DecisionProgress) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             AlternatingTimeText(primary: progress.title, alternate: progress.alternateTitle)
-                .font(.caption.bold()).lineLimit(1)
+                .font(.caption.bold())
+                .fixedSize(horizontal: false, vertical: true)
             CompactDecisionProgress(
                 progress: progress,
                 tint: self.tint,
@@ -122,9 +123,13 @@ struct ResetMenuCard: View {
                 Spacer(minLength: 8)
                 self.legend(color: .red, text: progress.targetLabel)
             }
-            .font(.caption2).monospacedDigit().lineLimit(1)
+            .font(.caption2)
+            .monospacedDigit()
+            .fixedSize(horizontal: false, vertical: true)
             self.legend(color: .cyan, text: progress.projectedLabel)
-                .font(.caption2).monospacedDigit().lineLimit(1)
+                .font(.caption2)
+                .monospacedDigit()
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -256,13 +261,11 @@ private struct ResetDecisionContent: View {
                         relativeTimeAt: action.relativeTimeAt,
                         relativeTimePrefix: action.relativeTimePrefix)
                         .font(.subheadline.weight(.semibold))
-                        .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                     if let secondary = action.secondaryValue {
                         Text(secondary)
                             .font(.caption2)
                             .foregroundStyle(self.highlighted ? .white.opacity(0.78) : .secondary)
-                            .lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -291,13 +294,11 @@ private struct ResetDecisionContent: View {
                                     relativeTimeAt: row.relativeTimeAt,
                                     relativeTimePrefix: row.relativeTimePrefix)
                                     .font(.caption.weight(.medium))
-                                    .lineLimit(2)
                                     .fixedSize(horizontal: false, vertical: true)
                                 if let secondary = row.secondaryValue {
                                     Text(secondary)
                                         .font(.caption2)
                                         .foregroundStyle(self.highlighted ? .white.opacity(0.7) : .secondary)
-                                        .lineLimit(2)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                             }

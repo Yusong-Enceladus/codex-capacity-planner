@@ -31,11 +31,19 @@
 
 - **Usage plan**: shows current usage, target usage, and expected usage, then recommends maintaining or increasing pace.
 - **Recent-work suggestions**: identifies up to 5/3/1 logical mainlines from explicit labels, Goals, and cross-day continuity. Tokens describe load only, and temporary sessions never fill the list.
-- **Reset management**: keeps natural resets, official resets, plan upgrades, reset credits, and account delivery status together.
-- **Multiple accounts**: uses each account's available quota, usage, and reset timing to recommend account use and switching.
-- **Reset-credit planning**: combines existing quota, future resets, and work demand to recommend holding, preparing, or using a credit.
+- **Reset management**: puts natural resets, possible-reset windows, official resets, plan upgrades, and observed delivery on one past→now→future timeline.
+- **Multiple accounts**: gives every visible account its own current, target, and forecast range before recommending whether to switch.
+- **Reset-credit planning**: holds a credit when a free reset may arrive and evaluates both “free reset happens” and “no free reset happens.”
 
-<img src="docs/assets/codex-capacity-planner-details-en.png" width="900" alt="Codex Capacity Planner real English detail menus">
+<p align="center">
+  <img src="docs/assets/codex-capacity-planner-details-en.png" width="900" alt="Codex Capacity Planner English account details with independent usage progress bars">
+</p>
+
+<p align="center">
+  <img src="docs/assets/codex-capacity-planner-resets-en.png" width="900" alt="Codex Capacity Planner English reset timeline and reset-credit hold plan">
+</p>
+
+<p align="center"><sub>Screenshots use the current production components with anonymous demo data; no real account information is included.</sub></p>
 
 ## One unified usage plan
 
@@ -82,6 +90,7 @@ See [Privacy and data flow](docs/privacy.md) and the [Security policy](SECURITY.
 - Ordinary reset forecasts remain probabilistic; explicit announcements and delivery to the current account are shown separately.
 - Evidence for a possible reset is never presented as a probability. The reset timeline runs from past to present to future, and places “Now” inside a possible-reset window when applicable. Chinese uses UTC+8; English uses Pacific Time.
 - Reset-credit advice checks every account and evaluates both “a free reset happens” and “no free reset happens.” It cannot recommend immediate redemption while account usage is unconfirmed or another account still has usable capacity.
+- Home-card content wraps to show complete recommendations, dates, and time zones instead of truncating them with ellipses.
 - Changes to Codex quota rules may require updates to the calculations.
 
 ## Technical documentation

@@ -26,14 +26,14 @@ function codexResetText(value) {
 }
 
 function codexResetCompactAccountLabel(value) {
-  const raw = codexResetText(value);
+  const raw = codexResetText(value).replace(/…+/g, "•••");
   if (!raw) return "Codex 账号";
   const parts = raw.split(/\s+[—–-]\s+/);
   const email = parts[0];
   const match = email.match(/^([^@]+)@([^@]+)$/);
-  if (!match) return raw.length > 24 ? `${raw.slice(0, 18)}…${raw.slice(-4)}` : raw;
+  if (!match) return raw.length > 24 ? `${raw.slice(0, 18)}•••${raw.slice(-4)}` : raw;
   const local = match[1];
-  const compactLocal = local.length > 10 ? `${local.slice(0, 6)}…${local.slice(-2)}` : local;
+  const compactLocal = local.length > 10 ? `${local.slice(0, 6)}•••${local.slice(-2)}` : local;
   const workspace = parts.slice(1).join(" — ");
   return `${compactLocal}@${match[2]}${workspace ? ` · ${workspace}` : ""}`;
 }
@@ -2702,6 +2702,11 @@ defineProvider({
       return clip(text, typeof limit === "number" ? limit : 112);
     }
 
+    function completeHomeText(value, limit, fallback) {
+      const text = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
+      return text.length <= limit ? text : fallback;
+    }
+
     function candidateChineseSummary(summary, localizedSummary) {
       const localized = signalTeaser(localizedSummary, 112);
       if (localized) return localized;
@@ -2716,7 +2721,12 @@ defineProvider({
     function signalSecondary(summary, metadata) {
       const suffix = ` · ${metadata}`;
       const summaryLimit = Math.max(24, 120 - suffix.length);
-      return `${signalTeaser(summary, summaryLimit)}${suffix}`;
+      const concise = completeHomeText(
+        summary,
+        summaryLimit,
+        "Tibo 发布了新的重置消息，完整内容见重置页",
+      );
+      return `${concise}${suffix}`;
     }
 
     function appendPlanReason(existing, clause) {
@@ -2762,6 +2772,12 @@ defineProvider({
           ? `${startMonth}月${startDay}日至${endDay}日`
           : `${startMonth}月${startDay}日至${endMonth}月${endDay}日`;
       return `可能在 ${range}刷新（UTC+8）`;
+    }
+
+    function compactCandidateWindowUTC8(startMs, endMs) {
+      const full = candidateWindowUTC8(startMs, endMs);
+      const match = full.match(/^可能在 (.+)刷新（UTC\+8）$/);
+      return match ? `${match[1]}（UTC+8）` : "时间暂不确定";
     }
 
     function sourceDate(valueMs, locale, timeZone) {
@@ -3277,7 +3293,11 @@ defineProvider({
       for (const [index, mainline] of visibleMainlineSuggestions.entries()) {
         actionRows.push({
           label: `主线 ${index + 1}`,
-          value: clip(mainline.label, 120),
+          value: completeHomeText(
+            mainline.label,
+            120,
+            "主线名称较长，完整名称见“建议主线”",
+          ),
           secondaryValue: `建议继续 · ${mainline.reason}${
             mainline.source === "explicit" ? " · 你已确认" : " · 本机保守推断"
           }`,
@@ -3320,14 +3340,14 @@ defineProvider({
                 receiverEvent.localizedSummary ||
                 receiverEvent.summary),
           );
-      const candidateTime = candidateWindowUTC8(
+      const compactCandidateTime = compactCandidateWindowUTC8(
         forecast.signal.windowStartMs,
         forecast.signal.windowEndMs || resetDeadlineMs,
       );
       actionRows.push({
         label: "重置",
         value: signalWindowIsInferred
-          ? `${resetLabel} · ${candidateTime}`
+          ? `可能重置 · ${compactCandidateTime}`
           : resetDeadlineMs
             ? `${resetLabel} · 约 ${utc8(resetDeadlineMs)}`
             : resetLabel,
@@ -3338,7 +3358,11 @@ defineProvider({
           ? `${resetLabel} · 约 `
           : null,
         secondaryValue: signalWindowIsInferred
-          ? `${signalTeaser(resetSummary || "Tibo 暗示可能很快刷新", 28)}；目前还不是正式公告。`
+          ? `${completeHomeText(
+              resetSummary || "Tibo 暗示可能很快刷新",
+              72,
+              "Tibo 发出了可能近期刷新的暗示",
+            )}；目前还不是正式公告。`
           : signalSecondary(
               resetSummary || "Tibo 发布了新的重置消息",
               resetDeadlineMs
