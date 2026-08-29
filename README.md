@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Yusong-Enceladus/codex-capacity-planner/releases/latest"><strong>下载 macOS 版</strong></a>
+  <a href="https://github.com/Yusong-Enceladus/codex-capacity-planner/releases/latest/download/Codex-Capacity-Planner-macOS.dmg"><strong>下载 macOS 版 DMG</strong></a>
   ·
   <a href="README.en.md">English</a>
 </p>
@@ -30,7 +30,7 @@
 ## 它能提供什么
 
 - **使用计划**：显示当前用量、目标和预计用量，并提供保持或加速使用的建议。
-- **近期工作建议**：主菜单直接提供最多 5/3/1 条逻辑主线及纠偏操作；排序依据是明确标注、Goal 与跨日持续性，token 只作负载证据，临时 session 不会被拿来凑数。
+- **近期工作建议**：主菜单直接提供最多 5/3/1 条逻辑主线及纠偏操作；每条主线的有效操作横排在同一行，避免按钮把菜单纵向撑长。排序依据是明确标注、Goal 与跨日持续性，token 只作负载证据，临时 session 不会被拿来凑数。
 - **重置管理**：按过去→现在→未来的时间轴统一显示自然刷新、可能重置的时间范围、官方重置、套餐升级和实际到账。
 - **多账号支持**：“用量与目标”按账户显示当前、目标与预计区间，同时保留 API 等价容量、预计损失和本机采样来源。
 - **可解释计算**：“计算与数据”是独立一级入口，并明确拆分为计算结果、计算依据和原始数据，避免把账户状态、公式与诊断混成一页。
@@ -58,9 +58,11 @@ App 会自动启动并连接内置的本机组件，升级后也会自动接管�
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/Yusong-Enceladus/codex-capacity-planner/releases/latest) 下载 `Codex-Capacity-Planner-macOS.zip`，解压后移到“应用程序”。
+1. 下载 [`Codex-Capacity-Planner-macOS.dmg`](https://github.com/Yusong-Enceladus/codex-capacity-planner/releases/latest/download/Codex-Capacity-Planner-macOS.dmg)。
+2. 打开 DMG，把 `Codex Capacity Planner` 拖到同一窗口里的“Applications”快捷方式。
+3. 第一次启动时，在“应用程序”中按住 Control 点按 App 并选择“打开”。若系统仍然阻止，请前往“系统设置 → 隐私与安全性”，核对应用名称后选择“仍要打开”。
 
-当前下载版支持 Apple Silicon Mac，并已内置所需运行环境。由于使用 ad-hoc 签名且未经 Apple 公证，首次打开若被拦截，请在 Finder 中按住 Control 点按应用并选择“打开”，或前往“系统设置 → 隐私与安全性”选择“仍要打开”。
+当前下载版支持 Apple Silicon Mac，并已内置 Node.js、本机监控与采集组件；不需要另外安装 CodexBar、Node.js 或配置服务地址。Release 同时保留内容相同的 ZIP 和 `SHA256SUMS.txt`。由于仓库目前没有 Apple Developer ID，社区构建采用 ad-hoc 签名且未经 Apple 公证，因此首次打开仍需要上面的系统确认。
 
 <details>
 <summary><strong>从源码构建</strong></summary>
@@ -103,6 +105,7 @@ Intel Mac 可以从源码构建对应架构版本。
 - [架构与决策边界](docs/architecture.md)
 - [容量基线与个人校准](docs/capacity-baselines.md)
 - [外部信号契约](docs/signal-contract.md)
+- [macOS 分发与安装边界](docs/distribution.md)
 - [贡献指南](CONTRIBUTING.md)
 
 项目以 [MIT License](LICENSE) 开源。第三方代码与许可说明见 [NOTICE](NOTICE)。

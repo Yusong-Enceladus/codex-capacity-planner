@@ -135,7 +135,9 @@ trend, and any real reset signal. The root macOS menu keeps Suggested
 Mainlines, Usage & Targets, Resets, Why This Plan, and Calculation & Data in
 that order immediately above Refresh, Settings, and Quit; the title card is a
 summary rather than a navigation gateway. Suggested Mainlines stays on this
-primary interaction path so its reversible corrections remain low-cost. Each
+primary interaction path so its reversible corrections remain low-cost. Every
+mainline keeps its valid corrections in one horizontal button strip inside the
+same content item; actions do not become separate vertical menu entries. Each
 Usage & Targets account row carries its own current usage,
 target, optional natural forecast range, API-equivalent capacity, expected
 reset loss, and sampling provenance. Account forecasts are never shared.

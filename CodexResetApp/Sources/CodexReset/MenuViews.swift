@@ -1335,16 +1335,29 @@ private struct CreditAccountGroup: Identifiable {
 struct ResetDetailsView: View {
     let sections: [DetailSection]
     let width: CGFloat
+    var onAction: ((DetailAction) -> Void)?
+
+    init(
+        sections: [DetailSection],
+        width: CGFloat,
+        onAction: ((DetailAction) -> Void)? = nil)
+    {
+        self.sections = sections
+        self.width = width
+        self.onAction = onAction
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             ForEach(Array(self.sections.enumerated()), id: \.offset) { sectionIndex, section in
                 if sectionIndex > 0 { Divider() }
                 VStack(alignment: .leading, spacing: 9) {
-                    Text(section.title)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
+                    if self.onAction == nil {
+                        Text(section.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .textCase(.uppercase)
+                    }
                     if let visualizations = section.visualizations {
                         ForEach(visualizations) { visualization in
                             if visualization.kind == "timeline" {
@@ -1386,6 +1399,32 @@ struct ResetDetailsView: View {
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
+                            if let actions = row.actions,
+                               !actions.isEmpty,
+                               let onAction = self.onAction
+                            {
+                                HStack(spacing: 5) {
+                                    ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
+                                        Button {
+                                            onAction(action)
+                                        } label: {
+                                            Label(
+                                                action.title,
+                                                systemImage: self.actionSymbol(action.operation))
+                                                .font(.caption2.weight(.medium))
+                                                .lineLimit(1)
+                                                .minimumScaleFactor(0.8)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.mini)
+                                        .fixedSize(horizontal: true, vertical: false)
+                                        .help(action.title)
+                                        .accessibilityLabel(action.title)
+                                    }
+                                }
+                                .padding(.top, 5)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -1393,10 +1432,19 @@ struct ResetDetailsView: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.vertical, self.onAction == nil ? 12 : 9)
         .frame(width: self.width, alignment: .leading)
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func actionSymbol(_ operation: String) -> String {
+        switch operation {
+        case "mark-mainline": "star"
+        case "complete": "checkmark.circle"
+        case "snooze": "moon.zzz"
+        default: "minus.circle"
+        }
     }
 }
 

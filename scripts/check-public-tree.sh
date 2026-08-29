@@ -4,7 +4,7 @@ set -eu
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$project_root"
 
-required_files="LICENSE NOTICE README.md CHANGELOG.md SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md docs/architecture.md docs/privacy.md docs/signal-contract.md patches/codexbar/0001-Add-Codex-Reset-provider-presentation.patch"
+required_files="LICENSE NOTICE README.md CHANGELOG.md SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md docs/architecture.md docs/distribution.md docs/privacy.md docs/signal-contract.md patches/codexbar/0001-Add-Codex-Reset-provider-presentation.patch"
 for required_file in $required_files; do
   if [ ! -f "$required_file" ]; then
     echo "missing required public file: $required_file" >&2

@@ -5,6 +5,15 @@ versioning once the first public release is tagged.
 
 ## Unreleased
 
+## 0.1.6 - 2026-08-29
+
+- Put each mainline's valid correction actions into one compact horizontal
+  button row inside its content item, removing the separate menu line formerly
+  consumed by every action.
+- Add a drag-to-Applications DMG with a bilingual first-launch guide while
+  retaining the ZIP and checksums. The release remains an explicitly disclosed
+  Apple Silicon, ad-hoc-signed community build until Developer ID credentials
+  are available.
 - Put all first-level planner destinations directly in the root macOS menu
   above Refresh, Settings, and Quit. The order is Suggested Mainlines, Usage &
   Targets, Resets, Why This Plan, and Calculation & Data; the title card no

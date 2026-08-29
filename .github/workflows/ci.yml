@@ -22,6 +22,7 @@ jobs:
       - run: node --check codex-reset-behavior.js
       - run: node --check codex-reset-short-load.js
       - run: node --check codex-reset-workload-eval.js
+      - run: zsh -n scripts/package-release.sh CodexResetApp/build-app.sh
       - run: node codex-reset.test.js
 
   macos-app:

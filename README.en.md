@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Yusong-Enceladus/codex-capacity-planner/releases/latest"><strong>Download for macOS</strong></a>
+  <a href="https://github.com/Yusong-Enceladus/codex-capacity-planner/releases/latest/download/Codex-Capacity-Planner-macOS.dmg"><strong>Download the macOS DMG</strong></a>
   ·
   <a href="README.md">简体中文</a>
 </p>
@@ -30,7 +30,7 @@
 ## What it provides
 
 - **Usage plan**: shows current usage, target usage, and expected usage, then recommends maintaining or increasing pace.
-- **Recent-work suggestions**: puts up to 5/3/1 logical mainlines and correction actions directly in the main menu. Explicit labels, Goals, and cross-day continuity determine intent; tokens describe load only, and temporary sessions never fill the list.
+- **Recent-work suggestions**: puts up to 5/3/1 logical mainlines and correction actions directly in the main menu. Valid actions for each mainline share one horizontal row instead of stretching the menu vertically. Explicit labels, Goals, and cross-day continuity determine intent; tokens describe load only, and temporary sessions never fill the list.
 - **Reset management**: puts natural resets, possible-reset windows, official resets, plan upgrades, and observed delivery on one past→now→future timeline.
 - **Multiple accounts**: “Usage & Targets” gives every visible account its own current, target, and forecast range while retaining API-equivalent capacity, expected loss, and local sampling provenance.
 - **Explainable calculations**: “Calculation & Data” is an independent first-level entry that separates results, method, and raw inputs instead of mixing account state, formulas, and diagnostics.
@@ -58,9 +58,11 @@ The app starts and connects its bundled local component automatically, including
 
 ## Install
 
-Download `Codex-Capacity-Planner-macOS.zip` from [GitHub Releases](https://github.com/Yusong-Enceladus/codex-capacity-planner/releases/latest), unzip it, and move the app to Applications.
+1. Download [`Codex-Capacity-Planner-macOS.dmg`](https://github.com/Yusong-Enceladus/codex-capacity-planner/releases/latest/download/Codex-Capacity-Planner-macOS.dmg).
+2. Open the DMG and drag `Codex Capacity Planner` onto the Applications shortcut in the same window.
+3. On first launch, open Applications, Control-click the app, and choose Open. If macOS still blocks it, open System Settings → Privacy & Security, verify the app name, and choose Open Anyway.
 
-The current download supports Apple Silicon and bundles its required runtime. It uses an ad-hoc signature and is not Apple-notarized. If macOS blocks the first launch, Control-click the app in Finder and choose Open, or use System Settings → Privacy & Security → Open Anyway.
+The current download supports Apple Silicon and bundles Node.js, the local monitor, and collection helpers; CodexBar, a separate Node.js installation, and local-service configuration are not required. The release also keeps an equivalent ZIP and `SHA256SUMS.txt`. Because this repository currently has no Apple Developer ID, the community build is ad-hoc signed and not notarized, so the one-time system confirmation above remains necessary.
 
 <details>
 <summary><strong>Build from source</strong></summary>
@@ -103,6 +105,7 @@ See [Privacy and data flow](docs/privacy.md) and the [Security policy](SECURITY.
 - [Architecture and decision boundaries](docs/architecture.md)
 - [Capacity baselines and personal calibration](docs/capacity-baselines.md)
 - [External signal contract](docs/signal-contract.md)
+- [macOS distribution and installation boundary](docs/distribution.md)
 - [Contributing](CONTRIBUTING.md)
 
 The project is open source under the [MIT License](LICENSE). See [NOTICE](NOTICE) for third-party code and licenses.

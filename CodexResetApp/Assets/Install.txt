@@ -1,0 +1,31 @@
+Codex Capacity Planner · macOS 安装说明
+
+1. 将“Codex Capacity Planner”拖到“Applications”快捷方式上。
+2. 前往“应用程序”，按住 Control 点按 App，然后选择“打开”。当前社区构建采用
+   ad-hoc 签名且尚未经过 Apple 公证，因此首次启动需要这一步；以后可正常打开。
+3. 如果系统仍然阻止，请打开“系统设置 → 隐私与安全性”，核对应用名称后选择
+   “仍要打开”。
+
+App 已内置运行环境和本机组件，不需要安装 Node.js、CodexBar，也不需要填写服务地址。
+当前预构建版本支持 Apple Silicon 与 macOS 14 或更高版本。
+
+请只从 https://github.com/Yusong-Enceladus/codex-capacity-planner/releases 下载，
+并可使用同一 Release 中的 SHA256SUMS.txt 核对文件。
+
+──────────────────────────────────────────────────────────────────────────────
+
+Codex Capacity Planner · macOS Installation
+
+1. Drag “Codex Capacity Planner” onto the “Applications” shortcut.
+2. Open Applications, Control-click the app, and choose Open. The current
+   community build is ad-hoc signed and not yet Apple-notarized, so this is
+   required once on first launch; subsequent launches work normally.
+3. If macOS still blocks it, open System Settings → Privacy & Security, verify
+   the app name, and choose Open Anyway.
+
+The app bundles its runtime and local component. Node.js, CodexBar, and a
+service URL are not required. The current prebuilt release supports Apple
+Silicon and macOS 14 or later.
+
+Download only from the GitHub Releases page above. SHA256SUMS.txt in the same
+release can be used to verify the files.

@@ -268,6 +268,9 @@ import Testing
     #expect(DetailMenuLayout.summaryGroup("为什么这样建议") == "summary")
     #expect(DetailMenuLayout.childGroups("为什么这样建议").isEmpty)
     #expect(DetailMenuLayout.childGroups("建议主线").isEmpty)
+    #expect(DetailMenuLayout.usesInlineActions("建议主线"))
+    #expect(DetailMenuLayout.usesInlineActions("Suggested Mainlines"))
+    #expect(!DetailMenuLayout.usesInlineActions("用量与目标"))
     #expect(DetailMenuLayout.isCalculation("计算与数据"))
     #expect(DetailMenuLayout.isCalculation("Calculation & Data"))
     #expect(DetailMenuLayout.calculationGroups == [

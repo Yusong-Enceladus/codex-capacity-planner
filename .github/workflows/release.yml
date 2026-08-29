@@ -13,18 +13,23 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - name: Build ad-hoc signed app
+      - name: Build self-contained macOS installers
         run: ./scripts/package-release.sh
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
+            outputs/release/Codex-Capacity-Planner-macOS.dmg \
             outputs/release/Codex-Capacity-Planner-macOS.zip \
             outputs/release/SHA256SUMS.txt \
             --verify-tag \
             --title "$GITHUB_REF_NAME" \
-            --notes "This macOS build is ad-hoc signed and is not notarized with an Apple Developer ID.
+            --notes "For the simplest installation, download the DMG, open it, and drag Codex Capacity Planner to Applications. The ZIP contains the same app for users who prefer an archive.
+
+          The app is self-contained: Node.js, CodexBar, and manual local-service configuration are not required.
+
+          This community build is ad-hoc signed and is not notarized with an Apple Developer ID.
 
           On first launch, Control-click the app and choose Open, or allow it under
           System Settings → Privacy & Security. Verify the download with SHA256SUMS.txt.

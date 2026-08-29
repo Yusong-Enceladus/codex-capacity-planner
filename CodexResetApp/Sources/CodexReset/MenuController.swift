@@ -39,6 +39,10 @@ enum DetailMenuLayout {
         ["计算与数据", "Calculation & Data"].contains(title)
     }
 
+    static func usesInlineActions(_ title: String) -> Bool {
+        self.isMainlines(title)
+    }
+
     static func summaryGroup(_ title: String) -> String {
         ["为什么这样建议", "Why This Plan"].contains(title) ? "summary" : "current"
     }
@@ -71,6 +75,7 @@ enum DetailMenuLayout {
 final class MenuController: NSObject, NSMenuDelegate {
     private static let cardWidth: CGFloat = 310
     private static let detailsWidth: CGFloat = 380
+    private static let mainlineDetailsWidth: CGFloat = 460
 
     private let store: SnapshotStore
     private let presentationLanguage: ResetPresentationLanguage
@@ -271,20 +276,34 @@ final class MenuController: NSObject, NSMenuDelegate {
         }
         let submenu = NSMenu()
         submenu.autoenablesItems = false
-        submenu.minimumWidth = Self.detailsWidth
+        let usesInlineActions = DetailMenuLayout.usesInlineActions(section.title)
+        let contentWidth = usesInlineActions
+            ? Self.mainlineDetailsWidth
+            : Self.detailsWidth
+        submenu.minimumWidth = contentWidth
         if let visualizations = section.visualizations, !visualizations.isEmpty {
-            submenu.addItem(self.makeDetailContentItem(section))
+            submenu.addItem(self.makeDetailContentItem(
+                section,
+                width: contentWidth,
+                onAction: usesInlineActions ? self.inlineActionHandler : nil))
             self.appendLinks(from: section.rows, to: submenu)
-            self.appendActions(from: section.rows, to: submenu)
+            if !usesInlineActions {
+                self.appendActions(from: section.rows, to: submenu)
+            }
             return submenu
         }
         for (index, row) in section.rows.enumerated() {
             if index > 0, submenu.items.last?.isSeparatorItem != true {
                 submenu.addItem(.separator())
             }
-            submenu.addItem(self.makeDetailContentItem(DetailSection(title: section.title, rows: [row])))
+            submenu.addItem(self.makeDetailContentItem(
+                DetailSection(title: section.title, rows: [row]),
+                width: contentWidth,
+                onAction: usesInlineActions ? self.inlineActionHandler : nil))
             self.appendLinks(from: [row], to: submenu)
-            self.appendActions(from: [row], to: submenu)
+            if !usesInlineActions {
+                self.appendActions(from: [row], to: submenu)
+            }
         }
         return submenu
     }
@@ -326,17 +345,38 @@ final class MenuController: NSObject, NSMenuDelegate {
         return submenu
     }
 
-    private func makeDetailContentItem(_ section: DetailSection) -> NSMenuItem {
-        let root = ResetDetailsView(sections: [section], width: Self.detailsWidth)
+    private func makeDetailContentItem(
+        _ section: DetailSection,
+        width: CGFloat? = nil,
+        onAction: ((DetailAction) -> Void)? = nil) -> NSMenuItem
+    {
+        let contentWidth = width ?? Self.detailsWidth
+        let root = ResetDetailsView(
+            sections: [section],
+            width: contentWidth,
+            onAction: onAction)
             .environment(\.resetPresentationLanguage, self.presentationLanguage)
             .environment(\.locale, self.presentationLanguage.locale)
         let hosting = FixedHeightHostingView(rootView: root)
-        let measuredHeight = hosting.measuredFittingHeight(width: Self.detailsWidth)
-        hosting.apply(width: Self.detailsWidth, height: measuredHeight)
+        let measuredHeight = hosting.measuredFittingHeight(width: contentWidth)
+        hosting.apply(width: contentWidth, height: measuredHeight)
         let details = NSMenuItem()
         details.view = hosting
-        details.isEnabled = false
+        details.isEnabled = onAction != nil
+        if onAction != nil {
+            details.target = self
+            details.action = #selector(self.noOp)
+        }
         return details
+    }
+
+    private var inlineActionHandler: (DetailAction) -> Void {
+        { [weak self] action in
+            guard let self else { return }
+            self.menu.cancelTracking()
+            guard self.allowsRefresh else { return }
+            Task { await self.store.perform(action) }
+        }
     }
 
     private func appendLinks(from rows: [DetailRow], to submenu: NSMenu) {
@@ -456,7 +496,17 @@ final class MenuController: NSObject, NSMenuDelegate {
         guard let button = self.statusItem.button else { return }
         NSApplication.shared.activate(ignoringOtherApps: true)
         button.highlight(true)
-        self.menu.popUp(
+        let captureMenu: NSMenu
+        if ProcessInfo.processInfo.environment["CODEX_RESET_ACTUAL_MENU_SECTION"] == "mainlines",
+           let mainlines = self.menu.items.first(where: {
+               DetailMenuLayout.isMainlines($0.title)
+           })?.submenu
+        {
+            captureMenu = mainlines
+        } else {
+            captureMenu = self.menu
+        }
+        captureMenu.popUp(
             positioning: nil,
             at: NSPoint(x: button.bounds.minX, y: button.bounds.minY - 3),
             in: button)

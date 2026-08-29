@@ -12,12 +12,13 @@ open "dist/Codex Capacity Planner.app"
 ```
 
 应用包内包含本机 Monitor 和额度采集 helper；打开后会自行启动服务，不要求
-CodexBar 保持运行。若原有 CodexBar Monitor 已占用 `127.0.0.1:18765`，独立应用会
-复用它，两套界面仍然得到同一份结果。服务地址也可以在应用设置中修改。
+CodexBar 保持运行。应用与 Monitor 共用内部固定端点，并通过内容指纹接管过期的
+内置 Monitor；服务地址不会显示在设置中，也不需要用户填写。
 
 ## 下载版的首次打开
 
-公开下载包使用 macOS ad-hoc 签名，没有 Apple Developer ID 公证。首次打开如果被
+公开 Release 同时提供带“Applications”拖拽入口的 DMG、ZIP 与 SHA-256 校验和。
+下载包使用 macOS ad-hoc 签名，没有 Apple Developer ID 公证。首次打开如果被
 Gatekeeper 拦截，请在 Finder 中按住 Control 点按应用并选择“打开”；如果系统仍然
 阻止，请前往“系统设置 → 隐私与安全性”，确认应用来源后选择“仍要打开”。
 
