@@ -13,6 +13,8 @@ const hour = 60 * 60 * 1000;
 const minute = 60 * 1000;
 const listenHost = process.env.CODEX_RESET_LISTEN_HOST || "127.0.0.1";
 const listenPort = Number(process.env.CODEX_RESET_LISTEN_PORT || 18765);
+const runtimeProtocolVersion = 1;
+const runtimeID = String(process.env.CODEX_RESET_RUNTIME_ID || "development");
 const upstreamBridge = (
   process.env.CODEX_RESET_UPSTREAM_BRIDGE_URL || "http://127.0.0.1:18764"
 ).replace(/\/+$/, "");
@@ -5556,6 +5558,13 @@ function createServer(service) {
         return;
       }
       const requestURL = new URL(request.url, `http://${listenHost}:${listenPort}`);
+      if (request.method === "GET" && requestURL.pathname === "/api/runtime") {
+        jsonResponse(response, 200, {
+          protocolVersion: runtimeProtocolVersion,
+          runtimeID,
+        });
+        return;
+      }
       if (request.method === "GET" && requestURL.pathname === "/usage") {
         proxyUsage(request, response);
         return;

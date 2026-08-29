@@ -65,7 +65,7 @@ private struct ResetGalleryScenarioView: View {
                     store: self.store,
                     highlight: self.highlight,
                     width: 300,
-                    hasSubmenu: true,
+                    hasSubmenu: false,
                     onRefresh: {})
                     .background(Color(red: 0.11, green: 0.11, blue: 0.16))
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))

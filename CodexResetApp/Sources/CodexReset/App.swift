@@ -22,6 +22,9 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
     private var demoBackdropWindows: [NSWindow] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // The loopback endpoint is an application-owned implementation detail.
+        // Remove the legacy preference so upgrades cannot retain a broken URL.
+        UserDefaults.standard.removeObject(forKey: "serviceURL")
         if let showcase = Self.readmeShowcase() {
             self.showReadmeShowcase(page: showcase.page, language: showcase.language)
             return
@@ -45,11 +48,19 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
         }
         let store = SnapshotStore()
         self.store = store
-        if let startupError = self.monitor.start() {
-            store.setStartupError(startupError)
-        }
         self.menuController = MenuController(store: store)
         store.start()
+        Task {
+            if let startupError = await self.monitor.start() {
+                store.setStartupError(startupError)
+                return
+            }
+            await store.refresh()
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        self.monitor.stop()
     }
 
     private func showStateGallery(page: String) {
@@ -147,34 +158,45 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
 
 struct SettingsView: View {
     @ObservedObject var store: SnapshotStore
-    @AppStorage("serviceURL") private var serviceURL = "http://127.0.0.1:18765"
+    let presentationLanguage: ResetPresentationLanguage
     @AppStorage("refreshInterval") private var refreshInterval = 60.0
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchError: String?
 
     var body: some View {
         Form {
-            TextField("本机服务", text: self.$serviceURL)
-            Picker("自动刷新", selection: self.$refreshInterval) {
-                Text("1 分钟").tag(60.0)
-                Text("5 分钟").tag(300.0)
-                Text("15 分钟").tag(900.0)
-            }
-            Toggle("登录时启动", isOn: self.$launchAtLogin)
-                .onChange(of: self.launchAtLogin) { _, enabled in
-                    do {
-                        if enabled { try SMAppService.mainApp.register() }
-                        else { try SMAppService.mainApp.unregister() }
-                        launchError = nil
-                    } catch {
-                        launchError = "启动项更新失败：\(error.localizedDescription)"
-                        self.launchAtLogin = SMAppService.mainApp.status == .enabled
-                    }
+            Section(self.presentationLanguage.text("通用", "General")) {
+                Picker(
+                    self.presentationLanguage.text("自动刷新", "Automatic refresh"),
+                    selection: self.$refreshInterval)
+                {
+                    Text(self.presentationLanguage.text("1 分钟", "1 minute")).tag(60.0)
+                    Text(self.presentationLanguage.text("5 分钟", "5 minutes")).tag(300.0)
+                    Text(self.presentationLanguage.text("15 分钟", "15 minutes")).tag(900.0)
                 }
+                Toggle(
+                    self.presentationLanguage.text("登录时启动", "Launch at login"),
+                    isOn: self.$launchAtLogin)
+                    .onChange(of: self.launchAtLogin) { _, enabled in
+                        do {
+                            if enabled { try SMAppService.mainApp.register() }
+                            else { try SMAppService.mainApp.unregister() }
+                            launchError = nil
+                        } catch {
+                            launchError = self.presentationLanguage.text(
+                                "启动项更新失败：\(error.localizedDescription)",
+                                "Could not update Login Items: \(error.localizedDescription)")
+                            self.launchAtLogin = SMAppService.mainApp.status == .enabled
+                        }
+                    }
+            }
             if let corrections = self.store.snapshot?.mainlineCorrections,
                !corrections.isEmpty
             {
-                Section("主线纠偏（仅保存在本机）") {
+                Section(self.presentationLanguage.text(
+                    "主线判断（仅保存在本机）",
+                    "Mainline decisions (stored locally)"))
+                {
                     ForEach(corrections.prefix(20)) { correction in
                         HStack(alignment: .firstTextBaseline, spacing: 12) {
                             VStack(alignment: .leading, spacing: 2) {
@@ -184,10 +206,15 @@ struct SettingsView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Button("恢复自动判断") {
+                            Button(self.presentationLanguage.text(
+                                "恢复自动判断",
+                                "Restore automatic decision"))
+                            {
                                 Task {
                                     await self.store.perform(DetailAction(
-                                        title: "恢复自动判断",
+                                        title: self.presentationLanguage.text(
+                                            "恢复自动判断",
+                                            "Restore automatic decision"),
                                         operation: "restore",
                                         targetId: correction.targetId))
                                 }
@@ -195,7 +222,9 @@ struct SettingsView: View {
                         }
                     }
                     if corrections.count > 20 {
-                        Text("另有 \(corrections.count - 20) 条纠偏记录")
+                        Text(self.presentationLanguage.text(
+                            "另有 \(corrections.count - 20) 条纠偏记录",
+                            "\(corrections.count - 20) more corrections"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -210,10 +239,10 @@ struct SettingsView: View {
 
     private func correctionStatus(_ status: String) -> String {
         switch status {
-        case "mainline": "已明确标为主线"
-        case "not-mainline": "已标为不是主线"
-        case "snoozed": "已暂不推荐"
-        case "complete": "已标为完成"
+        case "mainline": self.presentationLanguage.text("已明确标为主线", "Explicitly marked as a mainline")
+        case "not-mainline": self.presentationLanguage.text("已标为不是主线", "Marked as not a mainline")
+        case "snoozed": self.presentationLanguage.text("已暂不推荐", "Snoozed")
+        case "complete": self.presentationLanguage.text("已标为完成", "Marked complete")
         default: status
         }
     }

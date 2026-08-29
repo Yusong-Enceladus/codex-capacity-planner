@@ -893,12 +893,37 @@ enum ResetCreditPresentation {
         return "\(self.format(start, pattern: startPattern, language: language))–\(self.format(end, pattern: endPattern, language: language)) \(language.timeZoneLabel)"
     }
 
-    static func lifetimeRatio(_ item: DetailTimelineItem, now: Date) -> Double? {
-        guard let start = self.date(item.at),
-              let end = self.date(item.endAt),
-              end > start
-        else { return nil }
-        return min(1, max(0, now.timeIntervalSince(start) / end.timeIntervalSince(start)))
+    static func latestExpiry(
+        in items: [DetailTimelineItem],
+        now: Date) -> Date?
+    {
+        items
+            .compactMap { self.date($0.endAt) }
+            .filter { $0 > now }
+            .max()
+    }
+
+    /// Places each expiry on one shared axis that starts at `now`. A credit
+    /// with more time remaining is always drawn longer than one expiring
+    /// sooner, regardless of when either credit was granted.
+    static func expiryPosition(
+        _ item: DetailTimelineItem,
+        now: Date,
+        scaleEnd: Date) -> Double?
+    {
+        guard let expiry = self.date(item.endAt), scaleEnd > now else { return nil }
+        let scale = scaleEnd.timeIntervalSince(now)
+        let remaining = max(0, expiry.timeIntervalSince(now))
+        return min(1, remaining / scale)
+    }
+
+    static func expiryAxisEndText(
+        _ date: Date,
+        language: ResetPresentationLanguage) -> String
+    {
+        let pattern = language == .english ? "MMM d, h:mm a" : "M月d日 HH:mm"
+        let point = "\(self.format(date, pattern: pattern, language: language)) \(language.timeZoneLabel)"
+        return language.text("最晚到期 \(point)", "Latest expiry \(point)")
     }
 
     static func hoursUntilExpiry(_ item: DetailTimelineItem, now: Date) -> Double? {
@@ -1012,10 +1037,29 @@ private struct ResetCreditSummaryView: View {
     }
 
     private func inventory(at now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(self.presentationLanguage.text("逐券到期时间", "Expiry by credit"))
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+        let creditItems = self.visualization.items.filter { $0.kind == "credit" }
+        let scaleEnd = ResetCreditPresentation.latestExpiry(in: creditItems, now: now)
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(self.presentationLanguage.text("逐券剩余有效期", "Remaining validity by credit"))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                Text(self.presentationLanguage.text("同一时间尺度", "Shared time scale"))
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(.tertiary)
+            }
+            if let scaleEnd {
+                HStack(spacing: 6) {
+                    Text(self.presentationLanguage.text("现在", "Now"))
+                    Spacer(minLength: 4)
+                    Text(ResetCreditPresentation.expiryAxisEndText(
+                        scaleEnd,
+                        language: self.presentationLanguage))
+                }
+                .font(.system(size: 8).monospacedDigit())
+                .foregroundStyle(.tertiary)
+            }
             ForEach(self.accountGroups) { group in
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
@@ -1036,7 +1080,11 @@ private struct ResetCreditSummaryView: View {
                             .foregroundStyle(.secondary)
                     }
                     ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
-                        self.creditRow(item, index: index, now: now)
+                        self.creditRow(
+                            item,
+                            index: index,
+                            now: now,
+                            scaleEnd: scaleEnd)
                     }
                 }
                 .padding(8)
@@ -1045,7 +1093,12 @@ private struct ResetCreditSummaryView: View {
         }
     }
 
-    private func creditRow(_ item: DetailTimelineItem, index: Int, now: Date) -> some View {
+    private func creditRow(
+        _ item: DetailTimelineItem,
+        index: Int,
+        now: Date,
+        scaleEnd: Date?) -> some View
+    {
         let urgency = ResetCreditPresentation.hoursUntilExpiry(item, now: now)
         let color = self.expiryTint(urgency)
         return VStack(alignment: .leading, spacing: 4) {
@@ -1073,15 +1126,29 @@ private struct ResetCreditSummaryView: View {
                 .font(.system(size: 9).monospacedDigit())
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if let ratio = ResetCreditPresentation.lifetimeRatio(item, now: now) {
+            if let scaleEnd,
+               let position = ResetCreditPresentation.expiryPosition(
+                   item,
+                   now: now,
+                   scaleEnd: scaleEnd)
+            {
                 GeometryReader { geometry in
+                    let width = geometry.size.width
+                    let endpoint = min(max(width * position, 2.5), max(2.5, width - 2.5))
                     ZStack(alignment: .leading) {
-                        Capsule().fill(Color.secondary.opacity(0.16))
-                        Capsule().fill(color.opacity(0.75))
-                            .frame(width: max(3, geometry.size.width * ratio))
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.14))
+                            .frame(height: 1)
+                        Capsule()
+                            .fill(color.opacity(0.72))
+                            .frame(width: max(3, width * position), height: 2)
+                        Circle()
+                            .fill(color)
+                            .frame(width: 5, height: 5)
+                            .position(x: endpoint, y: 3)
                     }
                 }
-                .frame(height: 4)
+                .frame(height: 6)
                 .accessibilityHidden(true)
             }
         }
@@ -1369,64 +1436,44 @@ struct ResetMenuPreview: View {
     @StateObject private var highlight = MenuHighlightState()
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if let sections = self.store.snapshot?.submenuDetails {
-                VStack(spacing: 0) {
-                    ForEach(sections) { section in
-                        HStack(spacing: 9) {
-                            Image(systemName: self.symbolName(for: section.title))
-                                .frame(width: 16)
-                                .foregroundStyle(.secondary)
-                            Text(section.title)
-                            Spacer()
-                            Text("\(section.rows.count)")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                            Image(systemName: "chevron.right")
-                                .font(.caption2.bold())
-                                .foregroundStyle(.tertiary)
-                        }
-                        .font(.body)
-                        .padding(.horizontal, 12)
-                        .frame(height: 30)
-                    }
+        VStack(spacing: 0) {
+            ResetMenuCard(
+                store: self.store,
+                highlight: self.highlight,
+                width: 310,
+                hasSubmenu: false,
+                onRefresh: { Task { await self.store.refresh() } })
+            if let sections = self.store.snapshot?.submenuDetails, !sections.isEmpty {
+                Divider()
+                ForEach(sections) { section in
+                    self.previewRow(
+                        self.symbolName(for: section.title),
+                        section.title,
+                        shortcut: "›")
                 }
-                .padding(.vertical, 5)
-                .frame(width: 240)
-                .background(Color(red: 0.11, green: 0.11, blue: 0.16))
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
-            VStack(spacing: 0) {
-                ResetMenuCard(
-                    store: self.store,
-                    highlight: self.highlight,
-                    width: 310,
-                    hasSubmenu: !(self.store.snapshot?.submenuDetails.isEmpty ?? true),
-                    onRefresh: { Task { await self.store.refresh() } })
-                Divider()
-                self.previewRow(
-                    "arrow.clockwise",
-                    self.presentationLanguage.text("刷新", "Refresh"),
-                    shortcut: "⌘R")
-                self.previewRow(
-                    "gearshape",
-                    self.presentationLanguage.text("设置…", "Settings…"),
-                    shortcut: "⌘,")
-                Divider()
-                self.previewRow(
-                    "xmark.square",
-                    self.presentationLanguage.text(
-                        "退出 Codex Capacity Planner",
-                        "Quit Codex Capacity Planner"),
-                    shortcut: "⌘Q")
-            }
-            .frame(width: 310)
-            .padding(.vertical, 4)
-            .background(Color(red: 0.11, green: 0.11, blue: 0.16))
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            Divider()
+            self.previewRow(
+                "arrow.clockwise",
+                self.presentationLanguage.text("刷新", "Refresh"),
+                shortcut: "⌘R")
+            self.previewRow(
+                "gearshape",
+                self.presentationLanguage.text("设置…", "Settings…"),
+                shortcut: "⌘,")
+            Divider()
+            self.previewRow(
+                "xmark.square",
+                self.presentationLanguage.text(
+                    "退出 Codex Capacity Planner",
+                    "Quit Codex Capacity Planner"),
+                shortcut: "⌘Q")
         }
+        .frame(width: 310)
+        .padding(.vertical, 4)
+        .background(Color(red: 0.11, green: 0.11, blue: 0.16))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .padding(8)
-        .onAppear { self.highlight.isHighlighted = true }
     }
 
     private func previewRow(_ image: String, _ title: String, shortcut: String) -> some View {
@@ -1447,6 +1494,7 @@ struct ResetMenuPreview: View {
         case "用量与目标", "Usage & Targets", "账户", "Accounts": "scope"
         case "为什么这样建议", "Why This Plan": "chart.line.uptrend.xyaxis"
         case "重置", "Resets": "clock.arrow.circlepath"
+        case "计算与数据", "Calculation & Data": "function"
         default: "list.bullet.rectangle"
         }
     }

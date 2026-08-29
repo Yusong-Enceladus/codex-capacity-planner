@@ -30,11 +30,11 @@
 ## What it provides
 
 - **Usage plan**: shows current usage, target usage, and expected usage, then recommends maintaining or increasing pace.
-- **Recent-work suggestions**: puts up to 5/3/1 logical mainlines and correction actions directly in the first-level menu. Explicit labels, Goals, and cross-day continuity determine intent; tokens describe load only, and temporary sessions never fill the list.
+- **Recent-work suggestions**: puts up to 5/3/1 logical mainlines and correction actions directly in the main menu. Explicit labels, Goals, and cross-day continuity determine intent; tokens describe load only, and temporary sessions never fill the list.
 - **Reset management**: puts natural resets, possible-reset windows, official resets, plan upgrades, and observed delivery on one past→now→future timeline.
 - **Multiple accounts**: “Usage & Targets” gives every visible account its own current, target, and forecast range while retaining API-equivalent capacity, expected loss, and local sampling provenance.
-- **Explainable calculations**: “Calculation & Data” separates results, method, and raw inputs instead of mixing account state, formulas, and diagnostics.
-- **Reset-credit planning**: shows every credit with its owning account and individual expiry, then visualizes net capacity, API-equivalent value, the high-value window, and both “free reset happens” and “no free reset happens” outcomes.
+- **Explainable calculations**: “Calculation & Data” is an independent first-level entry that separates results, method, and raw inputs instead of mixing account state, formulas, and diagnostics.
+- **Reset-credit planning**: shows every credit with its owning account and individual expiry on one shared axis from “Now,” so more remaining time always means a longer line. It also visualizes net capacity, API-equivalent value, the high-value window, and both “free reset happens” and “no free reset happens” outcomes.
 
 <p align="center">
   <img src="docs/assets/codex-capacity-planner-details-en.png" width="900" alt="Codex Capacity Planner English account details with independent usage progress bars">
@@ -44,7 +44,7 @@
   <img src="docs/assets/codex-capacity-planner-resets-en.png" width="900" alt="Codex Capacity Planner English reset timeline and reset-credit hold plan">
 </p>
 
-<p align="center"><sub>Screenshots use the current production components with anonymous demo data; no real account information is included.</sub></p>
+<p align="center"><sub>Screenshots come from the built macOS menu-bar app running with anonymous demo data; no real account information is included.</sub></p>
 
 ## One unified usage plan
 
@@ -53,6 +53,8 @@ Current quota, usage, recent work, reset information, and reset credits form one
 ## Standalone app and CodexBar
 
 The macOS app works independently. When using the CodexBar integration included in the source tree, both interfaces read the same local plan and recommendations.
+
+The app starts and connects its bundled local component automatically, including taking over a stale bundled component after an upgrade; users never configure a service URL. Suggested Mainlines, Usage & Targets, Resets, Why This Plan, and Calculation & Data stay directly above Refresh, Settings, and Quit in the main menu.
 
 ## Install
 
@@ -92,6 +94,7 @@ See [Privacy and data flow](docs/privacy.md) and the [Security policy](SECURITY.
 - Evidence for a possible reset is never presented as a probability. The reset timeline runs from past to present to future, and places “Now” inside a possible-reset window when applicable. Chinese uses UTC+8; English uses Pacific Time.
 - Reset-credit advice checks every account and evaluates both “a free reset happens” and “no free reset happens.” It cannot recommend immediate redemption while account usage is unconfirmed or another account still has usable capacity.
 - When one account owns multiple reset credits, each credit retains its own grant and expiry rather than borrowing the inventory's earliest expiry.
+- The reset-credit visualization shows remaining time from now to expiry, not elapsed lifecycle percentage. All visible credits share one scale, so a later expiry always produces a longer line.
 - Home-card content wraps to show complete recommendations, dates, and time zones instead of truncating them with ellipses.
 - Changes to Codex quota rules may require updates to the calculations.
 

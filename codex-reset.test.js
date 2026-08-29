@@ -3873,9 +3873,10 @@ const ctx = {
   );
   equal(snapshot.submenuDetails[0].title, "建议主线");
   equal(snapshot.submenuDetails[1].title, "用量与目标");
-  equal(snapshot.submenuDetails[2].title, "为什么这样建议");
-  equal(snapshot.submenuDetails[3].title, "重置");
-  const resetTimeline = snapshot.submenuDetails[3].visualizations.find(
+  equal(snapshot.submenuDetails[2].title, "重置");
+  equal(snapshot.submenuDetails[3].title, "为什么这样建议");
+  equal(snapshot.submenuDetails[4].title, "计算与数据");
+  const resetTimeline = snapshot.submenuDetails[2].visualizations.find(
     (visualization) => visualization.kind === "timeline",
   );
   const nextResetTimelineItem = resetTimeline.items.find(
@@ -3886,7 +3887,7 @@ const ctx = {
     Date.parse(usagePayload[0].usage.secondary.resetsAt),
   );
   equal(
-    snapshot.submenuDetails[3].rows.some((row) => row.label === "下次自然刷新"),
+    snapshot.submenuDetails[2].rows.some((row) => row.label === "下次自然刷新"),
     false,
     "the natural reset belongs on the root timeline rather than a duplicate text row",
   );
@@ -3929,41 +3930,44 @@ const ctx = {
     ),
     "the plan should explain why fewer than the maximum are shown",
   );
-  const forecastSection = snapshot.submenuDetails.find(
+  const whySection = snapshot.submenuDetails.find(
     (section) => section.title === "为什么这样建议",
   );
+  const calculationSection = snapshot.submenuDetails.find(
+    (section) => section.title === "计算与数据",
+  );
   check(
-    forecastSection.rows.some((row) => row.label === "未来 1 小时负载"),
+    calculationSection.rows.some((row) => row.label === "未来 1 小时负载"),
     "the one-hour session model should lead the expanded plan evidence",
   );
   check(
-    forecastSection.rows.some((row) => row.label === "近期使用速度"),
+    calculationSection.rows.some((row) => row.label === "近期使用速度"),
     "the evidence must show the measured pace and how it was derived",
   );
   check(
-    forecastSection.rows.some((row) => row.label === "自然使用预测"),
+    calculationSection.rows.some((row) => row.label === "自然使用预测"),
     "the model range should be available in plan details",
   );
   check(
-    forecastSection.rows.some((row) => row.group === "calculation-result") &&
-      forecastSection.rows.some((row) => row.group === "calculation-basis") &&
-      forecastSection.rows.some((row) => row.group === "calculation-raw") &&
-      !forecastSection.rows.some((row) => ["calculation", "work", "data"].includes(row.group)),
+    calculationSection.rows.some((row) => row.group === "calculation-result") &&
+      calculationSection.rows.some((row) => row.group === "calculation-basis") &&
+      calculationSection.rows.some((row) => row.group === "calculation-raw") &&
+      !calculationSection.rows.some((row) => ["calculation", "work", "data"].includes(row.group)),
     "Calculation & Data must be separated into results, method and raw inputs",
   );
   check(
-    forecastSection.rows.some(
+    calculationSection.rows.some(
       (row) => row.label === "通知投递" && /已交给 macOS/.test(row.value) && /明确强制重置公告/.test(row.secondaryValue),
     ),
     "the explanation view must expose the latest local notification delivery result",
   );
   equal(
-    forecastSection.rows.filter((row) => row.group === "summary").map((row) => row.label).join("→"),
+    whySection.rows.filter((row) => row.group === "summary").map((row) => row.label).join("→"),
     "为什么→所以",
     "the explanation must answer why in plain language before showing the action",
   );
   check(
-    forecastSection.rows.some(
+    whySection.rows.some(
       (row) =>
         row.group === "summary" &&
         row.label === "为什么" &&
@@ -4053,6 +4057,9 @@ const ctx = {
   const teaserWhy = teaserSnapshot.submenuDetails.find(
     (section) => section.title === "为什么这样建议",
   );
+  const teaserCalculation = teaserSnapshot.submenuDetails.find(
+    (section) => section.title === "计算与数据",
+  );
   check(
     teaserWhy.rows.some(
       (row) => row.label === "为什么" && /可能重置的暗示/.test(row.value),
@@ -4060,7 +4067,7 @@ const ctx = {
     "the plain-language explanation must say that the candidate hint affected the plan",
   );
   check(
-    teaserWhy.rows.some(
+    teaserCalculation.rows.some(
       (row) => row.label === "同截止点目标" && /暗示证据强度 50\/100 不是概率/.test(row.secondaryValue),
     ),
     "numeric evidence strength belongs with the calculation and must be distinguished from probability",
@@ -4212,7 +4219,7 @@ const ctx = {
   );
   check(
     reachedSnapshot.submenuDetails
-      .find((section) => section.title === "为什么这样建议")
+      .find((section) => section.title === "计算与数据")
       .rows.some((row) => row.label === "同截止点目标" && /已超红线 12\.5%/.test(row.secondaryValue)),
     "numeric target-overrun evidence should remain in Calculation & Data instead of the plain-language rationale",
   );
@@ -4240,7 +4247,7 @@ const ctx = {
     "a transient live timeout must preserve the actionable plan",
   );
   const fallbackFreshness = fallbackSnapshot.submenuDetails
-    .find((section) => section.title === "为什么这样建议")
+    .find((section) => section.title === "计算与数据")
     .rows.find(
     (row) => row.label === "数据新鲜度",
   );

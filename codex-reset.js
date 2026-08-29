@@ -4400,18 +4400,23 @@ defineProvider({
         ...(submenuAccountRows.length
           ? [{ title: "用量与目标", rows: submenuAccountRows }]
           : []),
-        ...(submenuForecastRows.length || whySummaryRows.length
+        ...(submenuCreditRows.length || submenuEventRows.length || resetVisualizations.length
+          ? [{ title: "重置", rows: resetRows, visualizations: resetVisualizations }]
+          : []),
+        ...(whySummaryRows.length
           ? [{
               title: "为什么这样建议",
+              rows: whySummaryRows,
+            }]
+          : []),
+        ...(whyCalculationRows.length || whyDataRows.length
+          ? [{
+              title: "计算与数据",
               rows: [
-                ...whySummaryRows,
                 ...whyCalculationRows,
                 ...whyDataRows,
               ],
             }]
-          : []),
-        ...(submenuCreditRows.length || submenuEventRows.length || resetVisualizations.length
-          ? [{ title: "重置", rows: resetRows, visualizations: resetVisualizations }]
           : []),
       ],
     };

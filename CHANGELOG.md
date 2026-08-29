@@ -5,6 +5,24 @@ versioning once the first public release is tagged.
 
 ## Unreleased
 
+- Put all first-level planner destinations directly in the root macOS menu
+  above Refresh, Settings, and Quit. The order is Suggested Mainlines, Usage &
+  Targets, Resets, Why This Plan, and Calculation & Data; the title card no
+  longer hides navigation behind a disclosure arrow.
+- Promote Calculation & Data out of Why This Plan so Results, Method, and Raw
+  Data require one less navigation level, while Why This Plan remains a concise
+  causal explanation.
+- Replace elapsed reset-credit lifetime progress with one shared remaining-time
+  axis. Every credit starts at Now and ends at its own expiry, so a later expiry
+  always has a longer visual line.
+- Remove the internal loopback URL from Settings and from release preferences.
+  The app and bundled monitor now share an application-owned endpoint; Settings
+  retains only refresh cadence, launch at login, and local mainline corrections.
+  A content fingerprint lets a newly installed app replace a stale bundled
+  monitor automatically instead of continuing to serve an older planner.
+- Capture the bilingual README gallery from the actually running macOS
+  menu-bar app with anonymous data and a desktop backdrop rather than from
+  standalone SwiftUI preview surfaces.
 - Promote Suggested Mainlines to the first-level menu without changing its
   5/3/1 selection or reversible correction actions. Rename the account view to
   Usage & Targets and retain per-account API-equivalent capacity, expected
@@ -12,7 +30,7 @@ versioning once the first public release is tagged.
 - Replace the mixed planning-details pile with one Calculation & Data entry
   divided into Results, Method, and Raw Data.
 - Replace verbose reset-credit rows with a native visual summary that keeps
-  every credit's account and individual expiry, shows lifetime progress,
+  every credit's account and individual expiry, shows remaining validity,
   strategy state, net-capacity and API-equivalent value, the high-value window,
   and deterministic free-reset/no-free-reset outcomes.
 - Let all home-card plan text wrap to its measured height instead of truncating

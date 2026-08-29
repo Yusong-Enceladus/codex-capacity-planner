@@ -266,13 +266,34 @@ import Testing
     #expect(DetailMenuLayout.childGroups("重置") == ["assets", "history", "official"])
     #expect(DetailMenuLayout.childGroups("Resets").contains("timeline") == false)
     #expect(DetailMenuLayout.summaryGroup("为什么这样建议") == "summary")
-    #expect(DetailMenuLayout.childGroups("为什么这样建议") == ["calculation"])
+    #expect(DetailMenuLayout.childGroups("为什么这样建议").isEmpty)
     #expect(DetailMenuLayout.childGroups("建议主线").isEmpty)
+    #expect(DetailMenuLayout.isCalculation("计算与数据"))
+    #expect(DetailMenuLayout.isCalculation("Calculation & Data"))
     #expect(DetailMenuLayout.calculationGroups == [
         "calculation-result",
         "calculation-basis",
         "calculation-raw",
     ])
+}
+
+@Test func `demo snapshot keeps the agreed root navigation order`() {
+    let snapshot = ResetDemoFixtures.primarySnapshot(.simplifiedChinese)
+    #expect(snapshot.submenuDetails.map(\.title) == [
+        "建议主线",
+        "用量与目标",
+        "重置",
+        "为什么这样建议",
+        "计算与数据",
+    ])
+    let why = snapshot.submenuDetails.first { $0.title == "为什么这样建议" }
+    let calculation = snapshot.submenuDetails.first { $0.title == "计算与数据" }
+    #expect(why?.rows.allSatisfy { $0.group == "summary" } == true)
+    #expect(Set(calculation?.rows.compactMap(\.group) ?? []) == Set([
+        "calculation-result",
+        "calculation-basis",
+        "calculation-raw",
+    ]))
 }
 
 @Test func `reset credits keep their own expiry and selected time zone`() throws {
@@ -311,8 +332,28 @@ import Testing
     #expect(firstChinese.contains("9月2日 16:00 UTC+8"))
     #expect(secondChinese.contains("9月6日 16:00 UTC+8"))
     #expect(firstEnglish.contains("Sep 2, 1:00 AM PT"))
-    let ratio = try #require(ResetCreditPresentation.lifetimeRatio(first, now: now))
-    #expect(abs(ratio - 1.0 / 3.0) < 0.001)
+    let scaleEnd = try #require(ResetCreditPresentation.latestExpiry(
+        in: [first, second],
+        now: now))
+    let firstPosition = try #require(ResetCreditPresentation.expiryPosition(
+        first,
+        now: now,
+        scaleEnd: scaleEnd))
+    let secondPosition = try #require(ResetCreditPresentation.expiryPosition(
+        second,
+        now: now,
+        scaleEnd: scaleEnd))
+    #expect(abs(firstPosition - 0.5) < 0.001)
+    #expect(abs(secondPosition - 1.0) < 0.001)
+    #expect(firstPosition < secondPosition)
+}
+
+@Test func `local monitor endpoint is application owned`() {
+    #expect(LocalMonitorEndpoint.host == "127.0.0.1")
+    #expect(LocalMonitorEndpoint.port == 18_765)
+    #expect(LocalMonitorEndpoint.runtimeURL.absoluteString == "http://127.0.0.1:18765/api/runtime")
+    #expect(LocalMonitorEndpoint.snapshotURL.absoluteString == "http://127.0.0.1:18765/api/snapshot")
+    #expect(LocalMonitorEndpoint.configURL.absoluteString == "http://127.0.0.1:18765/api/config")
 }
 
 @Test func `alternating display uses a stable ten second phase and coarse countdown`() {

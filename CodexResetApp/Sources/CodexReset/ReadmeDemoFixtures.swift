@@ -73,13 +73,14 @@ enum ResetDemoFixtures {
             submenuDetails: [
                 self.mainlineSection(language),
                 self.usageTargetSection(language),
-                self.whySection(language),
                 self.resetSection(
                     language,
                     now: now,
                     resetAt: resetAt,
                     candidateStart: possibleResetStart,
                     candidateEnd: possibleResetEnd),
+                self.whySection(language),
+                self.calculationSection(language),
             ])
     }
 
@@ -170,6 +171,20 @@ enum ResetDemoFixtures {
                     "Usage is below target, an unconfirmed possible-reset signal appeared, and the natural trend does not cover the target."),
                 secondaryValue: language.text("暗示只增加有上限的预留，不改写公开概率", "The hint adds only a bounded reserve and does not rewrite public probability"),
                 group: "summary"),
+            DetailRow(
+                label: language.text("所以", "Therefore"),
+                value: language.text(
+                    "继续三条可靠主线，先保留重置券。",
+                    "Continue three reliable mainlines and hold the reset credits."),
+                secondaryValue: language.text(
+                    "计算结果和原始输入已单独放在“计算与数据”中。",
+                    "Results and raw inputs are separated under Calculation & Data."),
+                group: "summary"),
+        ])
+    }
+
+    private static func calculationSection(_ language: ResetPresentationLanguage) -> DetailSection {
+        DetailSection(title: language.text("计算与数据", "Calculation & Data"), rows: [
             DetailRow(
                 label: language.text("自然使用预测", "Natural-usage forecast"),
                 value: language.text("24 小时后预计使用 54%–66%", "Expected usage in 24 hours: 54%–66%"),

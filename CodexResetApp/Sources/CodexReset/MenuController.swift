@@ -48,9 +48,6 @@ enum DetailMenuLayout {
     }
 
     static func childGroups(_ title: String) -> [String] {
-        if ["为什么这样建议", "Why This Plan"].contains(title) {
-            return ["calculation"]
-        }
         return self.isReset(title) ? ["assets", "history", "official"] : []
     }
 
@@ -123,7 +120,7 @@ final class MenuController: NSObject, NSMenuDelegate {
             let rawDelay = ProcessInfo.processInfo.environment["CODEX_RESET_ACTUAL_MENU_DELAY"]
             let delay = rawDelay.flatMap(Double.init) ?? 2
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.statusItem.button?.performClick(nil)
+                self?.showActualMenuForCapture()
             }
         }
     }
@@ -150,6 +147,12 @@ final class MenuController: NSObject, NSMenuDelegate {
     private func rebuildMenu() {
         self.menu.removeAllItems()
         self.menu.addItem(self.makeCardItem())
+        if let sections = self.store.snapshot?.submenuDetails, !sections.isEmpty {
+            self.menu.addItem(.separator())
+            for section in sections {
+                self.menu.addItem(self.makeDetailNavigationItem(section))
+            }
+        }
         self.menu.addItem(.separator())
         self.menu.addItem(self.nativeItem(
             self.presentationLanguage.text("刷新", "Refresh"),
@@ -173,12 +176,11 @@ final class MenuController: NSObject, NSMenuDelegate {
 
     private func makeCardItem() -> NSMenuItem {
         let highlight = MenuHighlightState()
-        let hasSubmenu = !(self.store.snapshot?.submenuDetails.isEmpty ?? true)
         let root = ResetMenuCard(
             store: self.store,
             highlight: highlight,
             width: Self.cardWidth,
-            hasSubmenu: hasSubmenu,
+            hasSubmenu: false,
             onRefresh: { [weak self] in Task { await self?.store.refresh() } })
             .environment(\.resetPresentationLanguage, self.presentationLanguage)
             .environment(\.locale, self.presentationLanguage.locale)
@@ -190,29 +192,25 @@ final class MenuController: NSObject, NSMenuDelegate {
         item.title = ""
         item.view = hosting
         item.isEnabled = true
-        item.submenu = self.makeDetailsSubmenu()
         item.target = self
         item.action = #selector(self.noOp)
         return item
     }
 
-    private func makeDetailsSubmenu() -> NSMenu? {
-        guard let sections = self.store.snapshot?.submenuDetails, !sections.isEmpty else { return nil }
-        let submenu = NSMenu()
-        submenu.autoenablesItems = false
-        submenu.minimumWidth = Self.detailsWidth
-        for section in sections {
-            let item = NSMenuItem(title: section.title, action: nil, keyEquivalent: "")
-            item.image = NSImage(
-                systemSymbolName: Self.symbolName(for: section.title),
-                accessibilityDescription: nil)
-            item.submenu = DetailMenuLayout.isMainlines(section.title)
-                ? self.makeDetailLeafSubmenu(section)
-                : self.makeDetailSectionSubmenu(section)
-            item.isEnabled = true
-            submenu.addItem(item)
+    private func makeDetailNavigationItem(_ section: DetailSection) -> NSMenuItem {
+        let item = NSMenuItem(title: section.title, action: nil, keyEquivalent: "")
+        item.image = NSImage(
+            systemSymbolName: Self.symbolName(for: section.title),
+            accessibilityDescription: nil)
+        if DetailMenuLayout.isMainlines(section.title) {
+            item.submenu = self.makeDetailLeafSubmenu(section)
+        } else if DetailMenuLayout.isCalculation(section.title) {
+            item.submenu = self.makeCalculationSubmenu(section)
+        } else {
+            item.submenu = self.makeDetailSectionSubmenu(section)
         }
-        return submenu
+        item.isEnabled = true
+        return item
     }
 
     private func makeDetailSectionSubmenu(_ section: DetailSection) -> NSMenu {
@@ -433,6 +431,7 @@ final class MenuController: NSObject, NSMenuDelegate {
         case "用量与目标", "Usage & Targets", "账户", "Accounts": "scope"
         case "为什么这样建议", "Why This Plan": "chart.line.uptrend.xyaxis"
         case "重置", "Resets": "clock.arrow.circlepath"
+        case "计算与数据", "Calculation & Data": "function"
         default: "list.bullet.rectangle"
         }
     }
@@ -452,6 +451,18 @@ final class MenuController: NSObject, NSMenuDelegate {
     }
 
     @objc private func noOp() {}
+
+    private func showActualMenuForCapture() {
+        guard let button = self.statusItem.button else { return }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        button.highlight(true)
+        self.menu.popUp(
+            positioning: nil,
+            at: NSPoint(x: button.bounds.minX, y: button.bounds.minY - 3),
+            in: button)
+        button.highlight(false)
+    }
+
     @objc private func quit() {
         NSApplication.shared.terminate(nil)
     }
@@ -461,9 +472,15 @@ final class MenuController: NSObject, NSMenuDelegate {
             settingsWindow.makeKeyAndOrderFront(nil)
         } else {
             let controller = NSHostingController(
-                rootView: SettingsView(store: self.store).frame(width: 420).padding(24))
+                rootView: SettingsView(
+                    store: self.store,
+                    presentationLanguage: self.presentationLanguage)
+                    .frame(width: 420)
+                    .padding(24))
             let window = NSWindow(contentViewController: controller)
-            window.title = "Codex Capacity Planner 设置"
+            window.title = self.presentationLanguage.text(
+                "Codex Capacity Planner 设置",
+                "Codex Capacity Planner Settings")
             window.styleMask = [.titled, .closable]
             window.center()
             window.makeKeyAndOrderFront(nil)

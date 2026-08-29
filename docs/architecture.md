@@ -131,14 +131,18 @@ remaining capacity is described as room for new valuable work.
 ## Presentation contract
 
 The plan explanation begins with causal prose about cycle state, natural-use
-trend, and any real reset signal. Suggested Mainlines is a first-level entry so
-its reversible corrections stay on the primary interaction path. Usage &
-Targets is also first-level; each account row carries its own current usage,
+trend, and any real reset signal. The root macOS menu keeps Suggested
+Mainlines, Usage & Targets, Resets, Why This Plan, and Calculation & Data in
+that order immediately above Refresh, Settings, and Quit; the title card is a
+summary rather than a navigation gateway. Suggested Mainlines stays on this
+primary interaction path so its reversible corrections remain low-cost. Each
+Usage & Targets account row carries its own current usage,
 target, optional natural forecast range, API-equivalent capacity, expected
 reset loss, and sampling provenance. Account forecasts are never shared.
 Percentages, probabilities, model outputs, formulas, and diagnostics that do
-not belong to an account row live under one Calculation & Data entry, divided
-into Results, Method, and Raw Data. An unresolved explicit
+not belong to an account row live under the independent first-level
+Calculation & Data entry, divided into Results, Method, and Raw Data. Why This
+Plan therefore contains causal prose only. An unresolved explicit
 announcement, commitment, or candidate hint is the primary reset state ahead
 of natural refresh. Its concise source summary appears with the state, while
 the full source and resolved local outcome remain in official updates and
@@ -165,10 +169,23 @@ Available reset credits remain a second-level reset view, but are exposed as
 structured presentation data rather than repeated prose rows. Every credit is
 kept as an individual item with an owning account, grant time, and its own
 expiry; account-level totals may not replace later expiries with the earliest
-one. The native view combines an expiry-lifetime track, a strategy state, net
-capacity and API-equivalent value, a high-value window, and explicit
+one. The native view combines a shared-axis remaining-validity timeline, a
+strategy state, net capacity and API-equivalent value, a high-value window, and explicit
 free-reset/no-free-reset outcomes. Internal credit identifiers are never part
-of the presentation payload.
+of the presentation payload. The shared axis starts at the current time and
+ends at the latest visible expiry; each credit ends at its own expiry position,
+so more remaining time can never produce a shorter visual mark. Grant time is
+retained as data but is not misrepresented as task completion progress.
+
+The native app owns its loopback host and port as one internal endpoint shared
+by the monitor supervisor and snapshot client. Release settings never expose or
+persist that endpoint. The supervisor fingerprints the bundled monitor and
+planner sources, reuses an identical runtime, and gracefully replaces only a
+stale process whose command path identifies it as this app's bundled monitor;
+an unrelated listener is never terminated. Settings contain only user choices—automatic refresh,
+launch at login, and reversible mainline corrections. Semantic data colors are
+kept consistent and adapt to system appearance; arbitrary per-color editing is
+not a user preference.
 
 ## Real capacity and account scheduling
 
