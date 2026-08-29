@@ -35,10 +35,48 @@ struct DecisionProgress: Codable, Equatable, Sendable {
 struct DetailSection: Codable, Equatable, Identifiable, Sendable {
     let title: String
     let rows: [DetailRow]
+    let visualizations: [DetailVisualization]?
 
     var id: String {
         self.title
     }
+
+    init(
+        title: String,
+        rows: [DetailRow],
+        visualizations: [DetailVisualization]? = nil)
+    {
+        self.title = title
+        self.rows = rows
+        self.visualizations = visualizations
+    }
+}
+
+/// Structured presentation data keeps temporal and lifecycle semantics out of
+/// display strings. The desktop client owns symbols, line styles, and colors.
+struct DetailVisualization: Codable, Equatable, Identifiable, Sendable {
+    let kind: String
+    let group: String?
+    let title: String
+    let items: [DetailTimelineItem]
+
+    var id: String {
+        let group = self.group ?? "all"
+        return "\(group)\u{1f}\(self.kind)\u{1f}\(self.title)"
+    }
+}
+
+struct DetailTimelineItem: Codable, Equatable, Identifiable, Sendable {
+    let id: String
+    let kind: String
+    let state: String
+    let title: String
+    let detail: String?
+    let badge: String
+    let at: String?
+    let endAt: String?
+    let publishedAt: String?
+    let link: DetailLink?
 }
 
 struct DetailRow: Codable, Equatable, Identifiable, Sendable {

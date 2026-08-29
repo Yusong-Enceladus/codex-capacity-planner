@@ -132,6 +132,16 @@ of natural refresh. Its concise source summary appears with the state, while
 the full source and resolved local outcome remain in official updates and
 reset history respectively.
 
+Temporal reset state is also exposed as structured timeline data. Position on
+the axis carries time and order; an interval plus a dashed connector and hollow
+node carries inference; familiar symbols, fill state, and visible text badges
+carry lifecycle. Color is only a redundant semantic accent, never the sole
+distinction, and red remains reserved for actual errors or urgent failures.
+Natural refreshes, unresolved public signals, reset-credit events, and locally
+confirmed refreshes share the same axis around an explicit “now” marker. Full
+source text, links, evidence, and exact timestamps remain available through
+progressive disclosure, so the visualization never replaces facts.
+
 ## Real capacity and account scheduling
 
 Plan labels and raw percentages are not comparable capacity units. Each known

@@ -4,8 +4,9 @@ import Foundation
 /// The screenshots still run through the production menu and submenu code.
 enum ResetDemoFixtures {
     static func primarySnapshot(_ language: ResetPresentationLanguage) -> ResetSnapshot {
-        let resetAt = Date().addingTimeInterval(4 * 86_400 + 18 * 3_600)
-        let updatedAt = ISO8601DateFormatter().string(from: Date())
+        let now = Date()
+        let resetAt = now.addingTimeInterval(4 * 86_400 + 18 * 3_600)
+        let updatedAt = ISO8601DateFormatter().string(from: now)
         let exactReset = self.dateText(resetAt, language: language)
         return ResetSnapshot(
             updatedAt: updatedAt,
@@ -59,14 +60,16 @@ enum ResetDemoFixtures {
                             secondaryValue: language.text("你已明确标为主线", "Explicitly marked as a mainline")),
                         DetailRow(
                             label: language.text("重置", "Reset"),
-                            value: language.text("下次自然刷新 · 4 天 18 小时后", "Next natural reset · in 4 days 18 hr"),
-                            alternateValue: language.text("下次自然刷新 · \(exactReset)", "Next natural reset · \(exactReset)")),
+                            value: language.text("候选暗示 · 推测窗口至明天", "Candidate hint · inferred window through tomorrow"),
+                            secondaryValue: language.text(
+                                "只是有上下文的推测；公开概率不变，计划仅增加有上限的预留",
+                                "Contextual inference only; public probability is unchanged and plan reserve is bounded")),
                     ])
             ],
             submenuDetails: [
                 self.accountSection(language),
                 self.whySection(language),
-                self.resetSection(language, exactReset: exactReset),
+                self.resetSection(language, now: now, resetAt: resetAt, exactReset: exactReset),
             ])
     }
 
@@ -93,9 +96,11 @@ enum ResetDemoFixtures {
     private static func whySection(_ language: ResetPresentationLanguage) -> DetailSection {
         DetailSection(title: language.text("为什么这样建议", "Why This Plan"), rows: [
             DetailRow(
-                label: language.text("结论", "Summary"),
-                value: language.text("继续可靠主线", "Continue reliable mainlines"),
-                secondaryValue: language.text("当前无需切换账号或使用重置券", "No account switch or reset credit is needed"),
+                label: language.text("为什么", "Why"),
+                value: language.text(
+                    "当前还没达到目标，又出现了尚未证实的重置暗示；自然趋势也不足以覆盖目标。",
+                    "Usage is below target, an unconfirmed reset hint appeared, and the natural trend does not cover the target."),
+                secondaryValue: language.text("暗示只增加有上限的预留，不改写公开概率", "The hint adds only a bounded reserve and does not rewrite public probability"),
                 group: "summary"),
             DetailRow(
                 label: language.text("当前", "Current"),
@@ -119,32 +124,85 @@ enum ResetDemoFixtures {
 
     private static func resetSection(
         _ language: ResetPresentationLanguage,
+        now: Date,
+        resetAt: Date,
         exactReset: String) -> DetailSection
     {
-        DetailSection(title: language.text("重置", "Resets"), rows: [
-            DetailRow(
-                label: language.text("下次自然刷新", "Next natural reset"),
-                value: language.text("4 天 18 小时后", "in 4 days 18 hr"),
-                secondaryValue: exactReset,
-                group: "current"),
-            DetailRow(
-                label: language.text("当前账户", "Current account"),
-                value: language.text("1 次可用", "1 available"),
-                secondaryValue: language.text("暂时保留", "Keep for now"),
-                group: "assets"),
-            DetailRow(
-                label: language.text("最近一次刷新", "Latest reset"),
-                value: language.text("套餐升级刷新 · Free → Pro", "Plan upgrade reset · Free → Pro"),
-                secondaryValue: language.text("已确认到账", "Confirmed delivered"),
-                group: "history"),
-            DetailRow(
-                label: language.text("官方重置", "Official reset"),
-                value: language.text("当前没有明确公告", "No confirmed announcement"),
-                secondaryValue: language.text(
-                    "有明确时间后会纳入同一份使用计划",
-                    "A confirmed time will be included in the same usage plan"),
-                group: "official"),
-        ])
+        let formatter = ISO8601DateFormatter()
+        let candidateStart = now.addingTimeInterval(2 * 3_600)
+        let candidateEnd = now.addingTimeInterval(22 * 3_600)
+        let candidatePublished = now.addingTimeInterval(-3 * 3_600)
+        let previousReset = now.addingTimeInterval(-3 * 86_400)
+        return DetailSection(
+            title: language.text("重置", "Resets"),
+            rows: [
+                DetailRow(
+                    label: language.text("候选暗示", "Candidate hint"),
+                    value: language.text("推测观察窗至明天", "Inferred observation window through tomorrow"),
+                    secondaryValue: language.text("并非官方截止时间", "Not an official deadline"),
+                    group: "current"),
+                DetailRow(
+                    label: language.text("下次自然刷新", "Next natural reset"),
+                    value: language.text("4 天 18 小时后", "in 4 days 18 hr"),
+                    secondaryValue: exactReset,
+                    group: "current"),
+                DetailRow(
+                    label: language.text("当前账户", "Current account"),
+                    value: language.text("1 次可用", "1 available"),
+                    secondaryValue: language.text("暂时保留", "Keep for now"),
+                    group: "assets"),
+                DetailRow(
+                    label: language.text("最近一次刷新", "Latest reset"),
+                    value: language.text("套餐升级刷新 · Free → Pro", "Plan upgrade reset · Free → Pro"),
+                    secondaryValue: language.text("已确认到账", "Confirmed delivered"),
+                    group: "history"),
+                DetailRow(
+                    label: language.text("候选暗示原文", "Candidate source"),
+                    value: language.text("很快会有合适的刷新时机，但不是今天。", "There may be a suitable time for resets soon, but not today."),
+                    secondaryValue: language.text("完整原文与来源单独保留", "The full source remains available separately"),
+                    group: "official"),
+            ],
+            visualizations: [
+                DetailVisualization(
+                    kind: "timeline",
+                    group: "timeline",
+                    title: language.text("刷新时间轴", "Reset Timeline"),
+                    items: [
+                        DetailTimelineItem(
+                            id: "demo-candidate",
+                            kind: "candidate",
+                            state: "inferred",
+                            title: language.text("候选重置暗示", "Candidate reset hint"),
+                            detail: language.text("根据原文和上下文推测观察窗，并非公告", "Observation window inferred from context; this is not an announcement"),
+                            badge: language.text("推测", "Inferred"),
+                            at: formatter.string(from: candidateStart),
+                            endAt: formatter.string(from: candidateEnd),
+                            publishedAt: formatter.string(from: candidatePublished),
+                            link: nil),
+                        DetailTimelineItem(
+                            id: "demo-natural",
+                            kind: "natural",
+                            state: "scheduled",
+                            title: language.text("下次自然刷新", "Next natural reset"),
+                            detail: language.text("当前账号的周冷却边界", "Current account weekly cooldown boundary"),
+                            badge: language.text("计划", "Scheduled"),
+                            at: formatter.string(from: resetAt),
+                            endAt: nil,
+                            publishedAt: nil,
+                            link: nil),
+                        DetailTimelineItem(
+                            id: "demo-upgrade",
+                            kind: "upgrade",
+                            state: "confirmed",
+                            title: language.text("套餐升级刷新", "Plan upgrade reset"),
+                            detail: language.text("Free → Pro · 本机额度与窗口已经重建", "Free → Pro · Local quota and window were rebuilt"),
+                            badge: language.text("已确认", "Confirmed"),
+                            at: formatter.string(from: previousReset),
+                            endAt: nil,
+                            publishedAt: nil,
+                            link: nil),
+                    ]),
+            ])
     }
 
     private static func dateText(

@@ -21,6 +21,19 @@ data when the service is unavailable.
   "updated_at": "2026-08-12T08:58:00Z",
   "last_reset_at": "2026-08-11T00:27:44Z",
   "time_window": { "start_hour": 7, "end_hour": 10, "timezone": "Asia/Singapore" },
+  "teased_window": {
+    "tweet_id": "2000000000000000000",
+    "summary": "Synthetic contextual hint",
+    "url": "https://example.invalid/status/2000000000000000000",
+    "at": "2026-08-12T04:07:10Z",
+    "window": {
+      "label": "end of Saturday",
+      "start_at": "2026-08-15T07:00:00Z",
+      "end_at": "2026-08-16T06:59:59Z",
+      "time_zone": "America/Los_Angeles"
+    },
+    "score": { "band": "tease", "value": 50, "modifiers": [] }
+  },
   "official_signal": null
 }
 ```
@@ -33,6 +46,16 @@ probability. The reference client reserves 10% of the quota that would remain
 after the ordinary forecast adjustment and schedules that bounded amount
 earlier. It exposes this as a separate candidate reserve, never as forecast
 probability, and a candidate alone cannot drive a non-terminal target to 100%.
+
+`teased_window` is a structured, contextual inference, not an official
+announcement. Clients accept it only when the post ID and canonical source URL
+agree, the evidence band is a supported tease/candidate band, and both ends of
+the inferred window are valid. `score.value` is evidence strength used to
+qualify and explain the candidate; it is never a reset probability and must not
+replace `rounded_24h` or `rounded_48h`. The window keeps `inferred` provenance,
+is displayed as an observation interval rather than an official deadline, and
+expires when its end passes. A later explicit event with the same or a newer
+public ID takes precedence through the normal signal lifecycle.
 
 ## Feed
 

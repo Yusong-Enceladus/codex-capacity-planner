@@ -38,6 +38,63 @@ import Testing
     #expect(value.mainlineCorrections?.first?.targetId == "opaque-mainline")
 }
 
+@Test func `decodes timeline semantics independently from display color`() throws {
+    let data = Data(#"""
+    {
+      "updatedAt":"2026-08-29T08:30:00Z",
+      "dataConfidence":"estimated",
+      "decisionProgress":null,
+      "details":[],
+      "submenuDetails":[{
+        "title":"重置",
+        "rows":[],
+        "visualizations":[{
+          "kind":"timeline",
+          "group":"timeline",
+          "title":"刷新时间轴",
+          "items":[
+            {
+              "id":"candidate-1",
+              "kind":"candidate",
+              "state":"inferred",
+              "title":"候选重置暗示",
+              "detail":"推测观察窗，不是官方截止时间",
+              "badge":"推测",
+              "at":"2026-08-29T07:00:00Z",
+              "endAt":"2026-08-30T06:59:59Z",
+              "publishedAt":"2026-08-29T04:07:10Z",
+              "link":{"label":"打开原帖","url":"https://example.invalid/status/2000000000000000000"}
+            },
+            {
+              "id":"natural-1",
+              "kind":"natural",
+              "state":"scheduled",
+              "title":"下次自然刷新",
+              "detail":null,
+              "badge":"计划",
+              "at":"2026-09-01T09:00:00Z",
+              "endAt":null,
+              "publishedAt":null,
+              "link":null
+            }
+          ]
+        }]
+      }]
+    }
+    """#.utf8)
+
+    let value = try JSONDecoder().decode(ResetSnapshot.self, from: data)
+    let timeline = try #require(value.submenuDetails.first?.visualizations?.first)
+    #expect(timeline.kind == "timeline")
+    #expect(timeline.group == "timeline")
+    #expect(timeline.items.first?.kind == "candidate")
+    #expect(timeline.items.first?.state == "inferred")
+    #expect(timeline.items.first?.badge == "推测")
+    #expect(timeline.items.first?.endAt == "2026-08-30T06:59:59Z")
+    #expect(timeline.items.first?.link?.url == "https://example.invalid/status/2000000000000000000")
+    #expect(timeline.items.last?.state == "scheduled")
+}
+
 @Test func `alternating display uses a stable ten second phase and coarse countdown`() {
     let even = Date(timeIntervalSince1970: 100)
     let odd = Date(timeIntervalSince1970: 110)

@@ -311,6 +311,227 @@ private struct ResetDecisionContent: View {
     }
 }
 
+private struct ResetTimelineConnector: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        return path
+    }
+}
+
+private struct ResetEventTimeline: View {
+    @Environment(\.resetPresentationLanguage) private var presentationLanguage
+    let visualization: DetailVisualization
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let upcoming = self.upcomingItems(at: context.date)
+            let past = self.pastItems(at: context.date)
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(upcoming.enumerated()), id: \.element.id) { index, item in
+                    self.eventRow(item, connectsBelow: index < upcoming.count - 1 || !past.isEmpty)
+                }
+                self.nowDivider
+                    .padding(.vertical, 3)
+                ForEach(Array(past.enumerated()), id: \.element.id) { index, item in
+                    self.eventRow(item, connectsBelow: index < past.count - 1)
+                }
+            }
+        }
+    }
+
+    private var nowDivider: some View {
+        HStack(spacing: 8) {
+            ZStack {
+                Circle().fill(Color.secondary.opacity(0.14))
+                Image(systemName: "clock")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 22, height: 22)
+            Text(self.presentationLanguage.text("现在", "Now"))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Rectangle()
+                .fill(Color.secondary.opacity(0.22))
+                .frame(height: 1)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(self.presentationLanguage.text("现在", "Now"))
+    }
+
+    private func eventRow(
+        _ item: DetailTimelineItem,
+        connectsBelow: Bool) -> some View
+    {
+        let tint = self.tint(for: item)
+        return HStack(alignment: .top, spacing: 8) {
+            VStack(spacing: 2) {
+                self.node(for: item, tint: tint)
+                if connectsBelow {
+                    ResetTimelineConnector()
+                        .stroke(
+                            Color.secondary.opacity(0.34),
+                            style: StrokeStyle(
+                                lineWidth: 1,
+                                lineCap: .round,
+                                dash: item.state == "inferred" ? [3, 3] : []))
+                        .frame(width: 1)
+                        .frame(minHeight: 30)
+                }
+            }
+            .frame(width: 22)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(item.title)
+                        .font(.caption.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(item.badge)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(tint)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(tint.opacity(0.12), in: Capsule())
+                    Spacer(minLength: 0)
+                    if item.link != nil {
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                if let timeText = self.timeText(for: item) {
+                    Text(timeText)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                if let detail = item.detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let publishedText = self.publishedText(for: item) {
+                    Text(publishedText)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.bottom, connectsBelow ? 3 : 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(self.accessibilityText(for: item))
+    }
+
+    private func node(for item: DetailTimelineItem, tint: Color) -> some View {
+        let filled = ["pending", "confirmed"].contains(item.state)
+        return ZStack {
+            Circle()
+                .fill(filled ? tint.opacity(0.16) : Color.clear)
+            Circle()
+                .stroke(
+                    tint.opacity(0.9),
+                    style: StrokeStyle(
+                        lineWidth: 1.2,
+                        dash: item.state == "inferred" ? [2.5, 2.5] : []))
+            Image(systemName: self.symbolName(for: item))
+                .font(.system(size: 9, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tint)
+        }
+        .frame(width: 22, height: 22)
+    }
+
+    private func symbolName(for item: DetailTimelineItem) -> String {
+        switch item.kind {
+        case "candidate": "quote.bubble"
+        case "announcement": "megaphone.fill"
+        case "commitment": "calendar.badge.clock"
+        case "natural": "calendar.badge.clock"
+        case "upgrade": "arrow.up"
+        case "credit": "ticket.fill"
+        default: item.state == "confirmed" ? "checkmark" : "arrow.clockwise"
+        }
+    }
+
+    private func tint(for item: DetailTimelineItem) -> Color {
+        switch item.state {
+        case "confirmed": .green
+        case "pending": .accentColor
+        default: .secondary
+        }
+    }
+
+    private func upcomingItems(at now: Date) -> [DetailTimelineItem] {
+        self.visualization.items
+            .filter { item in
+                guard let boundary = self.date(item.endAt) ?? self.date(item.at) else { return true }
+                return boundary >= now
+            }
+            .sorted { left, right in
+                let leftDate = self.date(left.at) ?? .distantPast
+                let rightDate = self.date(right.at) ?? .distantPast
+                let leftActive = leftDate <= now && (self.date(left.endAt) ?? leftDate) >= now
+                let rightActive = rightDate <= now && (self.date(right.endAt) ?? rightDate) >= now
+                if leftActive != rightActive { return leftActive }
+                return leftDate < rightDate
+            }
+    }
+
+    private func pastItems(at now: Date) -> [DetailTimelineItem] {
+        self.visualization.items
+            .filter { item in
+                guard let boundary = self.date(item.endAt) ?? self.date(item.at) else { return false }
+                return boundary < now
+            }
+            .sorted {
+                (self.date($0.at) ?? .distantPast) > (self.date($1.at) ?? .distantPast)
+            }
+    }
+
+    private func date(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        return AlternatingDisplay.date(from: value)
+    }
+
+    private func timeText(for item: DetailTimelineItem) -> String? {
+        guard let start = self.date(item.at) else { return nil }
+        let startText = self.format(start)
+        if let end = self.date(item.endAt), abs(end.timeIntervalSince(start)) > 60 {
+            return "\(startText)–\(self.format(end)) UTC+8"
+        }
+        return "\(startText) UTC+8"
+    }
+
+    private func publishedText(for item: DetailTimelineItem) -> String? {
+        guard
+            let published = self.date(item.publishedAt),
+            item.kind == "candidate" || item.kind == "announcement" || item.kind == "commitment"
+        else { return nil }
+        return self.presentationLanguage.text(
+            "发布于 \(self.format(published)) UTC+8",
+            "Published \(self.format(published)) UTC+8")
+    }
+
+    private func format(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = self.presentationLanguage.locale
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = self.presentationLanguage == .english ? "MMM d HH:mm" : "MM-dd HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private func accessibilityText(for item: DetailTimelineItem) -> String {
+        [item.badge, item.title, self.timeText(for: item), item.detail]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: "，")
+    }
+}
+
 struct ResetDetailsView: View {
     let sections: [DetailSection]
     let width: CGFloat
@@ -324,6 +545,16 @@ struct ResetDetailsView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .textCase(.uppercase)
+                    if let visualizations = section.visualizations {
+                        ForEach(visualizations) { visualization in
+                            if visualization.kind == "timeline" {
+                                ResetEventTimeline(visualization: visualization)
+                            }
+                        }
+                        if !visualizations.isEmpty, !section.rows.isEmpty {
+                            Divider().opacity(0.55)
+                        }
+                    }
                     ForEach(Array(section.rows.enumerated()), id: \.element.id) { rowIndex, row in
                         if rowIndex > 0 { Divider().opacity(0.55) }
                         VStack(alignment: .leading, spacing: 3) {

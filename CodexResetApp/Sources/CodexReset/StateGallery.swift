@@ -103,6 +103,9 @@ private struct ResetGalleryScenario: Identifiable {
             title: section.title,
             rows: section.rows.filter { row in
                 self.visibleGroups.isEmpty || self.visibleGroups.contains(row.group ?? "all")
+            },
+            visualizations: section.visualizations?.filter { visualization in
+                self.visibleGroups.isEmpty || self.visibleGroups.contains(visualization.group ?? "all")
             })
     }
 }
@@ -181,7 +184,8 @@ private enum ResetGalleryFixtures {
         extraMain: [DetailRow],
         progress: DecisionProgress?,
         why: [DetailRow],
-        reset: [DetailRow]) -> ResetSnapshot
+        reset: [DetailRow],
+        resetVisualizations: [DetailVisualization]? = nil) -> ResetSnapshot
     {
         ResetSnapshot(
             updatedAt: "2026-08-22T17:00:00Z",
@@ -198,7 +202,10 @@ private enum ResetGalleryFixtures {
             submenuDetails: [
                 DetailSection(title: "账户", rows: [self.row(self.account, "当前登录 · 已用 51.0%")]),
                 DetailSection(title: "为什么这样建议", rows: why),
-                DetailSection(title: "重置", rows: reset),
+                DetailSection(
+                    title: "重置",
+                    rows: reset,
+                    visualizations: resetVisualizations),
             ])
     }
 
@@ -538,6 +545,7 @@ private enum ResetGalleryFixtures {
 
     static var historyScenarios: [ResetGalleryScenario] {
         [
+            self.candidateTimelineScenario,
             self.historyScenario("natural", title: "自然刷新", value: "自然刷新 · 08-22 10:48 UTC+8", note: "刷新发生在上一周期自然到期窗口"),
             self.historyScenario(
                 "upgrade",
@@ -566,6 +574,76 @@ private enum ResetGalleryFixtures {
                     reset: [self.row("下次自然刷新", self.natural, group: "current")]),
                 detail: "为什么这样建议", groups: ["summary"]),
         ]
+    }
+
+    private static var candidateTimelineScenario: ResetGalleryScenario {
+        self.scenario(
+            "candidate-timeline",
+            "候选暗示时间轴",
+            phase: "推测 · 非公告",
+            explanation: "位置表达时间；空心节点和虚线表达推测；图标与文字徽标独立表达状态。",
+            tint: .secondary,
+            snapshot: self.snapshot(
+                action: "继续可靠主线",
+                actionSecondary: "当前未达目标；候选暗示仅增加有上限的使用预留",
+                extraMain: [
+                    self.row("重置", "候选暗示 · 推测观察窗至明天", "并非官方截止时间"),
+                ],
+                progress: self.progress(current: 42, target: 68, lower: 54, median: 60, upper: 66),
+                why: self.whyRows(
+                    current: "当前还没有达到目标",
+                    forecast: "自然趋势可能仍低于目标",
+                    conclusion: "继续可靠主线",
+                    explanation: "暗示不改公开概率，只增加有上限的预留"),
+                reset: [
+                    self.row("候选暗示", "推测观察窗至明天", "不是官方截止时间", group: "current"),
+                    self.row("下次自然刷新", "09-02 10:48 UTC+8", group: "current"),
+                    self.row("最近一次刷新", "强制刷新 · 08-28 00:35 UTC+8", "本机已经确认到账", group: "history"),
+                    self.row("候选暗示原文", "Synthetic contextual hint: soon, but not today", "完整来源单独保留", group: "official"),
+                ],
+                resetVisualizations: [
+                    DetailVisualization(
+                        kind: "timeline",
+                        group: "timeline",
+                        title: "刷新时间轴",
+                        items: [
+                            DetailTimelineItem(
+                                id: "gallery-candidate",
+                                kind: "candidate",
+                                state: "inferred",
+                                title: "候选重置暗示",
+                                detail: "推测观察窗；不是官方承诺，也不会改写概率",
+                                badge: "推测",
+                                at: "2026-08-29T09:00:00Z",
+                                endAt: "2026-08-30T06:59:59Z",
+                                publishedAt: "2026-08-29T04:07:10Z",
+                                link: nil),
+                            DetailTimelineItem(
+                                id: "gallery-natural",
+                                kind: "natural",
+                                state: "scheduled",
+                                title: "下次自然刷新",
+                                detail: "当前账号的周冷却边界",
+                                badge: "计划",
+                                at: "2026-09-02T02:48:00Z",
+                                endAt: nil,
+                                publishedAt: nil,
+                                link: nil),
+                            DetailTimelineItem(
+                                id: "gallery-confirmed",
+                                kind: "reset",
+                                state: "confirmed",
+                                title: "强制刷新",
+                                detail: "本机额度和刷新窗口已经重建",
+                                badge: "已确认",
+                                at: "2026-08-27T16:35:05Z",
+                                endAt: nil,
+                                publishedAt: nil,
+                                link: nil),
+                        ]),
+                ]),
+            detail: "重置",
+            groups: ["timeline"])
     }
 
     private static func historyScenario(

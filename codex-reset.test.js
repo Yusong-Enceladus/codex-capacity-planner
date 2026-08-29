@@ -768,6 +768,100 @@ const corpusCandidate = pickSignal(
 equal(corpusCandidate.level, "hint");
 equal(corpusCandidate.id, rawTopLevelCandidate.id);
 equal(corpusCandidate.localizedSummary, "", "an unverified reversed translation must be omitted");
+equal(
+  pickSignal(
+    forecastFixture("2026-08-27T06:30:00Z"),
+    { tweets: [rawRetrospectiveReply] },
+    null,
+    Date.parse("2026-08-27T07:00:00Z"),
+  ).level,
+  "none",
+  "a raw reply must still fail closed when no structured contextual interpretation exists",
+);
+
+const structuredTeaseForecast = {
+  ...forecastFixture("2026-08-29T08:20:00Z"),
+  probabilities: {
+    rounded_24h: 25,
+    rounded_48h: 45,
+    commitment_floor_percent: null,
+    signal_percent: 50,
+  },
+  last_reset_at: "2026-08-27T16:35:05Z",
+  teased_window: {
+    tweet_id: "2093551005711679001",
+    summary: "Synthetic contextual reset hint, soon but not today",
+    url: "https://x.com/thsottiaux/status/2093551005711679001",
+    at: "2026-08-29T04:07:10.000Z",
+    window: {
+      label: "end of Saturday",
+      start_at: "2026-08-29T07:00:00.000Z",
+      end_at: "2026-08-30T06:59:59.999Z",
+      time_zone: "America/Los_Angeles",
+    },
+    score: {
+      band: "tease",
+      value: 50,
+      modifiers: [{ code: "reply", value: -5 }, { code: "corroborated", value: 5 }],
+    },
+  },
+};
+const structuredTease = pickSignal(
+  structuredTeaseForecast,
+  null,
+  null,
+  Date.parse("2026-08-29T08:30:00Z"),
+);
+equal(structuredTease.level, "hint");
+equal(structuredTease.id, structuredTeaseForecast.teased_window.tweet_id);
+equal(structuredTease.windowProvenance, "inferred");
+equal(structuredTease.signalScore, 50, "tease score should remain evidence strength");
+equal(structuredTease.signalBand, "tease");
+equal(structuredTease.windowStartMs, Date.parse("2026-08-29T07:00:00.000Z"));
+equal(structuredTease.windowEndMs, Date.parse("2026-08-30T06:59:59.999Z"));
+const structuredTeaseDecision = decision({
+  p24: 25,
+  p48: 45,
+  signal: structuredTease,
+});
+const sameProbabilityDecision = decision({ p24: 25, p48: 45 });
+close(structuredTeaseDecision.probability, sameProbabilityDecision.probability);
+check(
+  structuredTeaseDecision.targetUsed > sameProbabilityDecision.targetUsed,
+  "a structured tease must add bounded plan pressure without rewriting probability",
+);
+check(structuredTeaseDecision.targetUsed < 100);
+equal(
+  pickSignal(
+    structuredTeaseForecast,
+    null,
+    null,
+    Date.parse("2026-08-30T07:00:00Z"),
+  ).level,
+  "none",
+  "an inferred tease must expire at the end of its structured observation window",
+);
+const explicitAfterTease = {
+  ...tiboEvent,
+  id: "2093551005711679002",
+  announced_at: "2026-08-29T08:10:00.000Z",
+  url: "https://x.com/thsottiaux/status/2093551005711679002",
+  official_window: {
+    label: "within an hour",
+    start_at: "2026-08-29T08:10:00.000Z",
+    end_at: "2026-08-29T09:10:00.000Z",
+  },
+};
+equal(
+  pickSignal(
+    structuredTeaseForecast,
+    { events: [explicitAfterTease] },
+    null,
+    Date.parse("2026-08-29T08:30:00Z"),
+  ).id,
+  explicitAfterTease.id,
+  "a later explicit announcement must take precedence over the structured tease",
+);
 
 const model = build(usagePayload, forecastFixture(), null, now, null);
 check(model.decision, "fresh exact inputs should produce a decision");
@@ -3797,6 +3891,111 @@ const ctx = {
   check(
     historySection.rows.some((row) => row.label === "最近一次刷新"),
     "the unified reset center must default to the latest classified refresh",
+  );
+
+  const providerTeaseForecast = {
+    ...forecastFixture("2026-08-12T08:58:00Z"),
+    probabilities: {
+      rounded_24h: 30,
+      rounded_48h: 50,
+      commitment_floor_percent: null,
+      signal_percent: 50,
+    },
+    teased_window: {
+      tweet_id: "2093551005711679011",
+      summary: "Synthetic contextual hint: soon, but not today",
+      url: "https://x.com/thsottiaux/status/2093551005711679011",
+      at: "2026-08-12T08:10:00.000Z",
+      window: {
+        label: "end of the next day",
+        start_at: "2026-08-12T09:30:00.000Z",
+        end_at: "2026-08-13T08:59:59.999Z",
+        time_zone: "UTC",
+      },
+      score: { band: "tease", value: 50, modifiers: [] },
+    },
+  };
+  const teaserReceiverState = {
+    ...receiverState,
+    lastPersonalReset: {
+      at: "2026-08-10T09:00:00.000Z",
+      cause: "automatic",
+      eventId: null,
+    },
+    personalResets: [{
+      at: "2026-08-10T09:00:00.000Z",
+      cause: "automatic",
+      eventId: null,
+    }],
+    cache: {
+      forecast: providerTeaseForecast,
+      feed: { stale: false, signal: null, events: [], tweets: [] },
+    },
+  };
+  const teaserSnapshot = await provider.fetchUsage({
+    ...ctx,
+    http: {
+      async getJSON(url) {
+        if (url === "http://127.0.0.1:18765/usage?provider=codex") return { json: usagePayload };
+        if (url === "http://127.0.0.1:18765/api/state") return { json: teaserReceiverState };
+        throw new Error("snapshot fast path unavailable");
+      },
+    },
+  });
+  const teaserHomeReset = teaserSnapshot.details[0].rows.find((row) => row.label === "重置");
+  check(
+    /候选暗示 · 推测窗口至/.test(teaserHomeReset.value),
+    "the structured tease must outrank the natural refresh without being called an official deadline",
+  );
+  check(
+    /并非官方截止时间/.test(teaserHomeReset.secondaryValue),
+    "the compact reset row must preserve inferred provenance",
+  );
+  check(
+    teaserSnapshot.decisionProgress.targetPercent > snapshot.decisionProgress.targetPercent &&
+      teaserSnapshot.decisionProgress.targetPercent < 100,
+    "the tease must schedule more usage through a bounded target adjustment",
+  );
+  const teaserWhy = teaserSnapshot.submenuDetails.find(
+    (section) => section.title === "为什么这样建议",
+  );
+  check(
+    teaserWhy.rows.some(
+      (row) => row.label === "为什么" && /候选重置暗示/.test(row.value),
+    ),
+    "the plain-language explanation must say that the candidate hint affected the plan",
+  );
+  check(
+    teaserWhy.rows.some(
+      (row) => row.label === "同截止点目标" && /暗示证据强度 50\/100 不是概率/.test(row.secondaryValue),
+    ),
+    "numeric evidence strength belongs with the calculation and must be distinguished from probability",
+  );
+  const teaserResetSection = teaserSnapshot.submenuDetails.find(
+    (section) => section.title === "重置",
+  );
+  const timeline = teaserResetSection.visualizations.find(
+    (visualization) => visualization.kind === "timeline" && visualization.group === "timeline",
+  );
+  check(timeline, "the reset center must expose a structured timeline visualization");
+  const candidateTimelineItem = timeline.items.find((item) => item.kind === "candidate");
+  equal(candidateTimelineItem.state, "inferred");
+  equal(candidateTimelineItem.badge, "推测");
+  equal(Date.parse(candidateTimelineItem.at), Date.parse(providerTeaseForecast.teased_window.window.start_at));
+  equal(Date.parse(candidateTimelineItem.endAt), Date.parse(providerTeaseForecast.teased_window.window.end_at));
+  check(timeline.items.some((item) => item.kind === "natural" && item.state === "scheduled"));
+  check(timeline.items.some((item) => item.kind === "natural" && item.state === "confirmed"));
+  check(
+    teaserResetSection.rows.some(
+      (row) => row.label === "推测观察窗" && /不是官方承诺/.test(row.secondaryValue),
+    ),
+    "the inferred interval must remain available as text and must not be labelled official",
+  );
+  check(
+    teaserResetSection.rows.some(
+      (row) => row.label === "候选暗示原文" && row.link.url === providerTeaseForecast.teased_window.url,
+    ),
+    "the full source and its direct link must remain available outside the visualization",
   );
   equal(seenURLs.length, 3, "cached public data should prevent redundant public calls");
   check(seenURLs.every((url) => url.startsWith("http://127.0.0.1:18765/")));
