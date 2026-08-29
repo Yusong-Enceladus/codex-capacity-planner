@@ -1955,6 +1955,10 @@ function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs, f
     accountId: item.account.id,
     accountLabel: item.account.label,
     availableCount: item.credits.length,
+    credits: item.credits.map((credit) => ({
+      expiresAtMs: credit.expiresAtMs,
+      grantedAtMs: credit.grantedAtMs,
+    })),
     expiresAtMs: item.credits.reduce((earliest, credit) => {
       if (!credit.expiresAtMs) return earliest;
       return earliest === null ? credit.expiresAtMs : Math.min(earliest, credit.expiresAtMs);
@@ -3433,6 +3437,7 @@ defineProvider({
     const submenuForecastRows = [];
     const submenuDiagnosticRows = [];
     const resetTimelineItems = [];
+    const resetCreditVisualizations = [];
     if (forecast.signal.level !== "none" || receiverEvent) {
       submenuEventRows.push({
         label: "当前状态",
@@ -3856,7 +3861,7 @@ defineProvider({
 
     if (model.bankedPlan && model.bankedPlan.availableCount > 0) {
       const banked = model.bankedPlan;
-      const accountCreditRows = (banked.accountCredits || [])
+      const visibleCreditInventories = (banked.accountCredits || [])
         .filter((inventory) => inventory.availableCount > 0)
         .sort((left, right) =>
           left.accountId === currentAccount?.id
@@ -3864,87 +3869,66 @@ defineProvider({
             : right.accountId === currentAccount?.id
               ? 1
               : left.accountLabel.localeCompare(right.accountLabel),
-        )
-        .map((inventory) => ({
-          label: inventory.accountId === currentAccount?.id
-            ? "重置券 · 当前账号"
-            : `重置券 · ${inventory.accountLabel}`,
-          value: `${inventory.availableCount} 次可用`,
-          group: "assets",
-          secondaryValue: inventory.expiresAtMs
-            ? `最早到期 ${utc8(inventory.expiresAtMs)}`
-            : "未提供到期时间",
-        }));
-      submenuCreditRows.push(
-        ...accountCreditRows,
-        {
-          label: "重置策略",
-          value:
-            banked.creditAction === "redeem"
-              ? `现在兑换 · ${banked.accountLabel}`
-              : banked.status === "possible-reset-first"
-                ? "先等可能重置的时间范围结束，券保持不动"
-              : banked.status === "account-data-unready"
-                ? "等待所有账号额度确认，暂不兑换"
-              : banked.status === "free-reset-first"
-                ? "先等待明确强制刷新，券保持不动"
-                : banked.status === "expiry-unknown"
-                  ? "券到期时间未知，暂不生成兑换节点"
-              : banked.creditAction === "prepare"
-                ? banked.status === "must-form-node"
-                  ? "需要提前安排工作，形成高价值兑换点"
-                  : `准备在 ${banked.accountLabel} 形成兑换点`
-                : "保留选择权，先用现有账号容量",
-          group: "assets",
-          secondaryValue: banked.status === "possible-reset-first"
-            ? banked.possibleResetWindowEndMs
-              ? `现在兑换可能被随后到来的免费刷新覆盖；先等到 ${utc8(banked.possibleResetWindowEndMs)}，或本机更早确认刷新后重算`
-              : "现在还不能确定可能重置的时间；等暗示得到确认、失效或本机确认刷新后重算"
-            : banked.status === "account-data-unready"
-              ? "至少一个账号的额度不是同时获取的新鲜精确值；数据确认前不会给出立即兑换建议"
-          : banked.status === "free-reset-first"
-            ? `先在 ${utc8(banked.nextFreeResetAtMs)} 前使用会被清零的现有容量；刷新到账后整条链重新计算`
-            : banked.accountId === currentAccount?.id
-              ? "策略作用于当前账号；其他账号的可用容量已排在券之前"
-              : banked.accountLabel
-                ? `策略作用于 ${banked.accountLabel}；其他账号的可用容量已排在券之前`
-                : "尚无满足整条容量链约束的安全兑换账号",
-        },
-        {
-          label: "净容量价值",
-          value: Number.isFinite(banked.expectedAdditionalWorkUSD)
-            ? banked.status === "possible-reset-first"
-              ? `条件估算 · 若时间范围结束后仍未免费刷新，可多承接 ${percent(banked.bestNetPercent, 1)} 完整容量`
-              : `相对继续持有，预计多承接 ${percent(banked.bestNetPercent, 1)} 完整容量 · API 等价约 $${banked.expectedAdditionalWorkUSD.toFixed(2)}`
-            : "当前没有可验证的正收益兑换点",
-          group: "assets",
-          secondaryValue: banked.status === "possible-reset-first"
-            ? "分别计算时间范围内发生免费刷新和没有发生刷新两种结果；不把暗示强度冒充概率"
-            : "同时模拟所有账号、真实工作、自然/强制刷新、券到期与兑换后新周期；不再使用独立的周期年龄公式",
-        },
-        {
-          label: "高价值节点",
-          value: Number.isFinite(banked.optimalWindowStartMs) && Number.isFinite(banked.optimalWindowEndMs)
-            ? `${utc8(banked.optimalWindowStartMs)}–${utc8(banked.optimalWindowEndMs)} · ${banked.accountLabel}`
-            : "尚未形成安全兑换点",
-          group: "assets",
-          secondaryValue: banked.status === "possible-reset-first"
-            ? "仅为条件节点：若期间发生免费刷新，这个节点立即作废，并按新周期重新规划"
-            : banked.status === "account-data-unready"
-              ? "账号额度尚未同时确认，系统不会把不完整数据包装成安全兑换点"
-            : banked.status === "free-reset-first"
-              ? "当前免费刷新先到；刷新之前的兑换点全部作废，到账后重新规划"
-            : banked.highValueNode
-              ? `预计净得 ${percent(banked.bestNetPercent, 1)} 完整容量${
-                  banked.bestNetCapacityUSD === null
-                    ? ""
-                    : ` · API 等价约 $${banked.bestNetCapacityUSD.toFixed(2)}`
-                }`
-              : banked.status === "expiry-unknown"
-                ? "没有可靠到期时间，系统不会编造日期或伪精确价值"
-                : "当前工作与账号容量尚不能形成高价值节点；需要提前调整真实任务顺序，不能把过期当作正常结果",
-        },
+        );
+      const creditItems = visibleCreditInventories.flatMap((inventory, inventoryIndex) =>
+        (inventory.credits || []).map((credit, creditIndex) => ({
+          id: `credit-${inventoryIndex + 1}-${creditIndex + 1}-${credit.expiresAtMs || "unknown"}`,
+          kind: "credit",
+          state: inventory.accountId === currentAccount?.id ? "current" : "available",
+          title: inventory.accountLabel,
+          detail: `inventory-${inventoryIndex + 1}`,
+          detailEnglish: null,
+          badge: "1",
+          at: Number.isFinite(credit.grantedAtMs)
+            ? new Date(credit.grantedAtMs).toISOString()
+            : null,
+          endAt: Number.isFinite(credit.expiresAtMs)
+            ? new Date(credit.expiresAtMs).toISOString()
+            : null,
+          publishedAt: null,
+          link: null,
+        })),
       );
+      const deliveryStates = Object.values(
+        codexResetObject(bankedCampaign && bankedCampaign.accountDelivery) || {},
+      );
+      resetCreditVisualizations.push({
+        kind: "resetCredits",
+        group: "assets",
+        title: "重置券",
+        items: creditItems,
+        creditSummary: {
+          status: banked.status,
+          action: banked.creditAction,
+          accountLabel: banked.accountLabel || null,
+          availableCount: banked.availableCount,
+          bestNetPercent: Number.isFinite(banked.bestNetPercent) ? banked.bestNetPercent : null,
+          bestNetCapacityUSD: Number.isFinite(banked.bestNetCapacityUSD)
+            ? banked.bestNetCapacityUSD
+            : null,
+          fullCapacityUSD: Number.isFinite(banked.fullCapacityUSD)
+            ? banked.fullCapacityUSD
+            : null,
+          optimalWindowStartAt: Number.isFinite(banked.optimalWindowStartMs)
+            ? new Date(banked.optimalWindowStartMs).toISOString()
+            : null,
+          optimalWindowEndAt: Number.isFinite(banked.optimalWindowEndMs)
+            ? new Date(banked.optimalWindowEndMs).toISOString()
+            : null,
+          possibleResetWindowEndAt: Number.isFinite(banked.possibleResetWindowEndMs)
+            ? new Date(banked.possibleResetWindowEndMs).toISOString()
+            : null,
+          nextFreeResetAt: Number.isFinite(banked.nextFreeResetAtMs)
+            ? new Date(banked.nextFreeResetAtMs).toISOString()
+            : null,
+          confidence: banked.confidence || "low",
+          officialState: banked.officialState || null,
+          deliveredAccountCount: deliveryStates.length
+            ? deliveryStates.filter((value) => value === "delivered").length
+            : null,
+          deliveryAccountCount: deliveryStates.length || null,
+        },
+      });
     }
     if (model.accounts.length) {
       const visibleAccounts = model.accounts
@@ -3991,7 +3975,7 @@ defineProvider({
             ? `${account.freeResetSource === "announced-forced" ? "明确强制重置" : "自然刷新"} ${utc8(account.freeResetDeadlineMs)} · ${
                 account.fullCapacityUSD === null
                   ? "API 等价容量学习中"
-                  : `完整容量约 $${account.fullCapacityUSD.toFixed(0)}，届时预计被清掉约 $${account.atRiskCapacityUSD.toFixed(0)} · ${codexResetCapacitySourceLabel(account.capacitySource)}`
+                  : `完整容量约 $${account.fullCapacityUSD.toFixed(0)}，届时预计被清掉约 $${account.atRiskCapacityUSD.toFixed(0)} · ${codexResetCapacitySourceLabel(account.capacitySource)} · ${account.capacityEstimate.sampleCount || 0} 个样本`
               }`
             : "账号身份已隔离；等待精确且新鲜的额度数据",
           progress: accountProgress,
@@ -4017,15 +4001,15 @@ defineProvider({
         currentAccount.capacityEstimate && currentAccount.capacityEstimate.anomaly,
       );
       submenuForecastRows.push({
-        label: "账号真实容量",
+        label: "容量校准样本",
         value:
           currentAccount.fullCapacityUSD === null
             ? "正在收集 API 等价成本与额度变化的对应样本"
-            : `完整周期约 $${currentAccount.fullCapacityUSD.toFixed(0)} · 剩余约 $${currentAccount.remainingCapacityUSD.toFixed(0)} API 等价`,
+            : `${currentAccount.capacityEstimate.sampleCount || 0} 个有效样本 · ${currentAccount.capacityEstimate.confidence} 置信度 · ${codexResetCapacitySourceLabel(currentAccount.capacitySource)}`,
         secondaryValue:
           currentAccount.fullCapacityUSD === null
             ? "当前套餐缺少可靠社区样本；等待同一账号、同一周期内的本机成本与额度增量"
-            : `${codexResetCapacitySourceLabel(currentAccount.capacitySource)} · 完整容量 = API 等价用量 ÷ 额度下降比例 · ${currentAccount.capacityEstimate.sampleCount || 0} 个有效样本 · ${currentAccount.capacityEstimate.confidence} 置信度`,
+            : `完整容量 = API 等价用量 ÷ 额度下降比例 · 当前剩余约 $${currentAccount.remainingCapacityUSD.toFixed(0)} API 等价`,
       });
       if (community) {
         submenuForecastRows.push({
@@ -4045,13 +4029,6 @@ defineProvider({
             : `当前约为比较基线的 ${percent(ratio * 100, 0)}；只描述有效容量差异，不推断服务端动机`,
         });
       }
-      submenuForecastRows.push({
-        label: "下次免费刷新损失",
-        value: currentAccount.atRiskCapacityUSD === null
-          ? "等待真实容量估算"
-          : `预计被清掉 $${currentAccount.atRiskCapacityUSD.toFixed(0)} · 剩余 ${percent(currentAccount.projectedRemainingAtFreeResetPercent, 1)}`,
-        secondaryValue: `${currentAccount.freeResetSource === "announced-forced" ? "明确强制重置" : "自然刷新"} ${utc8(currentAccount.freeResetDeadlineMs)} · 用于多账号排序，不比较裸百分比`,
-      });
     }
     if (model.subscriptionAdvice) {
       submenuForecastRows.push({
@@ -4340,7 +4317,7 @@ defineProvider({
             label: "为什么",
             value: whyReasonText,
             secondaryValue:
-              "只使用当前周期、自然使用趋势和真实重置信号；详细数字放在“使用与目标”。",
+              "只使用当前周期、自然使用趋势和真实重置信号；账户状态见“用量与目标”，推导过程见“计算与数据”。",
             group: "summary",
           },
           {
@@ -4355,11 +4332,11 @@ defineProvider({
       : recommendationRow
         ? [{ ...recommendationRow, label: "当前判断", group: "summary" }]
         : [];
-    const calculationLabels = new Set([
-      "近期使用速度",
-      "近期使用速度 · 采样中",
+    const calculationResultLabels = new Set([
       "未来 1 小时负载",
       "自然使用预测",
+    ]);
+    const calculationBasisLabels = new Set([
       "连续目标",
       "同截止点目标",
       "若没刷新",
@@ -4367,27 +4344,36 @@ defineProvider({
     ]);
     const whyCalculationRows = submenuForecastRows.map((row) => ({
       ...row,
-      group: calculationLabels.has(row.label) ? "calculation" : "data",
+      group: calculationResultLabels.has(row.label)
+        ? "calculation-result"
+        : calculationBasisLabels.has(row.label)
+          ? "calculation-basis"
+          : "calculation-raw",
     }));
-    const whyMainlineRows = submenuMainlineRows.map((row) => ({ ...row, group: "work" }));
     const whyDataRows = [...submenuDiagnosticRows, ...submenuDataRows].map((row) => ({
       ...row,
-      group: "data",
+      group: "calculation-raw",
     }));
     const resetGroupOrder = { assets: 0, history: 1, official: 2 };
-    const resetRows = [...submenuEventRows, ...submenuCreditRows].sort(
+    const visibleResetEventRows = resetCreditVisualizations.length
+      ? submenuEventRows.filter(
+          (row) => !(row.group === "assets" && row.label === "重置券到账"),
+        )
+      : submenuEventRows;
+    const resetRows = [...visibleResetEventRows, ...submenuCreditRows].sort(
       (left, right) =>
         (resetGroupOrder[left.group] === undefined ? 9 : resetGroupOrder[left.group]) -
         (resetGroupOrder[right.group] === undefined ? 9 : resetGroupOrder[right.group]),
     );
-    const resetVisualizations = resetTimelineItems.length
-      ? [{
+    const resetVisualizations = [
+      ...(resetTimelineItems.length ? [{
           kind: "timeline",
           group: "timeline",
           title: "刷新时间轴",
           items: resetTimelineItems,
-        }]
-      : [];
+        }] : []),
+      ...resetCreditVisualizations,
+    ];
     const mainlineCorrections = sessionSuggestions
       ? sessionSuggestions.corrections.map((correction) => ({
           targetId: correction.targetId,
@@ -4408,21 +4394,23 @@ defineProvider({
         { title: "现在", rows: actionRows },
       ],
       submenuDetails: [
-        ...(submenuAccountRows.length
-          ? [{ title: "账户", rows: submenuAccountRows }]
+        ...(submenuMainlineRows.length
+          ? [{ title: "建议主线", rows: submenuMainlineRows }]
           : []),
-        ...(submenuForecastRows.length || submenuMainlineRows.length
+        ...(submenuAccountRows.length
+          ? [{ title: "用量与目标", rows: submenuAccountRows }]
+          : []),
+        ...(submenuForecastRows.length || whySummaryRows.length
           ? [{
               title: "为什么这样建议",
               rows: [
                 ...whySummaryRows,
                 ...whyCalculationRows,
-                ...whyMainlineRows,
                 ...whyDataRows,
               ],
             }]
           : []),
-        ...(submenuCreditRows.length || submenuEventRows.length
+        ...(submenuCreditRows.length || submenuEventRows.length || resetVisualizations.length
           ? [{ title: "重置", rows: resetRows, visualizations: resetVisualizations }]
           : []),
       ],

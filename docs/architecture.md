@@ -131,10 +131,14 @@ remaining capacity is described as room for new valuable work.
 ## Presentation contract
 
 The plan explanation begins with causal prose about cycle state, natural-use
-trend, and any real reset signal. Percentages, probabilities, token totals, and
-formulas live in the usage/target, suggested-work, and calculation groups.
-Each account row carries its own current usage, target, and optional natural
-forecast range; account forecasts are never shared. An unresolved explicit
+trend, and any real reset signal. Suggested Mainlines is a first-level entry so
+its reversible corrections stay on the primary interaction path. Usage &
+Targets is also first-level; each account row carries its own current usage,
+target, optional natural forecast range, API-equivalent capacity, expected
+reset loss, and sampling provenance. Account forecasts are never shared.
+Percentages, probabilities, model outputs, formulas, and diagnostics that do
+not belong to an account row live under one Calculation & Data entry, divided
+into Results, Method, and Raw Data. An unresolved explicit
 announcement, commitment, or candidate hint is the primary reset state ahead
 of natural refresh. Its concise source summary appears with the state, while
 the full source and resolved local outcome remain in official updates and
@@ -156,6 +160,15 @@ a countdown or an invented deadline. Chinese presentation uses Asia/Shanghai
 (UTC+8), while English presentation uses America/Los_Angeles (PT). Timeline
 kind/state fields, rather than server-composed Chinese labels, drive localized
 titles, badges, symbols, and time formatting.
+
+Available reset credits remain a second-level reset view, but are exposed as
+structured presentation data rather than repeated prose rows. Every credit is
+kept as an individual item with an owning account, grant time, and its own
+expiry; account-level totals may not replace later expiries with the earliest
+one. The native view combines an expiry-lifetime track, a strategy state, net
+capacity and API-equivalent value, a high-value window, and explicit
+free-reset/no-free-reset outcomes. Internal credit identifiers are never part
+of the presentation payload.
 
 ## Real capacity and account scheduling
 

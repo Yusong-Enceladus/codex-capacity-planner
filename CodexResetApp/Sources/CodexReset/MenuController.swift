@@ -31,6 +31,14 @@ enum DetailMenuLayout {
         ["重置", "Resets"].contains(title)
     }
 
+    static func isMainlines(_ title: String) -> Bool {
+        ["建议主线", "Suggested Mainlines"].contains(title)
+    }
+
+    static func isCalculation(_ title: String) -> Bool {
+        ["计算与数据", "Calculation & Data"].contains(title)
+    }
+
     static func summaryGroup(_ title: String) -> String {
         ["为什么这样建议", "Why This Plan"].contains(title) ? "summary" : "current"
     }
@@ -40,9 +48,25 @@ enum DetailMenuLayout {
     }
 
     static func childGroups(_ title: String) -> [String] {
-        ["为什么这样建议", "Why This Plan"].contains(title)
-            ? ["calculation", "work", "data"]
-            : ["assets", "history", "official"]
+        if ["为什么这样建议", "Why This Plan"].contains(title) {
+            return ["calculation"]
+        }
+        return self.isReset(title) ? ["assets", "history", "official"] : []
+    }
+
+    static let calculationGroups = [
+        "calculation-result",
+        "calculation-basis",
+        "calculation-raw",
+    ]
+
+    static func rows(for group: String, in section: DetailSection) -> [DetailRow] {
+        if group == "calculation" {
+            return section.rows.filter {
+                $0.group == "calculation" || $0.group?.hasPrefix("calculation-") == true
+            }
+        }
+        return section.rows.filter { $0.group == group }
     }
 }
 
@@ -182,7 +206,9 @@ final class MenuController: NSObject, NSMenuDelegate {
             item.image = NSImage(
                 systemSymbolName: Self.symbolName(for: section.title),
                 accessibilityDescription: nil)
-            item.submenu = self.makeDetailSectionSubmenu(section)
+            item.submenu = DetailMenuLayout.isMainlines(section.title)
+                ? self.makeDetailLeafSubmenu(section)
+                : self.makeDetailSectionSubmenu(section)
             item.isEnabled = true
             submenu.addItem(item)
         }
@@ -212,7 +238,7 @@ final class MenuController: NSObject, NSMenuDelegate {
 
         let groupOrder = DetailMenuLayout.childGroups(section.title)
         for key in groupOrder {
-            let rows = grouped[key] ?? []
+            let rows = DetailMenuLayout.rows(for: key, in: section)
             let groupVisualizations = visualizations.filter { ($0.group ?? "all") == key }
             guard !rows.isEmpty || !groupVisualizations.isEmpty else { continue }
             if !submenu.items.isEmpty, submenu.items.last?.isSeparatorItem != true {
@@ -242,6 +268,9 @@ final class MenuController: NSObject, NSMenuDelegate {
     }
 
     private func makeDetailLeafSubmenu(_ section: DetailSection) -> NSMenu {
+        if DetailMenuLayout.isCalculation(section.title) {
+            return self.makeCalculationSubmenu(section)
+        }
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         submenu.minimumWidth = Self.detailsWidth
@@ -259,6 +288,43 @@ final class MenuController: NSObject, NSMenuDelegate {
             self.appendLinks(from: [row], to: submenu)
             self.appendActions(from: [row], to: submenu)
         }
+        return submenu
+    }
+
+    private func makeCalculationSubmenu(_ section: DetailSection) -> NSMenu {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        submenu.minimumWidth = Self.detailsWidth
+        let visualizations = section.visualizations ?? []
+        for key in DetailMenuLayout.calculationGroups {
+            let rows = section.rows.filter { $0.group == key }
+            let groupVisualizations = visualizations.filter { ($0.group ?? "all") == key }
+            guard !rows.isEmpty || !groupVisualizations.isEmpty else { continue }
+            let title = Self.calculationGroupTitle(key, language: self.presentationLanguage)
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.image = NSImage(
+                systemSymbolName: Self.calculationGroupSymbol(key),
+                accessibilityDescription: nil)
+            item.submenu = self.makeDetailContentSubmenu(DetailSection(
+                title: title,
+                rows: rows,
+                visualizations: groupVisualizations.isEmpty ? nil : groupVisualizations))
+            item.isEnabled = true
+            submenu.addItem(item)
+        }
+        if submenu.items.isEmpty {
+            return self.makeDetailContentSubmenu(section)
+        }
+        return submenu
+    }
+
+    private func makeDetailContentSubmenu(_ section: DetailSection) -> NSMenu {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        submenu.minimumWidth = Self.detailsWidth
+        submenu.addItem(self.makeDetailContentItem(section))
+        self.appendLinks(from: section.rows, to: submenu)
+        self.appendActions(from: section.rows, to: submenu)
         return submenu
     }
 
@@ -319,10 +385,9 @@ final class MenuController: NSObject, NSMenuDelegate {
         language: ResetPresentationLanguage) -> String
     {
         switch key {
-        case "calculation": language.text("使用与目标", "Usage & Target")
-        case "work": language.text("建议主线", "Suggested Mainlines")
+        case "calculation": language.text("计算与数据", "Calculation & Data")
         case "data": language.text("计算与数据", "Calculation & Data")
-        case "assets": language.text("可用重置", "Available Resets")
+        case "assets": language.text("重置券", "Reset Credits")
         case "history": language.text("重置历史", "Reset History")
         case "official": language.text("官方消息", "Official Updates")
         default: language.text("更多信息", "More")
@@ -341,10 +406,31 @@ final class MenuController: NSObject, NSMenuDelegate {
         }
     }
 
+    private static func calculationGroupTitle(
+        _ key: String,
+        language: ResetPresentationLanguage) -> String
+    {
+        switch key {
+        case "calculation-result": language.text("计算结果", "Results")
+        case "calculation-basis": language.text("计算依据", "Method")
+        case "calculation-raw": language.text("原始数据", "Raw Data")
+        default: language.text("更多信息", "More")
+        }
+    }
+
+    private static func calculationGroupSymbol(_ key: String) -> String {
+        switch key {
+        case "calculation-result": "chart.bar.xaxis"
+        case "calculation-basis": "function"
+        case "calculation-raw": "tablecells"
+        default: "ellipsis.circle"
+        }
+    }
+
     private static func symbolName(for title: String) -> String {
         switch title {
         case "建议主线", "Suggested Mainlines", "可继续的任务", "Suggested Tasks": "play.circle"
-        case "账户", "Accounts": "person.2"
+        case "用量与目标", "Usage & Targets", "账户", "Accounts": "scope"
         case "为什么这样建议", "Why This Plan": "chart.line.uptrend.xyaxis"
         case "重置", "Resets": "clock.arrow.circlepath"
         default: "list.bullet.rectangle"

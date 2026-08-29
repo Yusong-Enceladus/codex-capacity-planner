@@ -1239,8 +1239,13 @@ equal(
 );
 check(
   perAccountBanked.accountCredits.length === 2 &&
-    perAccountBanked.accountCredits.every((inventory) => inventory.availableCount === 1),
-  "credit inventory must stay attributable to each account",
+    perAccountBanked.accountCredits.every(
+      (inventory) =>
+        inventory.availableCount === 1 &&
+        inventory.credits.length === 1 &&
+        !Object.prototype.hasOwnProperty.call(inventory.credits[0], "id"),
+    ),
+  "credit inventory must stay attributable to each account without exposing identifiers",
 );
 const lateUnusedBanked = bankedModel(
   0,
@@ -3845,8 +3850,11 @@ const ctx = {
     !snapshot.details[0].rows.some((row) => /Remove author information/.test(row.value)),
     "a temporary session title must never become a main recommendation",
   );
+  const suggestedMainlinesSection = snapshot.submenuDetails.find(
+    (section) => section.title === "建议主线",
+  );
   check(
-    snapshot.submenuDetails[1].rows.some(
+    suggestedMainlinesSection.rows.some(
       (row) =>
         row.label === "近期 session（仅供定位）" &&
         /Remove author information/.test(row.value) &&
@@ -3855,18 +3863,19 @@ const ctx = {
     ),
     "session titles may appear only as recovery context with explicit correction actions",
   );
-  const mainlineDetailRow = snapshot.submenuDetails[1].rows.find(
-    (row) => row.label === "主线 1" && row.group === "work",
+  const mainlineDetailRow = suggestedMainlinesSection.rows.find(
+    (row) => row.label === "主线 1",
   );
   equal(
     mainlineDetailRow.actions.map((action) => action.operation).join(","),
     "snooze,not-mainline,complete",
     "every recommended mainline should expose reversible local correction actions",
   );
-  equal(snapshot.submenuDetails[0].title, "账户");
-  equal(snapshot.submenuDetails[1].title, "为什么这样建议");
-  equal(snapshot.submenuDetails[2].title, "重置");
-  const resetTimeline = snapshot.submenuDetails[2].visualizations.find(
+  equal(snapshot.submenuDetails[0].title, "建议主线");
+  equal(snapshot.submenuDetails[1].title, "用量与目标");
+  equal(snapshot.submenuDetails[2].title, "为什么这样建议");
+  equal(snapshot.submenuDetails[3].title, "重置");
+  const resetTimeline = snapshot.submenuDetails[3].visualizations.find(
     (visualization) => visualization.kind === "timeline",
   );
   const nextResetTimelineItem = resetTimeline.items.find(
@@ -3877,12 +3886,12 @@ const ctx = {
     Date.parse(usagePayload[0].usage.secondary.resetsAt),
   );
   equal(
-    snapshot.submenuDetails[2].rows.some((row) => row.label === "下次自然刷新"),
+    snapshot.submenuDetails[3].rows.some((row) => row.label === "下次自然刷新"),
     false,
     "the natural reset belongs on the root timeline rather than a duplicate text row",
   );
   check(
-    snapshot.submenuDetails[1].rows.some(
+    suggestedMainlinesSection.rows.some(
       (row) =>
         row.label === "主线排序原则" &&
         /token 只描述负载/.test(row.secondaryValue) &&
@@ -3934,6 +3943,13 @@ const ctx = {
   check(
     forecastSection.rows.some((row) => row.label === "自然使用预测"),
     "the model range should be available in plan details",
+  );
+  check(
+    forecastSection.rows.some((row) => row.group === "calculation-result") &&
+      forecastSection.rows.some((row) => row.group === "calculation-basis") &&
+      forecastSection.rows.some((row) => row.group === "calculation-raw") &&
+      !forecastSection.rows.some((row) => ["calculation", "work", "data"].includes(row.group)),
+    "Calculation & Data must be separated into results, method and raw inputs",
   );
   check(
     forecastSection.rows.some(
@@ -4198,7 +4214,7 @@ const ctx = {
     reachedSnapshot.submenuDetails
       .find((section) => section.title === "为什么这样建议")
       .rows.some((row) => row.label === "同截止点目标" && /已超红线 12\.5%/.test(row.secondaryValue)),
-    "numeric target-overrun evidence should move to Usage & Target instead of the plain-language rationale",
+    "numeric target-overrun evidence should remain in Calculation & Data instead of the plain-language rationale",
   );
   usagePayload[0].usage.secondary.usedPercent = 10;
   receiverState.usageSnapshot.usedPercent = 10;
@@ -4450,6 +4466,11 @@ const ctx = {
             status: "available",
             grantedAt: "2026-08-12T08:55:00Z",
             expiresAt: "2026-09-06T08:59:00Z",
+          }, {
+            id: "account-b-credit-later",
+            status: "available",
+            grantedAt: "2026-08-12T08:56:00Z",
+            expiresAt: "2026-09-09T08:59:00Z",
           }],
         },
       },
@@ -4507,7 +4528,7 @@ const ctx = {
     "the home card must not combine a device-wide total with one account label",
   );
   const multiPlanSection = multiSnapshot.submenuDetails.find(
-    (section) => section.title === "账户",
+    (section) => section.title === "用量与目标",
   );
   check(
     multiPlanSection.rows.some((row) => /averyl•••me@example\.test · 5x · 当前登录/.test(row.label)) &&
@@ -4541,6 +4562,14 @@ const ctx = {
           Number.isFinite(row.progress.projectedUpperPercent),
       ),
     "account bars must keep current usage, target and each account's own forecast separate",
+  );
+  check(
+    visibleAccountRows.slice(0, 2).every((row) =>
+      /完整容量约 \$/.test(row.secondaryValue) &&
+      /预计被清掉约 \$/.test(row.secondaryValue) &&
+      /个样本/.test(row.secondaryValue),
+    ),
+    "Usage & Targets must retain API-equivalent capacity, loss and sampling evidence",
   );
   const partialDeliveryEvent = {
     id: tiboEvent.id,
@@ -4590,24 +4619,38 @@ const ctx = {
   const multiResetSection = multiSnapshot.submenuDetails.find(
     (section) => section.title === "重置",
   );
-  check(
-    multiResetSection.rows.some(
-      (row) => row.label === "重置券 · 当前账号" && row.value === "1 次可用",
-    ) &&
-      multiResetSection.rows.some(
-        (row) => /重置券 · second@example\.test/.test(row.label) && row.value === "1 次可用",
-      ),
-    "the reset center must list each account's credit inventory separately",
+  const creditVisualization = multiResetSection.visualizations.find(
+    (visualization) => visualization.kind === "resetCredits" && visualization.group === "assets",
   );
   check(
-    multiResetSection.rows.some((row) => row.label === "重置策略") &&
-      !multiResetSection.rows.some((row) => row.label === "重置券" && /2 张可用/.test(row.secondaryValue || "")),
-    "the cross-account strategy must be separated from per-account inventory",
+    creditVisualization && creditVisualization.creditSummary.availableCount === 3,
+    "the reset-credit visualization must keep the device total as structured summary data",
   );
-  const chainValueRow = multiResetSection.rows.find((row) => row.label === "净容量价值");
+  const currentCreditItems = creditVisualization.items.filter((item) => item.state === "current");
+  const backupCreditItems = creditVisualization.items.filter(
+    (item) => item.title === "second@example.test",
+  );
   check(
-    chainValueRow && /同时模拟所有账号、真实工作、自然\/强制刷新/.test(chainValueRow.secondaryValue),
-    "the reset UI must explain the shared capacity-chain valuation instead of the old cycle-age formula",
+    currentCreditItems.length === 1 &&
+      backupCreditItems.length === 2 &&
+      new Set(backupCreditItems.map((item) => item.endAt)).size === 2,
+    "every credit must stay attributable to one account and retain its own expiry",
+  );
+  check(
+    Object.prototype.hasOwnProperty.call(creditVisualization.creditSummary, "bestNetPercent") &&
+      Object.prototype.hasOwnProperty.call(creditVisualization.creditSummary, "bestNetCapacityUSD") &&
+      Object.prototype.hasOwnProperty.call(creditVisualization.creditSummary, "optimalWindowStartAt"),
+    "net capacity, API-equivalent value and the high-value window must be structured for visual presentation",
+  );
+  check(
+    !/account-a-credit|account-b-credit/.test(JSON.stringify(creditVisualization)),
+    "the local presentation API must not expose reset-credit identifiers",
+  );
+  check(
+    !multiResetSection.rows.some((row) =>
+      ["重置策略", "净容量价值", "高价值节点"].includes(row.label),
+    ),
+    "the reset-credit submenu must not duplicate the visualization as long text rows",
   );
   check(
     !/刷新日推迟成本|已用比例 − 周期经过比例/.test(JSON.stringify(multiResetSection.rows)),

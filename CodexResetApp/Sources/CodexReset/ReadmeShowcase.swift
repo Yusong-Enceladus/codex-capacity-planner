@@ -31,7 +31,7 @@ struct ResetReadmeShowcase: View {
     private var accountShowcase: some View {
         self.menuSurface {
             ResetDetailsView(
-                sections: self.section(named: self.language.text("账户", "Accounts")).map { [$0] } ?? [],
+                sections: self.section(named: self.language.text("用量与目标", "Usage & Targets")).map { [$0] } ?? [],
                 width: 430)
         }
     }
@@ -41,10 +41,11 @@ struct ResetReadmeShowcase: View {
         let timeline = DetailSection(
             title: self.language.text("重置", "Resets"),
             rows: [],
-            visualizations: reset?.visualizations)
+            visualizations: reset?.visualizations?.filter { $0.group == "timeline" })
         let assets = DetailSection(
-            title: self.language.text("可用重置", "Available Resets"),
-            rows: reset?.rows.filter { $0.group == "assets" } ?? [])
+            title: self.language.text("重置券", "Reset Credits"),
+            rows: reset?.rows.filter { $0.group == "assets" } ?? [],
+            visualizations: reset?.visualizations?.filter { $0.group == "assets" })
         return HStack(alignment: .top, spacing: 12) {
             self.menuSurface {
                 ResetDetailsView(sections: [timeline], width: 430)

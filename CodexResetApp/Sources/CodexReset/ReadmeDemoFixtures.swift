@@ -71,7 +71,8 @@ enum ResetDemoFixtures {
                     ])
             ],
             submenuDetails: [
-                self.accountSection(language),
+                self.mainlineSection(language),
+                self.usageTargetSection(language),
                 self.whySection(language),
                 self.resetSection(
                     language,
@@ -82,12 +83,49 @@ enum ResetDemoFixtures {
             ])
     }
 
-    private static func accountSection(_ language: ResetPresentationLanguage) -> DetailSection {
-        DetailSection(title: language.text("账户", "Accounts"), rows: [
+    private static func mainlineSection(_ language: ResetPresentationLanguage) -> DetailSection {
+        DetailSection(title: language.text("建议主线", "Suggested Mainlines"), rows: [
+            DetailRow(
+                label: language.text("主线 1", "Mainline 1"),
+                value: language.text("搜索体验 · 质量改进", "Search Experience · Quality"),
+                secondaryValue: language.text(
+                    "3 条相关任务跨 4 天持续推进 · 近 7 天 1.2M token 负载证据",
+                    "3 related tasks sustained across 4 days · 1.2M tokens of 7-day load evidence"),
+                actions: [
+                    DetailAction(title: language.text("暂不推荐", "Snooze"), operation: "snooze", targetId: "demo-mainline-1"),
+                    DetailAction(title: language.text("不是主线", "Not a mainline"), operation: "not-mainline", targetId: "demo-mainline-1"),
+                    DetailAction(title: language.text("标为已完成", "Mark complete"), operation: "complete", targetId: "demo-mainline-1"),
+                ]),
+            DetailRow(
+                label: language.text("主线 2", "Mainline 2"),
+                value: language.text("数据分析 · 实验", "Data Analysis · Experiments"),
+                secondaryValue: language.text("进行中的 Goal", "Ongoing Goal"),
+                actions: [
+                    DetailAction(title: language.text("暂不推荐", "Snooze"), operation: "snooze", targetId: "demo-mainline-2"),
+                    DetailAction(title: language.text("不是主线", "Not a mainline"), operation: "not-mainline", targetId: "demo-mainline-2"),
+                    DetailAction(title: language.text("标为已完成", "Mark complete"), operation: "complete", targetId: "demo-mainline-2"),
+                ]),
+            DetailRow(
+                label: language.text("近期 session（仅供定位）", "Recent session (context only)"),
+                value: language.text("桌面端 · 菜单细节调整", "Desktop App · Menu detail adjustment"),
+                secondaryValue: language.text(
+                    "不会直接进入推荐；可用一次操作标为主线",
+                    "Never promoted automatically; one action can mark it as a mainline"),
+                actions: [
+                    DetailAction(title: language.text("标为主线", "Mark as mainline"), operation: "mark-mainline", targetId: "demo-session-1"),
+                    DetailAction(title: language.text("不是主线", "Not a mainline"), operation: "not-mainline", targetId: "demo-session-1"),
+                ]),
+        ])
+    }
+
+    private static func usageTargetSection(_ language: ResetPresentationLanguage) -> DetailSection {
+        DetailSection(title: language.text("用量与目标", "Usage & Targets"), rows: [
             DetailRow(
                 label: language.text("工作账户 · Pro", "Work account · Pro"),
                 value: language.text("当前已用 42%", "42% used"),
-                secondaryValue: language.text("4 天 18 小时后刷新", "Resets in 4 days 18 hr"),
+                secondaryValue: language.text(
+                    "4 天 18 小时后刷新 · 完整容量约 $3000 · 届时预计损失 $960 · 8 个本机样本",
+                    "Resets in 4 days 18 hr · About $3,000 full capacity · $960 at risk · 8 local samples"),
                 progress: DecisionProgress(
                     title: language.text("工作账户的使用计划", "Work account usage plan"),
                     alternateTitle: nil,
@@ -104,7 +142,9 @@ enum ResetDemoFixtures {
             DetailRow(
                 label: language.text("备用账户 · Pro", "Backup account · Pro"),
                 value: language.text("当前已用 31%", "31% used"),
-                secondaryValue: language.text("3 天 20 小时后刷新", "Resets in 3 days 20 hr"),
+                secondaryValue: language.text(
+                    "3 天 20 小时后刷新 · 完整容量约 $2820 · 届时预计损失 $740 · 6 个本机样本",
+                    "Resets in 3 days 20 hr · About $2,820 full capacity · $740 at risk · 6 local samples"),
                 progress: DecisionProgress(
                     title: language.text("备用账户的使用计划", "Backup account usage plan"),
                     alternateTitle: nil,
@@ -118,10 +158,6 @@ enum ResetDemoFixtures {
                     projectedLabel: language.text(
                         "预计 44.0%–58.0% · 中心 49.0%",
                         "Forecast 44.0%–58.0% · Midpoint 49.0%"))),
-            DetailRow(
-                label: language.text("建议", "Plan"),
-                value: language.text("继续使用工作账户", "Keep using the work account"),
-                secondaryValue: language.text("当前无需切换", "No switch needed now")),
         ])
     }
 
@@ -135,22 +171,20 @@ enum ResetDemoFixtures {
                 secondaryValue: language.text("暗示只增加有上限的预留，不改写公开概率", "The hint adds only a bounded reserve and does not rewrite public probability"),
                 group: "summary"),
             DetailRow(
-                label: language.text("当前", "Current"),
-                value: language.text("已用 42% · 当前目标 55%", "42% used · Current target 55%"),
-                group: "calculation"),
-            DetailRow(
-                label: language.text("预计", "Forecast"),
+                label: language.text("自然使用预测", "Natural-usage forecast"),
                 value: language.text("24 小时后预计使用 54%–66%", "Expected usage in 24 hours: 54%–66%"),
-                group: "calculation"),
+                secondaryValue: language.text("中心 60% · 尚未覆盖 68% 目标", "60% midpoint · Still below the 68% target"),
+                group: "calculation-result"),
             DetailRow(
-                label: language.text("主线", "Mainlines"),
-                value: language.text("3 条可靠主线可以继续", "3 reliable mainlines can continue"),
-                secondaryValue: language.text("token 只作负载证据；近期 session 仅供定位", "Tokens show load only; recent sessions are context"),
-                group: "work"),
+                label: language.text("同截止点目标", "Same-deadline target"),
+                value: language.text("68% = 连续目标 + 预测加速 + 可能刷新预留", "68% = continuous target + forecast adjustment + possible-reset reserve"),
+                secondaryValue: language.text("暗示只增加有上限的预留，不作为概率", "The signal adds only a bounded reserve and is not treated as probability"),
+                group: "calculation-basis"),
             DetailRow(
-                label: language.text("数据", "Data"),
-                value: language.text("基于本机使用记录与实际 API 等价容量", "Based on local usage and API-equivalent capacity"),
-                group: "data"),
+                label: language.text("原始数据", "Raw inputs"),
+                value: language.text("额度刚刚更新 · 预测刚刚更新 · 8 个有效容量样本", "Quota just updated · Forecast just updated · 8 valid capacity samples"),
+                secondaryValue: language.text("所有个人用量与校准均保留在本机", "All personal usage and calibration remain local"),
+                group: "calculation-raw"),
         ])
     }
 
@@ -164,6 +198,11 @@ enum ResetDemoFixtures {
         let formatter = ISO8601DateFormatter()
         let candidatePublished = now.addingTimeInterval(-3 * 3_600)
         let previousReset = now.addingTimeInterval(-3 * 86_400)
+        let workCreditExpiry = now.addingTimeInterval(5 * 86_400)
+        let backupCreditExpiry1 = now.addingTimeInterval(8 * 86_400 + 6 * 3_600)
+        let backupCreditExpiry2 = now.addingTimeInterval(13 * 86_400)
+        let highValueStart = candidateEnd.addingTimeInterval(8 * 3_600)
+        let highValueEnd = highValueStart.addingTimeInterval(6 * 3_600)
         let candidateItem = DetailTimelineItem(
             id: "demo-candidate",
             kind: "candidate",
@@ -184,29 +223,6 @@ enum ResetDemoFixtures {
         return DetailSection(
             title: language.text("重置", "Resets"),
             rows: [
-                DetailRow(
-                    label: language.text("当前账户", "Current account"),
-                    value: language.text("1 次可用", "1 available"),
-                    secondaryValue: language.text("暂时保留", "Keep for now"),
-                    group: "assets"),
-                DetailRow(
-                    label: language.text("重置策略", "Reset-credit plan"),
-                    value: language.text(
-                        "先等可能重置的时间范围结束，券保持不动",
-                        "Hold the credit until the possible-reset window ends"),
-                    secondaryValue: language.text(
-                        "现在兑换可能被免费刷新覆盖；范围结束或本机更早确认刷新后，再按两个结果重算",
-                        "A free reset could overwrite a redemption; recalculate after the window ends or a local reset is confirmed sooner"),
-                    group: "assets"),
-                DetailRow(
-                    label: language.text("两种结果", "Two outcomes"),
-                    value: language.text(
-                        "发生免费刷新 / 没有发生免费刷新",
-                        "Free reset happens / No free reset happens"),
-                    secondaryValue: language.text(
-                        "暗示强度不是概率，不做加权平均",
-                        "Signal strength is not a probability, so the outcomes are not probability-weighted"),
-                    group: "assets"),
                 DetailRow(
                     label: language.text("最近一次刷新", "Latest reset"),
                     value: language.text("套餐升级刷新 · Free → Pro", "Plan upgrade reset · Free → Pro"),
@@ -277,6 +293,55 @@ enum ResetDemoFixtures {
                             publishedAt: nil,
                             link: nil),
                     ]),
+                DetailVisualization(
+                    kind: "resetCredits",
+                    group: "assets",
+                    title: language.text("重置券", "Reset Credits"),
+                    items: [
+                        DetailTimelineItem(
+                            id: "demo-credit-work",
+                            kind: "credit",
+                            state: "current",
+                            title: language.text("工作账户 · Pro", "Work account · Pro"),
+                            detail: "inventory-1",
+                            badge: "1",
+                            at: formatter.string(from: now.addingTimeInterval(-2 * 86_400)),
+                            endAt: formatter.string(from: workCreditExpiry)),
+                        DetailTimelineItem(
+                            id: "demo-credit-backup-1",
+                            kind: "credit",
+                            state: "available",
+                            title: language.text("备用账户 · Pro", "Backup account · Pro"),
+                            detail: "inventory-2",
+                            badge: "1",
+                            at: formatter.string(from: now.addingTimeInterval(-86_400)),
+                            endAt: formatter.string(from: backupCreditExpiry1)),
+                        DetailTimelineItem(
+                            id: "demo-credit-backup-2",
+                            kind: "credit",
+                            state: "available",
+                            title: language.text("备用账户 · Pro", "Backup account · Pro"),
+                            detail: "inventory-2",
+                            badge: "1",
+                            at: formatter.string(from: now.addingTimeInterval(-12 * 3_600)),
+                            endAt: formatter.string(from: backupCreditExpiry2)),
+                    ],
+                    creditSummary: ResetCreditSummary(
+                        status: "possible-reset-first",
+                        action: "hold",
+                        accountLabel: language.text("工作账户 · Pro", "Work account · Pro"),
+                        availableCount: 3,
+                        bestNetPercent: 82,
+                        bestNetCapacityUSD: 2460,
+                        fullCapacityUSD: 3000,
+                        optimalWindowStartAt: formatter.string(from: highValueStart),
+                        optimalWindowEndAt: formatter.string(from: highValueEnd),
+                        possibleResetWindowEndAt: formatter.string(from: candidateEnd),
+                        nextFreeResetAt: formatter.string(from: resetAt),
+                        confidence: "high",
+                        officialState: "available",
+                        deliveredAccountCount: 2,
+                        deliveryAccountCount: 2)),
             ])
     }
 

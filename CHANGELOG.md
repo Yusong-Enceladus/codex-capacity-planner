@@ -5,6 +5,16 @@ versioning once the first public release is tagged.
 
 ## Unreleased
 
+- Promote Suggested Mainlines to the first-level menu without changing its
+  5/3/1 selection or reversible correction actions. Rename the account view to
+  Usage & Targets and retain per-account API-equivalent capacity, expected
+  reset loss, and sampling provenance beside each progress bar.
+- Replace the mixed planning-details pile with one Calculation & Data entry
+  divided into Results, Method, and Raw Data.
+- Replace verbose reset-credit rows with a native visual summary that keeps
+  every credit's account and individual expiry, shows lifetime progress,
+  strategy state, net-capacity and API-equivalent value, the high-value window,
+  and deterministic free-reset/no-free-reset outcomes.
 - Let all home-card plan text wrap to its measured height instead of truncating
   dynamic values after one or two lines. Possible-reset summaries now use a
   compact complete date range that keeps the UTC+8 label visible.

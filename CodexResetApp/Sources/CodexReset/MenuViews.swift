@@ -769,6 +769,502 @@ private struct ResetEventTimeline: View {
     }
 }
 
+enum ResetCreditPresentation {
+    static func actionLabel(
+        _ summary: ResetCreditSummary,
+        language: ResetPresentationLanguage) -> String
+    {
+        switch summary.action {
+        case "redeem": language.text("现在使用", "Use now")
+        case "prepare": language.text("准备使用", "Prepare")
+        case "awaiting-delivery": language.text("等待到账", "Pending")
+        default: language.text("暂时保留", "Hold")
+        }
+    }
+
+    static func strategyTitle(
+        _ summary: ResetCreditSummary,
+        language: ResetPresentationLanguage) -> String
+    {
+        switch summary.status {
+        case "possible-reset-first":
+            language.text("先等可能的免费刷新", "Wait for the possible free reset")
+        case "account-data-unready":
+            language.text("等所有账户用量确认", "Wait for every account")
+        case "free-reset-first":
+            language.text("先用会被清零的现有用量", "Use capacity before the free reset")
+        case "expiry-unknown":
+            language.text("到期时间未知，暂不安排", "Expiry unknown; no timing yet")
+        case "must-form-node":
+            language.text("先形成高价值使用节点", "Build a high-value use point")
+        case "interruption-now":
+            language.text("所有账户已阻塞，可以使用", "All accounts are blocked; use a credit")
+        default:
+            summary.action == "prepare"
+                ? language.text("高价值节点正在接近", "A high-value point is approaching")
+                : language.text("先使用现有账户容量", "Use existing account capacity first")
+        }
+    }
+
+    static func strategyDetail(
+        _ summary: ResetCreditSummary,
+        language: ResetPresentationLanguage) -> String
+    {
+        switch summary.status {
+        case "possible-reset-first":
+            let boundary = self.point(summary.possibleResetWindowEndAt, language: language)
+            return language.text(
+                boundary.map { "等到 \($0) 或本机更早确认刷新后，再按两种结果重新计算。" }
+                    ?? "等暗示得到确认、失效或本机确认刷新后，再按两种结果重新计算。",
+                boundary.map { "Recalculate both outcomes after \($0), or sooner if a local reset is confirmed." }
+                    ?? "Recalculate both outcomes when the signal is confirmed, expires, or a local reset is observed.")
+        case "account-data-unready":
+            return language.text(
+                "至少一个账户还没有新鲜、精确的用量，数据齐全前不会建议兑换。",
+                "At least one account lacks fresh, exact usage; redemption stays disabled.")
+        case "free-reset-first":
+            let boundary = self.point(summary.nextFreeResetAt, language: language)
+            return language.text(
+                boundary.map { "免费刷新会在 \($0) 先到；到账后整条容量链重新计算。" }
+                    ?? "更早的免费刷新会先到；到账后整条容量链重新计算。",
+                boundary.map { "A free reset arrives first at \($0); recalculate the full capacity chain afterward." }
+                    ?? "An earlier free reset arrives first; recalculate the full capacity chain afterward.")
+        case "expiry-unknown":
+            return language.text(
+                "系统不会编造兑换日期或伪精确价值。",
+                "The planner will not invent a redemption time or false precision.")
+        case "must-form-node":
+            return language.text(
+                "继续真实工作，让兑换后新增容量能够被充分使用。",
+                "Continue real work so the capacity added by redemption can be used well.")
+        case "interruption-now":
+            return language.text(
+                "两种刷新结果都能承接足够工作；系统只提示，不会自动使用。",
+                "Both reset outcomes support enough work; the planner advises but never redeems automatically.")
+        default:
+            return language.text(
+                "已先比较其他账户容量、免费刷新和券到期时间。",
+                "Other-account capacity, free resets, and credit expiry were checked first.")
+        }
+    }
+
+    static func expiryText(
+        _ item: DetailTimelineItem,
+        now: Date,
+        language: ResetPresentationLanguage) -> String
+    {
+        guard let expiry = self.date(item.endAt) else {
+            return language.text("未提供到期时间", "No expiry provided")
+        }
+        let exact = self.point(item.endAt, language: language) ?? ""
+        let interval = max(0, expiry.timeIntervalSince(now))
+        let totalHours = Int(interval / 3_600)
+        let relative: String
+        if totalHours < 1 {
+            relative = language.text("不到 1 小时", "under 1 hr")
+        } else if totalHours < 24 {
+            relative = language.text("约 \(totalHours) 小时", "about \(totalHours) hr")
+        } else {
+            let days = totalHours / 24
+            let hours = totalHours % 24
+            relative = hours == 0
+                ? language.text("约 \(days) 天", "about \(days) days")
+                : language.text("约 \(days) 天 \(hours) 小时", "about \(days) days \(hours) hr")
+        }
+        return language.text("\(exact) 到期 · 剩余\(relative)", "Expires \(exact) · \(relative) left")
+    }
+
+    static func windowText(
+        _ summary: ResetCreditSummary,
+        language: ResetPresentationLanguage) -> String
+    {
+        guard let start = self.date(summary.optimalWindowStartAt),
+              let end = self.date(summary.optimalWindowEndAt)
+        else {
+            return language.text("尚未形成安全节点", "No safe point yet")
+        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = language.timeZone
+        let sameDay = calendar.isDate(start, inSameDayAs: end)
+        let startPattern = language == .english ? "MMM d, h:mm a" : "M月d日 HH:mm"
+        let endPattern = sameDay
+            ? (language == .english ? "h:mm a" : "HH:mm")
+            : startPattern
+        return "\(self.format(start, pattern: startPattern, language: language))–\(self.format(end, pattern: endPattern, language: language)) \(language.timeZoneLabel)"
+    }
+
+    static func lifetimeRatio(_ item: DetailTimelineItem, now: Date) -> Double? {
+        guard let start = self.date(item.at),
+              let end = self.date(item.endAt),
+              end > start
+        else { return nil }
+        return min(1, max(0, now.timeIntervalSince(start) / end.timeIntervalSince(start)))
+    }
+
+    static func hoursUntilExpiry(_ item: DetailTimelineItem, now: Date) -> Double? {
+        guard let expiry = self.date(item.endAt) else { return nil }
+        return max(0, expiry.timeIntervalSince(now) / 3_600)
+    }
+
+    private static func point(
+        _ value: String?,
+        language: ResetPresentationLanguage) -> String?
+    {
+        ResetTimelinePresentation.boundaryText(value, language: language)
+    }
+
+    private static func date(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        return AlternatingDisplay.date(from: value)
+    }
+
+    private static func format(
+        _ date: Date,
+        pattern: String,
+        language: ResetPresentationLanguage) -> String
+    {
+        let formatter = DateFormatter()
+        formatter.locale = language == .english
+            ? Locale(identifier: "en_US_POSIX")
+            : language.locale
+        formatter.timeZone = language.timeZone
+        formatter.dateFormat = pattern
+        return formatter.string(from: date)
+    }
+}
+
+private struct ResetCreditSummaryView: View {
+    @Environment(\.resetPresentationLanguage) private var presentationLanguage
+    let visualization: DetailVisualization
+
+    private var tint: Color { Color(red: 0.55, green: 0.39, blue: 0.96) }
+
+    var body: some View {
+        if let summary = self.visualization.creditSummary {
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                VStack(alignment: .leading, spacing: 10) {
+                    self.header(summary)
+                    self.strategy(summary)
+                    self.inventory(at: context.date)
+                    self.metrics(summary)
+                    if summary.status == "possible-reset-first" {
+                        self.outcomes
+                    }
+                }
+            }
+        }
+    }
+
+    private func header(_ summary: ResetCreditSummary) -> some View {
+        HStack(spacing: 9) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(self.tint.opacity(0.14))
+                Image(systemName: "ticket.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(self.tint)
+            }
+            .frame(width: 30, height: 30)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(self.presentationLanguage.text("重置券", "Reset Credits"))
+                    .font(.subheadline.weight(.semibold))
+                Text(self.presentationLanguage.text(
+                    self.headerSubtitle(summary, chinese: true),
+                    self.headerSubtitle(summary, chinese: false)))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 6)
+            Label(
+                ResetCreditPresentation.actionLabel(summary, language: self.presentationLanguage),
+                systemImage: self.actionSymbol(summary.action))
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(self.actionTint(summary.action))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(self.actionTint(summary.action).opacity(0.11), in: Capsule())
+        }
+    }
+
+    private func strategy(_ summary: ResetCreditSummary) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: self.actionSymbol(summary.action))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(self.actionTint(summary.action))
+                .frame(width: 18, height: 18)
+                .background(self.actionTint(summary.action).opacity(0.1), in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(ResetCreditPresentation.strategyTitle(
+                    summary,
+                    language: self.presentationLanguage))
+                    .font(.caption.weight(.semibold))
+                Text(ResetCreditPresentation.strategyDetail(
+                    summary,
+                    language: self.presentationLanguage))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(self.actionTint(summary.action).opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func inventory(at now: Date) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(self.presentationLanguage.text("逐券到期时间", "Expiry by credit"))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(self.accountGroups) { group in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Text(group.title)
+                            .font(.caption.weight(.semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+                        if group.isCurrent {
+                            Text(self.presentationLanguage.text("当前账户", "Current"))
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(self.tint)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(self.tint.opacity(0.1), in: Capsule())
+                        }
+                        Spacer(minLength: 0)
+                        Text("×\(group.items.count)")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
+                        self.creditRow(item, index: index, now: now)
+                    }
+                }
+                .padding(8)
+                .background(Color.secondary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
+            }
+        }
+    }
+
+    private func creditRow(_ item: DetailTimelineItem, index: Int, now: Date) -> some View {
+        let urgency = ResetCreditPresentation.hoursUntilExpiry(item, now: now)
+        let color = self.expiryTint(urgency)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "ticket")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(color)
+                Text(self.presentationLanguage.text(
+                    "重置券 \(index + 1)",
+                    "Credit \(index + 1)"))
+                    .font(.caption2.weight(.semibold))
+                Spacer(minLength: 4)
+                if let urgency {
+                    Label(
+                        self.urgencyLabel(urgency),
+                        systemImage: urgency < 24 ? "exclamationmark.circle.fill" : "clock")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(color)
+                }
+            }
+            Text(ResetCreditPresentation.expiryText(
+                item,
+                now: now,
+                language: self.presentationLanguage))
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let ratio = ResetCreditPresentation.lifetimeRatio(item, now: now) {
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.secondary.opacity(0.16))
+                        Capsule().fill(color.opacity(0.75))
+                            .frame(width: max(3, geometry.size.width * ratio))
+                    }
+                }
+                .frame(height: 4)
+                .accessibilityHidden(true)
+            }
+        }
+    }
+
+    private func metrics(_ summary: ResetCreditSummary) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .top, spacing: 7) {
+                self.metricCard(
+                    icon: "plus.circle",
+                    label: self.presentationLanguage.text("净容量价值", "Net capacity"),
+                    value: summary.bestNetPercent.map { "+\(self.percent($0))" }
+                        ?? self.presentationLanguage.text("待验证", "Pending"),
+                    detail: summary.bestNetCapacityUSD.map {
+                        self.presentationLanguage.text(
+                            "约 $\(String(format: "%.2f", $0)) API 等价",
+                            "About $\(String(format: "%.2f", $0)) API-equivalent")
+                    } ?? self.presentationLanguage.text("尚无可靠正收益节点", "No verified positive-value point"))
+                self.metricCard(
+                    icon: "gauge.with.dots.needle.33percent",
+                    label: self.presentationLanguage.text("完整容量", "Full capacity"),
+                    value: summary.fullCapacityUSD.map { "$\(String(format: "%.0f", $0))" }
+                        ?? self.presentationLanguage.text("学习中", "Learning"),
+                    detail: self.presentationLanguage.text("API 等价估算", "API-equivalent estimate"))
+            }
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "clock.badge.checkmark")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(self.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(self.presentationLanguage.text("高价值使用时段", "High-value window"))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(ResetCreditPresentation.windowText(
+                        summary,
+                        language: self.presentationLanguage))
+                        .font(.caption.monospacedDigit())
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let account = summary.accountLabel, !account.isEmpty {
+                        Text(account)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private var outcomes: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(self.presentationLanguage.text("两种结果分别处理", "Two outcomes, handled separately"))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                self.outcomeCard(
+                    icon: "arrow.clockwise.circle",
+                    title: self.presentationLanguage.text("发生免费刷新", "Free reset happens"),
+                    result: self.presentationLanguage.text("保留券并重算", "Keep credit; recalculate"))
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                self.outcomeCard(
+                    icon: "clock.arrow.circlepath",
+                    title: self.presentationLanguage.text("没有发生", "No free reset"),
+                    result: self.presentationLanguage.text("范围结束后重算", "Recalculate after window"))
+            }
+        }
+    }
+
+    private func metricCard(icon: String, label: String, value: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label(label, systemImage: icon)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.weight(.semibold).monospacedDigit())
+            Text(detail)
+                .font(.system(size: 8))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func outcomeCard(icon: String, title: String, result: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 8, weight: .semibold))
+            Text(result)
+                .font(.system(size: 8))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(self.tint.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    private var accountGroups: [CreditAccountGroup] {
+        var order: [String] = []
+        var values: [String: [DetailTimelineItem]] = [:]
+        var titles: [String: String] = [:]
+        for item in self.visualization.items where item.kind == "credit" {
+            let key = item.detail ?? item.title
+            if values[key] == nil { order.append(key) }
+            values[key, default: []].append(item)
+            titles[key] = item.title
+        }
+        return order.compactMap { key in
+            guard let items = values[key], let title = titles[key] else { return nil }
+            return CreditAccountGroup(
+                key: key,
+                title: title,
+                items: items,
+                isCurrent: items.contains { $0.state == "current" })
+        }
+    }
+
+    private func headerSubtitle(_ summary: ResetCreditSummary, chinese: Bool) -> String {
+        let base = chinese
+            ? "\(summary.availableCount) 次可用 · \(self.accountGroups.count) 个账户"
+            : "\(summary.availableCount) available · \(self.accountGroups.count) accounts"
+        if let delivered = summary.deliveredAccountCount,
+           let total = summary.deliveryAccountCount
+        {
+            return base + (chinese ? " · \(delivered)/\(total) 已到账" : " · \(delivered)/\(total) delivered")
+        }
+        if summary.officialState == "available" {
+            return base + (chinese ? " · 官方已生效" : " · Officially available")
+        }
+        return base
+    }
+
+    private func actionSymbol(_ action: String) -> String {
+        switch action {
+        case "redeem": "bolt.fill"
+        case "prepare": "timer"
+        case "awaiting-delivery": "shippingbox"
+        default: "pause.fill"
+        }
+    }
+
+    private func actionTint(_ action: String) -> Color {
+        switch action {
+        case "redeem": .red
+        case "prepare": .orange
+        case "awaiting-delivery": .secondary
+        default: self.tint
+        }
+    }
+
+    private func expiryTint(_ hours: Double?) -> Color {
+        guard let hours else { return .secondary }
+        if hours < 24 { return .red }
+        if hours < 72 { return .orange }
+        return self.tint
+    }
+
+    private func urgencyLabel(_ hours: Double) -> String {
+        if hours < 24 { return self.presentationLanguage.text("即将到期", "Expiring soon") }
+        if hours < 72 { return self.presentationLanguage.text("接近到期", "Due soon") }
+        return self.presentationLanguage.text("有效", "Available")
+    }
+
+    private func percent(_ value: Double) -> String {
+        String(format: "%.1f%%", value)
+    }
+}
+
+private struct CreditAccountGroup: Identifiable {
+    let key: String
+    let title: String
+    let items: [DetailTimelineItem]
+    let isCurrent: Bool
+
+    var id: String { self.key }
+}
+
 struct ResetDetailsView: View {
     let sections: [DetailSection]
     let width: CGFloat
@@ -786,6 +1282,8 @@ struct ResetDetailsView: View {
                         ForEach(visualizations) { visualization in
                             if visualization.kind == "timeline" {
                                 ResetEventTimeline(visualization: visualization)
+                            } else if visualization.kind == "resetCredits" {
+                                ResetCreditSummaryView(visualization: visualization)
                             }
                         }
                         if !visualizations.isEmpty, !section.rows.isEmpty {
@@ -946,7 +1444,7 @@ struct ResetMenuPreview: View {
     private func symbolName(for title: String) -> String {
         switch title {
         case "建议主线", "Suggested Mainlines", "可继续的任务", "Suggested Tasks": "play.circle"
-        case "账户", "Accounts": "person.2"
+        case "用量与目标", "Usage & Targets", "账户", "Accounts": "scope"
         case "为什么这样建议", "Why This Plan": "chart.line.uptrend.xyaxis"
         case "重置", "Resets": "clock.arrow.circlepath"
         default: "list.bullet.rectangle"

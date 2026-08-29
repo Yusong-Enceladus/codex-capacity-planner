@@ -22,7 +22,7 @@ import Testing
       },
       "mainlineCorrections":[{"targetId":"opaque-mainline","label":"论文主线","project":"Research","status":"snoozed","updatedAt":"2026-08-21T14:00:00.000Z"}],
       "details":[{"title":"现在","rows":[{"label":"建议","value":"保持当前节奏","secondaryValue":"目标位于蓝区","group":"summary"},{"label":"重置","value":"下次自然刷新 · 08-28 10:48 UTC+8","relativeTimeAt":"2026-08-28T02:48:00Z","relativeTimePrefix":"下次自然刷新 · "}]}],
-      "submenuDetails":[{"title":"账户","rows":[{"label":"工作账户 · 20x","value":"还需 20.0% · 已用 10.0%","progress":{"title":"工作账户的使用计划","alternateTitle":null,"currentPercent":10,"targetPercent":30,"projectedPercent":28,"projectedLowerPercent":22,"projectedUpperPercent":35,"currentLabel":"当前 10.0%","targetLabel":"目标 30.0%","projectedLabel":"预计 22.0%–35.0%"},"actions":[{"title":"暂不推荐","operation":"snooze","targetId":"opaque-mainline"}]}]}]
+      "submenuDetails":[{"title":"用量与目标","rows":[{"label":"工作账户 · 20x","value":"还需 20.0% · 已用 10.0%","progress":{"title":"工作账户的使用计划","alternateTitle":null,"currentPercent":10,"targetPercent":30,"projectedPercent":28,"projectedLowerPercent":22,"projectedUpperPercent":35,"currentLabel":"当前 10.0%","targetLabel":"目标 30.0%","projectedLabel":"预计 22.0%–35.0%"},"actions":[{"title":"暂不推荐","operation":"snooze","targetId":"opaque-mainline"}]}]}]
     }
     """#.utf8)
     let value = try JSONDecoder().decode(ResetSnapshot.self, from: data)
@@ -31,7 +31,7 @@ import Testing
     #expect(value.details.first?.rows.first?.label == "建议")
     #expect(value.details.first?.rows.first?.group == "summary")
     #expect(value.details.first?.rows.last?.relativeTimeAt == "2026-08-28T02:48:00Z")
-    #expect(value.submenuDetails.first?.title == "账户")
+    #expect(value.submenuDetails.first?.title == "用量与目标")
     #expect(value.submenuDetails.first?.rows.first?.progress?.currentPercent == 10)
     #expect(value.submenuDetails.first?.rows.first?.progress?.projectedUpperPercent == 35)
     #expect(value.submenuDetails.first?.rows.first?.actions?.first?.operation == "snooze")
@@ -225,7 +225,7 @@ import Testing
     #expect(homeReset.value.hasSuffix(" (PT)"))
     #expect(homeReset.value.contains("…") == false)
 
-    let accounts = try #require(snapshot.submenuDetails.first(where: { $0.title == "Accounts" }))
+    let accounts = try #require(snapshot.submenuDetails.first(where: { $0.title == "Usage & Targets" }))
     #expect(accounts.rows.filter { $0.progress != nil }.count == 2)
     #expect(accounts.rows.allSatisfy { $0.group == nil })
 
@@ -237,11 +237,20 @@ import Testing
     #expect(reset.rows.contains(where: { $0.group == "current" }) == false)
     #expect(reset.rows.contains(where: { $0.label == "Possible reset window" }))
     #expect(reset.rows.contains(where: { $0.label == "Next natural reset" }) == false)
-    #expect(reset.rows.contains(where: {
-        $0.group == "assets" &&
-            $0.label == "Reset-credit plan" &&
-            $0.value.contains("Hold the credit")
-    }))
+    let visualizations = try #require(reset.visualizations)
+    let creditVisualizations = visualizations.filter { visualization in
+        visualization.kind == "resetCredits" && visualization.group == "assets"
+    }
+    let credits = try #require(creditVisualizations.first)
+    #expect(credits.creditSummary?.action == "hold")
+    #expect(credits.creditSummary?.availableCount == 3)
+    #expect(credits.items.count == 3)
+    #expect(Set(credits.items.compactMap(\.endAt)).count == 3)
+    let creditSummary = try #require(credits.creditSummary)
+    let highValueWindow = ResetCreditPresentation.windowText(
+        creditSummary,
+        language: .english)
+    #expect(highValueWindow.components(separatedBy: "PT").count == 2)
 
     let sourceLabels = reset.rows
         .filter { $0.group == "official" }
@@ -257,6 +266,53 @@ import Testing
     #expect(DetailMenuLayout.childGroups("重置") == ["assets", "history", "official"])
     #expect(DetailMenuLayout.childGroups("Resets").contains("timeline") == false)
     #expect(DetailMenuLayout.summaryGroup("为什么这样建议") == "summary")
+    #expect(DetailMenuLayout.childGroups("为什么这样建议") == ["calculation"])
+    #expect(DetailMenuLayout.childGroups("建议主线").isEmpty)
+    #expect(DetailMenuLayout.calculationGroups == [
+        "calculation-result",
+        "calculation-basis",
+        "calculation-raw",
+    ])
+}
+
+@Test func `reset credits keep their own expiry and selected time zone`() throws {
+    let now = try #require(AlternatingDisplay.date(from: "2026-08-29T08:00:00Z"))
+    let first = DetailTimelineItem(
+        id: "credit-1",
+        kind: "credit",
+        state: "current",
+        title: "Work account",
+        badge: "1",
+        at: "2026-08-27T08:00:00Z",
+        endAt: "2026-09-02T08:00:00Z")
+    let second = DetailTimelineItem(
+        id: "credit-2",
+        kind: "credit",
+        state: "current",
+        title: "Work account",
+        badge: "1",
+        at: "2026-08-28T08:00:00Z",
+        endAt: "2026-09-06T08:00:00Z")
+
+    let firstChinese = ResetCreditPresentation.expiryText(
+        first,
+        now: now,
+        language: .simplifiedChinese)
+    let secondChinese = ResetCreditPresentation.expiryText(
+        second,
+        now: now,
+        language: .simplifiedChinese)
+    let firstEnglish = ResetCreditPresentation.expiryText(
+        first,
+        now: now,
+        language: .english)
+
+    #expect(firstChinese != secondChinese)
+    #expect(firstChinese.contains("9月2日 16:00 UTC+8"))
+    #expect(secondChinese.contains("9月6日 16:00 UTC+8"))
+    #expect(firstEnglish.contains("Sep 2, 1:00 AM PT"))
+    let ratio = try #require(ResetCreditPresentation.lifetimeRatio(first, now: now))
+    #expect(abs(ratio - 1.0 / 3.0) < 0.001)
 }
 
 @Test func `alternating display uses a stable ten second phase and coarse countdown`() {

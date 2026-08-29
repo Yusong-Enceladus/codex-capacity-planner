@@ -59,11 +59,47 @@ struct DetailVisualization: Codable, Equatable, Identifiable, Sendable {
     let group: String?
     let title: String
     let items: [DetailTimelineItem]
+    let creditSummary: ResetCreditSummary?
+
+    init(
+        kind: String,
+        group: String? = nil,
+        title: String,
+        items: [DetailTimelineItem],
+        creditSummary: ResetCreditSummary? = nil)
+    {
+        self.kind = kind
+        self.group = group
+        self.title = title
+        self.items = items
+        self.creditSummary = creditSummary
+    }
 
     var id: String {
         let group = self.group ?? "all"
         return "\(group)\u{1f}\(self.kind)\u{1f}\(self.title)"
     }
+}
+
+/// Structured reset-credit results let the menu explain inventory, value and
+/// timing visually without duplicating the planner's prose or exposing credit
+/// identifiers.
+struct ResetCreditSummary: Codable, Equatable, Sendable {
+    let status: String
+    let action: String
+    let accountLabel: String?
+    let availableCount: Int
+    let bestNetPercent: Double?
+    let bestNetCapacityUSD: Double?
+    let fullCapacityUSD: Double?
+    let optimalWindowStartAt: String?
+    let optimalWindowEndAt: String?
+    let possibleResetWindowEndAt: String?
+    let nextFreeResetAt: String?
+    let confidence: String
+    let officialState: String?
+    let deliveredAccountCount: Int?
+    let deliveryAccountCount: Int?
 }
 
 struct DetailTimelineItem: Codable, Equatable, Identifiable, Sendable {
