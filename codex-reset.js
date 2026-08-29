@@ -2531,6 +2531,17 @@ defineProvider({
       return clip(text, typeof limit === "number" ? limit : 112);
     }
 
+    function candidateChineseSummary(summary, localizedSummary) {
+      const localized = signalTeaser(localizedSummary, 112);
+      if (localized) return localized;
+      const original = signalTeaser(summary, 112);
+      const normalized = original.toLowerCase();
+      if (normalized.includes("soon") && normalized.includes("not today")) {
+        return "Tibo 说“很快，但不是今天”";
+      }
+      return original ? "Tibo 发出了可能近期刷新的暗示" : "Tibo 暗示可能很快刷新";
+    }
+
     function signalSecondary(summary, metadata) {
       const suffix = ` · ${metadata}`;
       const summaryLimit = Math.max(24, 120 - suffix.length);
@@ -2557,6 +2568,51 @@ defineProvider({
       if (!Number.isFinite(valueMs)) return "—";
       const shifted = new Date(valueMs + 8 * 60 * 60 * 1000);
       return `${shifted.toISOString().slice(5, 16).replace("T", " ")} UTC+8`;
+    }
+
+    function candidateWindowUTC8(startMs, endMs) {
+      const start = Number.isFinite(startMs) ? new Date(startMs + 8 * 60 * 60 * 1000) : null;
+      const end = Number.isFinite(endMs) ? new Date(endMs + 8 * 60 * 60 * 1000) : start;
+      if (!start || !end) return "有刷新暗示，但时间还不确定";
+      const startMonth = start.getUTCMonth() + 1;
+      const startDay = start.getUTCDate();
+      const endMonth = end.getUTCMonth() + 1;
+      const endDay = end.getUTCDate();
+      const range = startMonth === endMonth && startDay === endDay
+        ? `${startMonth}月${startDay}日`
+        : startMonth === endMonth
+          ? `${startMonth}月${startDay}日至${endDay}日`
+          : `${startMonth}月${startDay}日至${endMonth}月${endDay}日`;
+      return `可能在 ${range}刷新（UTC+8）`;
+    }
+
+    function sourceDate(valueMs, locale, timeZone) {
+      if (!Number.isFinite(valueMs)) return "";
+      return new Intl.DateTimeFormat(locale, {
+        month: "short",
+        day: "2-digit",
+        timeZone,
+      }).format(new Date(valueMs));
+    }
+
+    function sourceLink(kind, valueMs, url) {
+      if (!url) return null;
+      const labels = {
+        candidate: ["查看候选暗示原帖", "View candidate source"],
+        commitment: ["查看重置承诺原帖", "View reset commitment source"],
+        announcement: ["查看重置公告原帖", "View reset announcement source"],
+        confirmation: ["查看重置确认原帖", "View reset confirmation source"],
+        credit: ["查看重置券公告原帖", "View reset credit source"],
+        history: ["查看对应重置公告原帖", "View matching reset source"],
+      };
+      const [label, labelEnglish] = labels[kind] || labels.announcement;
+      const chineseDate = sourceDate(valueMs, "zh-CN", "Asia/Shanghai");
+      const englishDate = sourceDate(valueMs, "en-US", "America/Los_Angeles");
+      return {
+        label: chineseDate ? `${label} · ${chineseDate}` : label,
+        labelEnglish: englishDate ? `${labelEnglish} · ${englishDate} PT` : labelEnglish,
+        url,
+      };
     }
 
     function updatedFreshness(valueMs) {
@@ -3056,32 +3112,43 @@ defineProvider({
         ? forecast.signal.atMs
         : stateTime(receiverEvent && (receiverEvent.announced_at || receiverEvent.announcedAt));
       const resetSummary = forecast.signal.level !== "none"
-        ? forecast.signal.summary || forecast.signal.localizedSummary
+        ? signalWindowIsInferred
+          ? candidateChineseSummary(
+              forecast.signal.summary,
+              forecast.signal.localizedSummary,
+            )
+          : forecast.signal.localizedSummary || forecast.signal.summary
         : codexResetText(
             receiverEvent &&
               (receiverEvent.localized_summary ||
                 receiverEvent.localizedSummary ||
                 receiverEvent.summary),
           );
+      const candidateTime = candidateWindowUTC8(
+        forecast.signal.windowStartMs,
+        forecast.signal.windowEndMs || resetDeadlineMs,
+      );
       actionRows.push({
         label: "重置",
-        value: resetDeadlineMs
-          ? `${resetLabel} · ${signalWindowIsInferred ? "推测窗口至 " : "约 "}${utc8(resetDeadlineMs)}`
-          : resetLabel,
-        relativeTimeAt: resetDeadlineMs
+        value: signalWindowIsInferred
+          ? `${resetLabel} · ${candidateTime}`
+          : resetDeadlineMs
+            ? `${resetLabel} · 约 ${utc8(resetDeadlineMs)}`
+            : resetLabel,
+        relativeTimeAt: resetDeadlineMs && !signalWindowIsInferred
           ? new Date(resetDeadlineMs).toISOString()
           : null,
-        relativeTimePrefix: resetDeadlineMs
-          ? `${resetLabel} · ${signalWindowIsInferred ? "推测窗口至 " : "约 "}`
+        relativeTimePrefix: resetDeadlineMs && !signalWindowIsInferred
+          ? `${resetLabel} · 约 `
           : null,
-        secondaryValue: signalSecondary(
-          resetSummary || "Tibo 发布了新的重置消息",
-          resetDeadlineMs
-            ? signalWindowIsInferred
-              ? `系统推测观察窗至 ${utc8(resetDeadlineMs)}，并非官方截止时间`
-              : `截止 ${utc8(resetDeadlineMs)}`
-            : `发布 ${utc8(resetPublishedAtMs)}`,
-        ),
+        secondaryValue: signalWindowIsInferred
+          ? `${signalTeaser(resetSummary || "Tibo 暗示可能很快刷新", 28)}；目前还不是正式公告。`
+          : signalSecondary(
+              resetSummary || "Tibo 发布了新的重置消息",
+              resetDeadlineMs
+                ? `截止 ${utc8(resetDeadlineMs)}`
+                : `发布 ${utc8(resetPublishedAtMs)}`,
+            ),
       });
     } else if (
       creditSummaryRow &&
@@ -3150,7 +3217,7 @@ defineProvider({
       submenuEventRows.push({
         label: "当前状态",
         value: receiverEventLabel || signalLabel,
-        group: "current",
+        group: "official",
         secondaryValue:
           receiverEvent
             ? deliveredAccounts > 0
@@ -3167,7 +3234,12 @@ defineProvider({
                 }，规划器独立预留届时剩余额度的 10%，候选本身不会把目标推到 100%`,
       });
       const currentOfficialSummary = forecast.signal.level !== "none"
-        ? forecast.signal.localizedSummary || forecast.signal.summary
+        ? signalWindowIsInferred
+          ? candidateChineseSummary(
+              forecast.signal.summary,
+              forecast.signal.localizedSummary,
+            )
+          : forecast.signal.localizedSummary || forecast.signal.summary
         : codexResetText(
             receiverEvent &&
               (receiverEvent.localized_summary ||
@@ -3181,25 +3253,30 @@ defineProvider({
         submenuEventRows.push({
           label: signalWindowIsInferred ? "候选摘要" : "官方摘要",
           value: signalTeaser(currentOfficialSummary, 180),
-          group: "current",
-          secondaryValue: `发布 ${utc8(currentOfficialAtMs)} · 完整原文见“官方消息”${
-            signalWindowIsInferred ? "；这是有上下文的推测，不是公告" : ""
-          }`,
+          group: "official",
+          secondaryValue: signalWindowIsInferred
+            ? `发布 ${utc8(currentOfficialAtMs)} · 这是有上下文的暗示，目前还不是正式公告`
+            : `发布 ${utc8(currentOfficialAtMs)} · 完整原文与来源见下方`,
         });
       }
       if (forecast.signal.level !== "none" && forecast.signal.deadlineMs) {
         submenuEventRows.push({
-          label: signalWindowIsInferred ? "推测观察窗" : "官方预计时间",
-          value: signalWindowIsInferred && forecast.signal.windowStartMs
-            ? `${utc8(forecast.signal.windowStartMs)}–${utc8(forecast.signal.windowEndMs)}`
+          label: signalWindowIsInferred ? "可能刷新时间" : "官方预计时间",
+          value: signalWindowIsInferred
+            ? candidateWindowUTC8(
+                forecast.signal.windowStartMs,
+                forecast.signal.windowEndMs || forecast.signal.deadlineMs,
+              )
             : `约 ${utc8(forecast.signal.deadlineMs)}`,
-          relativeTimeAt: new Date(forecast.signal.deadlineMs).toISOString(),
-          relativeTimePrefix: signalWindowIsInferred ? "观察窗结束于 " : "约 ",
-          group: "current",
+          relativeTimeAt: signalWindowIsInferred
+            ? null
+            : new Date(forecast.signal.deadlineMs).toISOString(),
+          relativeTimePrefix: signalWindowIsInferred ? null : "约 ",
+          group: "official",
           secondaryValue: signalWindowIsInferred
-            ? `系统根据原文和上下文推测；原始表述：${
+            ? `根据原文与上下文推测，目前没有正式时间；原始表述：${
                 forecast.signal.windowLabel || "未提供"
-              }。它只定义观察区间，不是官方承诺`
+              }`
             : forecast.signal.windowLabel
               ? `官方原始表述：${forecast.signal.windowLabel}；保留近似含义，不伪造分钟精度`
               : "由官方消息中的日期、时间和时区换算；保留近似含义",
@@ -3209,7 +3286,7 @@ defineProvider({
         submenuEventRows.push({
           label: "个人到账",
           value: `${deliveredAccounts}/${deliveryValues.length} 个账号已确认`,
-          group: "current",
+          group: "official",
           secondaryValue: Object.entries(accountDelivery)
             .map(([accountID, state]) => {
               const candidate = model.accounts.find((item) => item.id === accountID);
@@ -3218,32 +3295,13 @@ defineProvider({
             .join(" · "),
         });
       }
-      if (model.decision) {
-        submenuEventRows.push({
-          label: "对当前计划的影响",
-          value: `目标已用 ${percent(model.decision.targetUsed, 1)} · 当前已用 ${percent(model.usage.usedPercent, 1)}`,
-          group: "current",
-          secondaryValue: receiverEvent && forecast.signal.level === "none"
-            ? "当前账号已经到账，因此使用新周期普通计划；其他账号继续独立等待"
-            : forecast.signal.deadlineMs && !signalWindowIsInferred
-            ? "系统使用同一个官方截止点计算红线、任务建议和跨账号容量损失"
-            : forecast.signal.level === "hint"
-              ? `${signalWindowIsInferred ? "推测窗口不作为官方截止点；" : "没有官方截止时间；"}使用 24 小时计划窗，候选额外安排 ${percent(
-                  model.decision.candidateUse,
-                  1,
-                )} 周额度；公开 24 小时概率仍为 ${percent(
-                  model.decision.probability,
-                  1,
-                )}`
-              : "官方没有提供时间，因此不生成公告倒计时；只保留明确公告状态",
-        });
-      }
-
       const timelineReceiverWindow = codexResetObject(
         receiverEvent && (receiverEvent.official_window || receiverEvent.window),
       );
       const timelineAtMs = forecast.signal.level !== "none"
-        ? forecast.signal.windowStartMs || forecast.signal.deadlineMs || forecast.signal.atMs
+        ? forecast.signal.level === "hint"
+          ? forecast.signal.windowStartMs
+          : forecast.signal.windowStartMs || forecast.signal.deadlineMs || forecast.signal.atMs
         : stateTime(
             (timelineReceiverWindow &&
               (timelineReceiverWindow.start_at || timelineReceiverWindow.startAt)) ||
@@ -3251,7 +3309,9 @@ defineProvider({
               (receiverEvent && (receiverEvent.announced_at || receiverEvent.announcedAt)),
           );
       const timelineEndAtMs = forecast.signal.level !== "none"
-        ? forecast.signal.windowEndMs || forecast.signal.deadlineMs
+        ? forecast.signal.level === "hint" && !forecast.signal.windowStartMs
+          ? null
+          : forecast.signal.windowEndMs || forecast.signal.deadlineMs
         : stateTime(
             (timelineReceiverWindow &&
               (timelineReceiverWindow.end_at || timelineReceiverWindow.endAt)) ||
@@ -3265,6 +3325,9 @@ defineProvider({
         : currentAccountDelivery === "landed"
           ? "confirmed"
           : "pending";
+      const timelineSourceEnglish = forecast.signal.level !== "none"
+        ? forecast.signal.summary || currentOfficialSummary
+        : codexResetText(receiverEvent && receiverEvent.summary) || currentOfficialSummary;
       resetTimelineItems.push({
         id: `signal-${forecast.signal.id || currentOfficialAtMs || "current"}`,
         kind: forecast.signal.level === "hint"
@@ -3278,7 +3341,12 @@ defineProvider({
           : forecast.signal.level === "commitment"
             ? "有期限重置承诺"
             : "明确重置公告",
-        detail: signalTeaser(currentOfficialSummary || "Tibo 发布了新的重置消息", 140),
+        detail: forecast.signal.level === "hint"
+          ? `${signalTeaser(currentOfficialSummary || "Tibo 暗示可能很快刷新", 112)}；目前还不是正式公告。`
+          : signalTeaser(currentOfficialSummary || "Tibo 发布了新的重置消息", 140),
+        detailEnglish: forecast.signal.level === "hint"
+          ? `Tibo said “${signalTeaser(timelineSourceEnglish || "soon, but not today", 96)}”; this is not an official announcement.`
+          : signalTeaser(timelineSourceEnglish || "Tibo published a reset update", 140),
         badge: timelineState === "inferred"
           ? "推测"
           : timelineState === "confirmed"
@@ -3287,11 +3355,7 @@ defineProvider({
         at: timelineAtMs ? new Date(timelineAtMs).toISOString() : null,
         endAt: timelineEndAtMs ? new Date(timelineEndAtMs).toISOString() : null,
         publishedAt: currentOfficialAtMs ? new Date(currentOfficialAtMs).toISOString() : null,
-        link: forecast.signal.url
-          ? { label: "打开这条 Tibo 原帖", url: forecast.signal.url }
-          : receiverEvent && receiverEvent.url
-            ? { label: "打开这条 Tibo 原帖", url: receiverEvent.url }
-            : null,
+        link: null,
       });
     }
     if (forecast.signal.level !== "none") {
@@ -3311,12 +3375,27 @@ defineProvider({
         group: "official",
         secondaryValue: [
           `发布 ${utc8(forecast.signal.atMs)}`,
-          forecast.signal.deadlineMs ? `窗口截止 ${utc8(forecast.signal.deadlineMs)}` : null,
+          forecast.signal.deadlineMs
+            ? signalWindowIsInferred
+              ? candidateWindowUTC8(
+                  forecast.signal.windowStartMs,
+                  forecast.signal.windowEndMs || forecast.signal.deadlineMs,
+                )
+              : `官方预计时间 ${utc8(forecast.signal.deadlineMs)}`
+            : null,
           forecast.signal.windowLabel || null,
         ]
           .filter(Boolean)
           .join(" · "),
-        link: forecast.signal.url ? { label: "打开这条 Tibo 原帖", url: forecast.signal.url } : null,
+        link: sourceLink(
+          forecast.signal.level === "hint"
+            ? "candidate"
+            : forecast.signal.level === "commitment"
+              ? "commitment"
+              : "announcement",
+          forecast.signal.atMs,
+          forecast.signal.url,
+        ),
       });
     } else if (receiverEvent) {
       const receiverSummary =
@@ -3339,9 +3418,11 @@ defineProvider({
         ),
         group: "official",
         secondaryValue: `发布 ${utc8(stateTime(receiverEvent.announced_at || receiverEvent.announcedAt))}`,
-        link: receiverEvent.url
-          ? { label: "打开这条 Tibo 原帖", url: receiverEvent.url }
-          : null,
+        link: sourceLink(
+          "announcement",
+          stateTime(receiverEvent.announced_at || receiverEvent.announcedAt),
+          receiverEvent.url,
+        ),
       });
     }
     const latestCompletedPublicEvent = completedPublicEvents
@@ -3367,9 +3448,11 @@ defineProvider({
         ),
         group: "official",
         secondaryValue: `发布 ${utc8(stateTime(latestCompletedPublicEvent.announcedAt))} · 已与本机刷新对账`,
-        link: latestCompletedPublicEvent.url
-          ? { label: "打开这条 Tibo 原帖", url: latestCompletedPublicEvent.url }
-          : null,
+        link: sourceLink(
+          "confirmation",
+          stateTime(latestCompletedPublicEvent.announcedAt),
+          latestCompletedPublicEvent.url,
+        ),
       });
     }
     if (bankedCampaign) {
@@ -3404,15 +3487,22 @@ defineProvider({
           ].filter(Boolean).join("\n\n"), 1900),
           group: "official",
           secondaryValue: `最新公告 ${utc8(stateTime(bankedCampaign.latestEventAt || bankedCampaign.announcedAt))}`,
-          link: bankedCampaign.url
-            ? { label: "打开这条 Tibo 原帖", url: bankedCampaign.url }
-            : null,
+          link: sourceLink(
+            "credit",
+            stateTime(bankedCampaign.latestEventAt || bankedCampaign.announcedAt),
+            bankedCampaign.url,
+          ),
         },
       );
       const campaignAtMs = stateTime(
         bankedCampaign.latestEventAt || bankedCampaign.announcedAt,
       );
-      if (campaignAtMs) {
+      if (
+        campaignAtMs &&
+        bankedCampaign.status !== "observed" &&
+        forecast.signal.level === "none" &&
+        !receiverEvent
+      ) {
         resetTimelineItems.push({
           id: `credit-${codexResetSignalID(bankedCampaign) || campaignAtMs}`,
           kind: "credit",
@@ -3422,13 +3512,15 @@ defineProvider({
             bankedCampaign.localizedSummary || bankedCampaign.summary || campaignStatus,
             140,
           ),
-          badge: bankedCampaign.status === "observed" ? "已确认" : "到账中",
+          detailEnglish: signalTeaser(
+            bankedCampaign.summary || bankedCampaign.localizedSummary || campaignStatus,
+            140,
+          ),
+          badge: "到账中",
           at: new Date(campaignAtMs).toISOString(),
           endAt: null,
           publishedAt: new Date(campaignAtMs).toISOString(),
-          link: bankedCampaign.url
-            ? { label: "打开这条 Tibo 原帖", url: bankedCampaign.url }
-            : null,
+          link: null,
         });
       }
     }
@@ -3463,6 +3555,14 @@ defineProvider({
             : reset.cause === "upgrade"
               ? "账号付费档位上升后，额度与刷新窗口实际重建"
               : "未使用重置券、未到自然刷新时间且额度窗口已经重建";
+      const resetEvidenceEnglish =
+        reset.cause === "banked-redeem"
+          ? "Credit inventory decreased while quota and the weekly reset time both advanced"
+          : reset.cause === "automatic"
+            ? "The reset occurred at the previous cycle's natural boundary"
+            : reset.cause === "upgrade"
+              ? "Quota and the reset window rebuilt after the account moved to a paid tier"
+              : "Quota and the reset window rebuilt before the natural boundary without using a credit";
       submenuEventRows.push({
         label: index === 0 ? "最近一次刷新" : `历史刷新 ${index + 1}`,
         value: `${resetCauseLabel(reset.cause)} · ${utc8(stateTime(reset.at))}`,
@@ -3473,12 +3573,16 @@ defineProvider({
               92,
             )}`
           : resetEvidence,
-        link: matchingPublicEvent && matchingPublicEvent.url
-          ? { label: "打开对应的 Tibo 原帖", url: matchingPublicEvent.url }
+        link: matchingPublicEvent
+          ? sourceLink(
+              "history",
+              stateTime(matchingPublicEvent.announcedAt),
+              matchingPublicEvent.url,
+            )
           : null,
       });
       const resetAtMs = stateTime(reset.at);
-      if (resetAtMs) {
+      if (resetAtMs && index === 0) {
         const matchingPublicAtMs = matchingPublicEvent
           ? stateTime(matchingPublicEvent.announcedAt)
           : null;
@@ -3494,21 +3598,15 @@ defineProvider({
           kind: historyKind,
           state: "confirmed",
           title: resetCauseLabel(reset.cause),
-          detail: matchingPublicEvent
-            ? `${resetEvidence} · ${signalTeaser(
-                matchingPublicEvent.localizedSummary || matchingPublicEvent.summary,
-                92,
-              )}`
-            : resetEvidence,
+          detail: resetEvidence,
+          detailEnglish: resetEvidenceEnglish,
           badge: "已确认",
           at: new Date(resetAtMs).toISOString(),
           endAt: null,
           publishedAt: matchingPublicAtMs
             ? new Date(matchingPublicAtMs).toISOString()
             : null,
-          link: matchingPublicEvent && matchingPublicEvent.url
-            ? { label: "打开对应的 Tibo 原帖", url: matchingPublicEvent.url }
-            : null,
+          link: null,
         });
       }
     }
@@ -3521,20 +3619,13 @@ defineProvider({
       });
     }
     if (model.usage) {
-      submenuEventRows.push({
-        label: "下次自然刷新",
-        value: utc8(model.usage.resetsAtMs),
-        relativeTimeAt: new Date(model.usage.resetsAtMs).toISOString(),
-        relativeTimePrefix: "",
-        group: "current",
-        secondaryValue: "同档续费及到期后恢复原档不会改变这个冷却周期",
-      });
       resetTimelineItems.push({
         id: `natural-${model.usage.resetsAtMs}`,
         kind: "natural",
         state: "scheduled",
         title: "下次自然刷新",
         detail: "同档续费不会改变当前冷却周期",
+        detailEnglish: "Renewing the same tier does not change the current cooldown cycle",
         badge: "计划",
         at: new Date(model.usage.resetsAtMs).toISOString(),
         endAt: null,
@@ -4045,7 +4136,7 @@ defineProvider({
       ...row,
       group: "data",
     }));
-    const resetGroupOrder = { current: 0, assets: 1, history: 2, official: 3 };
+    const resetGroupOrder = { assets: 0, history: 1, official: 2 };
     const resetRows = [...submenuEventRows, ...submenuCreditRows].sort(
       (left, right) =>
         (resetGroupOrder[left.group] === undefined ? 9 : resetGroupOrder[left.group]) -

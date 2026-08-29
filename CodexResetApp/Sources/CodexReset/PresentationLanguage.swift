@@ -12,6 +12,19 @@ enum ResetPresentationLanguage: String, Sendable {
         }
     }
 
+    var timeZone: TimeZone {
+        switch self {
+        case .simplifiedChinese:
+            TimeZone(identifier: "Asia/Shanghai") ?? .gmt
+        case .english:
+            TimeZone(identifier: "America/Los_Angeles") ?? .gmt
+        }
+    }
+
+    var timeZoneLabel: String {
+        self.text("UTC+8", "PT")
+    }
+
     func text(_ simplifiedChinese: String, _ english: String) -> String {
         switch self {
         case .simplifiedChinese: simplifiedChinese

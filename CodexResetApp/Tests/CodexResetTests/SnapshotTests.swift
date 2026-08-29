@@ -57,13 +57,14 @@ import Testing
               "id":"candidate-1",
               "kind":"candidate",
               "state":"inferred",
-              "title":"候选重置暗示",
-              "detail":"推测观察窗，不是官方截止时间",
-              "badge":"推测",
+              "title":"legacy candidate title",
+              "detail":"Tibo 说“很快，但不是今天”；目前还不是正式公告。",
+              "detailEnglish":"Tibo said “soon, but not today”; this is not an official announcement.",
+              "badge":"legacy inferred badge",
               "at":"2026-08-29T07:00:00Z",
               "endAt":"2026-08-30T06:59:59Z",
               "publishedAt":"2026-08-29T04:07:10Z",
-              "link":{"label":"打开原帖","url":"https://example.invalid/status/2000000000000000000"}
+              "link":{"label":"查看候选暗示原帖 · 08-29","labelEnglish":"View candidate source · Aug 28 PT","url":"https://example.invalid/status/2000000000000000000"}
             },
             {
               "id":"natural-1",
@@ -89,10 +90,111 @@ import Testing
     #expect(timeline.group == "timeline")
     #expect(timeline.items.first?.kind == "candidate")
     #expect(timeline.items.first?.state == "inferred")
-    #expect(timeline.items.first?.badge == "推测")
+    #expect(timeline.items.first?.badge == "legacy inferred badge")
+    #expect(timeline.items.first?.detailEnglish?.contains("not an official announcement") == true)
     #expect(timeline.items.first?.endAt == "2026-08-30T06:59:59Z")
     #expect(timeline.items.first?.link?.url == "https://example.invalid/status/2000000000000000000")
+    #expect(timeline.items.first?.link?.labelEnglish == "View candidate source · Aug 28 PT")
     #expect(timeline.items.last?.state == "scheduled")
+}
+
+@Test func `timeline semantics localize copy and time zones without candidate countdown jargon`() throws {
+    let candidate = DetailTimelineItem(
+        id: "candidate",
+        kind: "candidate",
+        state: "inferred",
+        title: "legacy title",
+        detail: "Tibo 说“很快，但不是今天”；目前还不是正式公告。",
+        detailEnglish: "Tibo said “soon, but not today”; this is not an official announcement.",
+        badge: "legacy badge",
+        at: "2026-08-29T07:00:00Z",
+        endAt: "2026-08-30T06:59:59Z",
+        publishedAt: "2026-08-29T04:07:10Z")
+
+    #expect(ResetTimelinePresentation.title(
+        for: candidate,
+        language: .simplifiedChinese) == "候选暗示")
+    #expect(ResetTimelinePresentation.title(
+        for: candidate,
+        language: .english) == "Candidate hint")
+    #expect(ResetTimelinePresentation.badge(
+        for: candidate,
+        language: .simplifiedChinese) == "未确认")
+    #expect(ResetTimelinePresentation.badge(
+        for: candidate,
+        language: .english) == "Unconfirmed")
+    #expect(ResetTimelinePresentation.timeText(
+        for: candidate,
+        language: .simplifiedChinese) == "可能在 8月29日至30日刷新（UTC+8）")
+    #expect(ResetTimelinePresentation.timeText(
+        for: candidate,
+        language: .english) == "Reset may happen Saturday (PT)")
+    #expect(ResetTimelinePresentation.detail(
+        for: candidate,
+        language: .english)?.contains("not an official announcement") == true)
+    #expect(ResetTimelinePresentation.publishedText(
+        for: candidate,
+        language: .simplifiedChinese)?.hasSuffix("UTC+8") == true)
+    #expect(ResetTimelinePresentation.publishedText(
+        for: candidate,
+        language: .english)?.hasSuffix("PT") == true)
+
+    let unknown = DetailTimelineItem(
+        id: "unknown",
+        kind: "candidate",
+        state: "inferred",
+        title: "legacy",
+        badge: "legacy")
+    #expect(ResetTimelinePresentation.timeText(
+        for: unknown,
+        language: .simplifiedChinese) == "有刷新暗示，但时间还不确定")
+    #expect(ResetTimelinePresentation.timeText(
+        for: unknown,
+        language: .english) == "There is a reset hint, but no confirmed timing.")
+}
+
+@Test func `exact timeline times follow the selected language time zone`() {
+    let natural = DetailTimelineItem(
+        id: "natural",
+        kind: "natural",
+        state: "scheduled",
+        title: "legacy",
+        badge: "legacy",
+        at: "2026-09-01T09:00:00Z")
+
+    #expect(ResetTimelinePresentation.timeText(
+        for: natural,
+        language: .simplifiedChinese) == "9月1日 17:00 UTC+8")
+    #expect(ResetTimelinePresentation.timeText(
+        for: natural,
+        language: .english) == "Sep 1, 2:00 AM PT")
+}
+
+@Test func `reset fixture keeps timeline compact and sources in official updates`() throws {
+    let snapshot = ResetDemoFixtures.primarySnapshot(.english)
+    let reset = try #require(snapshot.submenuDetails.first(where: { $0.title == "Resets" }))
+    let timeline = try #require(reset.visualizations?.first(where: { $0.group == "timeline" }))
+
+    #expect(timeline.items.count == 3)
+    #expect(timeline.items.allSatisfy { $0.link == nil })
+    #expect(reset.rows.contains(where: { $0.group == "current" }) == false)
+    #expect(reset.rows.contains(where: { $0.label == "Possible reset time" }))
+    #expect(reset.rows.contains(where: { $0.label == "Next natural reset" }) == false)
+
+    let sourceLabels = reset.rows
+        .filter { $0.group == "official" }
+        .compactMap { $0.link?.labelEnglish }
+    #expect(sourceLabels.count == 2)
+    #expect(Set(sourceLabels).count == sourceLabels.count)
+    #expect(sourceLabels.allSatisfy { $0.contains("PT") })
+}
+
+@Test func `reset menu opens on timeline without a timeline child submenu`() {
+    #expect(DetailMenuLayout.rootVisualizationGroup("重置") == "timeline")
+    #expect(DetailMenuLayout.rootVisualizationGroup("Resets") == "timeline")
+    #expect(DetailMenuLayout.childGroups("重置") == ["assets", "history", "official"])
+    #expect(DetailMenuLayout.childGroups("Resets").contains("timeline") == false)
+    #expect(DetailMenuLayout.summaryGroup("为什么这样建议") == "summary")
 }
 
 @Test func `alternating display uses a stable ten second phase and coarse countdown`() {

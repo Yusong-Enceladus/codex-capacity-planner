@@ -53,9 +53,12 @@ agree, the evidence band is a supported tease/candidate band, and both ends of
 the inferred window are valid. `score.value` is evidence strength used to
 qualify and explain the candidate; it is never a reset probability and must not
 replace `rounded_24h` or `rounded_48h`. The window keeps `inferred` provenance,
-is displayed as an observation interval rather than an official deadline, and
-expires when its end passes. A later explicit event with the same or a newer
-public ID takes precedence through the normal signal lifecycle.
+is displayed as a dashed inferred range rather than an official deadline, and
+expires when its end passes. Clients must not show a countdown to the end of an
+inferred range. User-facing copy should instead say that a reset may happen on
+the relevant local day, or that timing remains unknown. A later explicit event
+with the same or a newer public ID takes precedence through the normal signal
+lifecycle.
 
 ## Feed
 
@@ -121,7 +124,10 @@ original range remains internal risk context rather than a second conflicting
 deadline. “Within” windows retain their stated end as the deadline. If no time
 is stated, the client omits the time row and does not manufacture a deadline.
 Each rendered public message keeps its own source link immediately adjacent;
-links from multiple posts are never pooled into an unlabeled footer.
+links from multiple posts are never pooled into an unlabeled footer. Link labels
+identify the event type and date so two different posts cannot appear as
+identical generic actions. The reference desktop client formats Chinese dates
+in Asia/Shanghai (UTC+8) and English dates in America/Los_Angeles (PT).
 
 Signal strength and lifecycle are independent. Unknown objects do not default
 to hints: a hint requires `kind: candidate|hint`, `signal_type` for a supported

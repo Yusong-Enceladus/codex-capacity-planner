@@ -7,7 +7,6 @@ enum ResetDemoFixtures {
         let now = Date()
         let resetAt = now.addingTimeInterval(4 * 86_400 + 18 * 3_600)
         let updatedAt = ISO8601DateFormatter().string(from: now)
-        let exactReset = self.dateText(resetAt, language: language)
         return ResetSnapshot(
             updatedAt: updatedAt,
             dataConfidence: "estimated",
@@ -60,16 +59,18 @@ enum ResetDemoFixtures {
                             secondaryValue: language.text("你已明确标为主线", "Explicitly marked as a mainline")),
                         DetailRow(
                             label: language.text("重置", "Reset"),
-                            value: language.text("候选暗示 · 推测窗口至明天", "Candidate hint · inferred window through tomorrow"),
+                            value: language.text(
+                                "候选暗示 · 可能很快刷新（UTC+8）",
+                                "Candidate hint · A reset may happen soon (PT)"),
                             secondaryValue: language.text(
-                                "只是有上下文的推测；公开概率不变，计划仅增加有上限的预留",
-                                "Contextual inference only; public probability is unchanged and plan reserve is bounded")),
+                                "“很快，但不是今天”——还不是正式公告。",
+                                "Tibo: “soon, not today”; no official announcement yet.")),
                     ])
             ],
             submenuDetails: [
                 self.accountSection(language),
                 self.whySection(language),
-                self.resetSection(language, now: now, resetAt: resetAt, exactReset: exactReset),
+                self.resetSection(language, now: now, resetAt: resetAt),
             ])
     }
 
@@ -125,27 +126,33 @@ enum ResetDemoFixtures {
     private static func resetSection(
         _ language: ResetPresentationLanguage,
         now: Date,
-        resetAt: Date,
-        exactReset: String) -> DetailSection
+        resetAt: Date) -> DetailSection
     {
         let formatter = ISO8601DateFormatter()
         let candidateStart = now.addingTimeInterval(2 * 3_600)
         let candidateEnd = now.addingTimeInterval(22 * 3_600)
         let candidatePublished = now.addingTimeInterval(-3 * 3_600)
         let previousReset = now.addingTimeInterval(-3 * 86_400)
+        let candidateItem = DetailTimelineItem(
+            id: "demo-candidate",
+            kind: "candidate",
+            state: "inferred",
+            title: "candidate",
+            detail: "Tibo 说“很快，但不是今天”；目前还不是正式公告。",
+            detailEnglish: "Tibo said “soon, but not today”; this is not an official announcement.",
+            badge: "inferred",
+            at: formatter.string(from: candidateStart),
+            endAt: formatter.string(from: candidateEnd),
+            publishedAt: formatter.string(from: candidatePublished),
+            link: nil)
+        let candidateTime = ResetTimelinePresentation.timeText(
+            for: candidateItem,
+            language: language) ?? language.text(
+                "有刷新暗示，但时间还不确定",
+                "There is a reset hint, but no confirmed timing.")
         return DetailSection(
             title: language.text("重置", "Resets"),
             rows: [
-                DetailRow(
-                    label: language.text("候选暗示", "Candidate hint"),
-                    value: language.text("推测观察窗至明天", "Inferred observation window through tomorrow"),
-                    secondaryValue: language.text("并非官方截止时间", "Not an official deadline"),
-                    group: "current"),
-                DetailRow(
-                    label: language.text("下次自然刷新", "Next natural reset"),
-                    value: language.text("4 天 18 小时后", "in 4 days 18 hr"),
-                    secondaryValue: exactReset,
-                    group: "current"),
                 DetailRow(
                     label: language.text("当前账户", "Current account"),
                     value: language.text("1 次可用", "1 available"),
@@ -157,9 +164,36 @@ enum ResetDemoFixtures {
                     secondaryValue: language.text("已确认到账", "Confirmed delivered"),
                     group: "history"),
                 DetailRow(
+                    label: language.text("当前状态", "Current status"),
+                    value: language.text("候选暗示 · 尚未确认", "Candidate hint · Unconfirmed"),
+                    secondaryValue: language.text(
+                        "不会改写公开概率，只会增加有上限的使用预留",
+                        "It does not rewrite public probability; it only adds a bounded usage reserve"),
+                    group: "official"),
+                DetailRow(
+                    label: language.text("可能刷新时间", "Possible reset time"),
+                    value: candidateTime,
+                    secondaryValue: language.text(
+                        "根据原文与上下文推测，目前没有正式时间",
+                        "Inferred from the source and context; no official time has been announced"),
+                    group: "official"),
+                DetailRow(
                     label: language.text("候选暗示原文", "Candidate source"),
                     value: language.text("很快会有合适的刷新时机，但不是今天。", "There may be a suitable time for resets soon, but not today."),
                     secondaryValue: language.text("完整原文与来源单独保留", "The full source remains available separately"),
+                    link: DetailLink(
+                        label: "查看候选暗示原帖 · 08-29",
+                        labelEnglish: "View candidate source · Aug 28 PT",
+                        url: "https://example.invalid/status/candidate"),
+                    group: "official"),
+                DetailRow(
+                    label: language.text("最近重置确认", "Latest reset confirmation"),
+                    value: language.text("本机额度与刷新窗口已经重建", "Local quota and the reset window were rebuilt"),
+                    secondaryValue: language.text("已与本机刷新对账", "Matched against the local reset"),
+                    link: DetailLink(
+                        label: "查看重置确认原帖 · 08-28",
+                        labelEnglish: "View reset confirmation · Aug 27 PT",
+                        url: "https://example.invalid/status/confirmation"),
                     group: "official"),
             ],
             visualizations: [
@@ -168,23 +202,14 @@ enum ResetDemoFixtures {
                     group: "timeline",
                     title: language.text("刷新时间轴", "Reset Timeline"),
                     items: [
-                        DetailTimelineItem(
-                            id: "demo-candidate",
-                            kind: "candidate",
-                            state: "inferred",
-                            title: language.text("候选重置暗示", "Candidate reset hint"),
-                            detail: language.text("根据原文和上下文推测观察窗，并非公告", "Observation window inferred from context; this is not an announcement"),
-                            badge: language.text("推测", "Inferred"),
-                            at: formatter.string(from: candidateStart),
-                            endAt: formatter.string(from: candidateEnd),
-                            publishedAt: formatter.string(from: candidatePublished),
-                            link: nil),
+                        candidateItem,
                         DetailTimelineItem(
                             id: "demo-natural",
                             kind: "natural",
                             state: "scheduled",
                             title: language.text("下次自然刷新", "Next natural reset"),
-                            detail: language.text("当前账号的周冷却边界", "Current account weekly cooldown boundary"),
+                            detail: "当前账号的周冷却边界",
+                            detailEnglish: "Current account weekly cooldown boundary",
                             badge: language.text("计划", "Scheduled"),
                             at: formatter.string(from: resetAt),
                             endAt: nil,
@@ -195,7 +220,8 @@ enum ResetDemoFixtures {
                             kind: "upgrade",
                             state: "confirmed",
                             title: language.text("套餐升级刷新", "Plan upgrade reset"),
-                            detail: language.text("Free → Pro · 本机额度与窗口已经重建", "Free → Pro · Local quota and window were rebuilt"),
+                            detail: "Free → Pro · 本机额度与窗口已经重建",
+                            detailEnglish: "Free → Pro · Local quota and window were rebuilt",
                             badge: language.text("已确认", "Confirmed"),
                             at: formatter.string(from: previousReset),
                             endAt: nil,
@@ -205,14 +231,4 @@ enum ResetDemoFixtures {
             ])
     }
 
-    private static func dateText(
-        _ date: Date,
-        language: ResetPresentationLanguage) -> String
-    {
-        let formatter = DateFormatter()
-        formatter.locale = language.locale
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = language == .english ? "MMM d, h:mm a" : "MM-dd HH:mm 'UTC+8'"
-        return formatter.string(from: date)
-    }
 }

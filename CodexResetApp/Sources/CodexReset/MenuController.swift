@@ -26,6 +26,26 @@ private final class DetailActionBox: NSObject {
     }
 }
 
+enum DetailMenuLayout {
+    static func isReset(_ title: String) -> Bool {
+        ["重置", "Resets"].contains(title)
+    }
+
+    static func summaryGroup(_ title: String) -> String {
+        ["为什么这样建议", "Why This Plan"].contains(title) ? "summary" : "current"
+    }
+
+    static func rootVisualizationGroup(_ title: String) -> String {
+        self.isReset(title) ? "timeline" : self.summaryGroup(title)
+    }
+
+    static func childGroups(_ title: String) -> [String] {
+        ["为什么这样建议", "Why This Plan"].contains(title)
+            ? ["calculation", "work", "data"]
+            : ["assets", "history", "official"]
+    }
+}
+
 @MainActor
 final class MenuController: NSObject, NSMenuDelegate {
     private static let cardWidth: CGFloat = 310
@@ -175,20 +195,22 @@ final class MenuController: NSObject, NSMenuDelegate {
         submenu.minimumWidth = Self.detailsWidth
         let grouped = Dictionary(grouping: section.rows) { $0.group ?? "all" }
         let visualizations = section.visualizations ?? []
-        let isPlanSection = ["为什么这样建议", "Why This Plan"].contains(section.title)
-        let summaryKey = isPlanSection ? "summary" : "current"
+        let isResetSection = DetailMenuLayout.isReset(section.title)
+        let summaryKey = DetailMenuLayout.summaryGroup(section.title)
         let summaryRows = grouped[summaryKey] ?? (grouped.count == 1 ? section.rows : [])
-        let summaryVisualizations = visualizations.filter { ($0.group ?? "all") == summaryKey }
-        if !summaryRows.isEmpty || !summaryVisualizations.isEmpty {
+        let rootRows = isResetSection ? (grouped["current"] ?? []) : summaryRows
+        let rootVisualizationGroup = DetailMenuLayout.rootVisualizationGroup(section.title)
+        let summaryVisualizations = visualizations.filter {
+            ($0.group ?? "all") == rootVisualizationGroup
+        }
+        if !rootRows.isEmpty || !summaryVisualizations.isEmpty {
             submenu.addItem(self.makeDetailContentItem(DetailSection(
                 title: section.title,
-                rows: summaryRows,
+                rows: rootRows,
                 visualizations: summaryVisualizations.isEmpty ? nil : summaryVisualizations)))
         }
 
-        let groupOrder = isPlanSection
-            ? ["calculation", "work", "data"]
-            : ["timeline", "assets", "history", "official"]
+        let groupOrder = DetailMenuLayout.childGroups(section.title)
         for key in groupOrder {
             let rows = grouped[key] ?? []
             let groupVisualizations = visualizations.filter { ($0.group ?? "all") == key }
@@ -212,9 +234,10 @@ final class MenuController: NSObject, NSMenuDelegate {
         if submenu.items.isEmpty {
             submenu.addItem(self.makeDetailContentItem(section))
         }
-        self.appendLinks(from: grouped.count == 1 ? section.rows : summaryRows, to: submenu)
-        self.appendVisualizationLinks(from: summaryVisualizations, to: submenu)
-        self.appendActions(from: grouped.count == 1 ? section.rows : summaryRows, to: submenu)
+        if !isResetSection {
+            self.appendLinks(from: grouped.count == 1 ? section.rows : summaryRows, to: submenu)
+            self.appendActions(from: grouped.count == 1 ? section.rows : summaryRows, to: submenu)
+        }
         return submenu
     }
 
@@ -225,7 +248,6 @@ final class MenuController: NSObject, NSMenuDelegate {
         if let visualizations = section.visualizations, !visualizations.isEmpty {
             submenu.addItem(self.makeDetailContentItem(section))
             self.appendLinks(from: section.rows, to: submenu)
-            self.appendVisualizationLinks(from: visualizations, to: submenu)
             self.appendActions(from: section.rows, to: submenu)
             return submenu
         }
@@ -258,28 +280,13 @@ final class MenuController: NSObject, NSMenuDelegate {
         var seen = Set<String>()
         for link in links where seen.insert(link.url).inserted {
             if submenu.items.last?.isSeparatorItem != true { submenu.addItem(.separator()) }
-            let item = NSMenuItem(title: link.label, action: #selector(self.openLink(_:)), keyEquivalent: "")
+            let label = self.presentationLanguage == .english
+                ? link.labelEnglish ?? link.label
+                : link.label
+            let item = NSMenuItem(title: label, action: #selector(self.openLink(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = link.url
             item.image = NSImage(systemSymbolName: "arrow.up.right.square", accessibilityDescription: nil)
-            submenu.addItem(item)
-        }
-    }
-
-    private func appendVisualizationLinks(
-        from visualizations: [DetailVisualization],
-        to submenu: NSMenu)
-    {
-        let links = visualizations.flatMap(\.items).compactMap(\.link)
-        var seen = Set<String>()
-        for link in links where seen.insert(link.url).inserted {
-            if submenu.items.last?.isSeparatorItem != true { submenu.addItem(.separator()) }
-            let item = NSMenuItem(title: link.label, action: #selector(self.openLink(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = link.url
-            item.image = NSImage(
-                systemSymbolName: "arrow.up.right.square",
-                accessibilityDescription: nil)
             submenu.addItem(item)
         }
     }
@@ -316,7 +323,6 @@ final class MenuController: NSObject, NSMenuDelegate {
         case "work": language.text("建议主线", "Suggested Mainlines")
         case "data": language.text("计算与数据", "Calculation & Data")
         case "assets": language.text("可用重置", "Available Resets")
-        case "timeline": language.text("刷新时间轴", "Reset Timeline")
         case "history": language.text("重置历史", "Reset History")
         case "official": language.text("官方消息", "Official Updates")
         default: language.text("更多信息", "More")
@@ -329,7 +335,6 @@ final class MenuController: NSObject, NSMenuDelegate {
         case "work": "play.circle"
         case "data": "waveform.path.ecg"
         case "assets": "ticket"
-        case "timeline": "point.topleft.down.to.point.bottomright.curvepath"
         case "history": "clock.arrow.circlepath"
         case "official": "megaphone"
         default: "ellipsis.circle"

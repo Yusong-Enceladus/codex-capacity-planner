@@ -3798,14 +3798,21 @@ const ctx = {
   equal(snapshot.submenuDetails[0].title, "账户");
   equal(snapshot.submenuDetails[1].title, "为什么这样建议");
   equal(snapshot.submenuDetails[2].title, "重置");
-  const nextResetDetailRow = snapshot.submenuDetails[2].rows.find(
-    (row) => row.label === "下次自然刷新",
+  const resetTimeline = snapshot.submenuDetails[2].visualizations.find(
+    (visualization) => visualization.kind === "timeline",
+  );
+  const nextResetTimelineItem = resetTimeline.items.find(
+    (item) => item.kind === "natural" && item.state === "scheduled",
   );
   equal(
-    Date.parse(nextResetDetailRow.relativeTimeAt),
+    Date.parse(nextResetTimelineItem.at),
     Date.parse(usagePayload[0].usage.secondary.resetsAt),
   );
-  equal(nextResetDetailRow.relativeTimePrefix, "");
+  equal(
+    snapshot.submenuDetails[2].rows.some((row) => row.label === "下次自然刷新"),
+    false,
+    "the natural reset belongs on the root timeline rather than a duplicate text row",
+  );
   check(
     snapshot.submenuDetails[1].rows.some(
       (row) =>
@@ -3944,13 +3951,15 @@ const ctx = {
   });
   const teaserHomeReset = teaserSnapshot.details[0].rows.find((row) => row.label === "重置");
   check(
-    /候选暗示 · 推测窗口至/.test(teaserHomeReset.value),
-    "the structured tease must outrank the natural refresh without being called an official deadline",
+    /候选暗示 · 可能在 .+刷新（UTC\+8）/.test(teaserHomeReset.value),
+    "the structured tease must outrank the natural refresh in plain language and UTC+8",
   );
   check(
-    /并非官方截止时间/.test(teaserHomeReset.secondaryValue),
-    "the compact reset row must preserve inferred provenance",
+    /Tibo 说“很快，但不是今天”/.test(teaserHomeReset.secondaryValue) &&
+      /目前还不是正式公告/.test(teaserHomeReset.secondaryValue),
+    "the compact reset row must plainly say that the hint is not an announcement",
   );
+  equal(teaserHomeReset.relativeTimeAt, null, "an inferred interval must never become a countdown");
   check(
     teaserSnapshot.decisionProgress.targetPercent > snapshot.decisionProgress.targetPercent &&
       teaserSnapshot.decisionProgress.targetPercent < 100,
@@ -3981,21 +3990,51 @@ const ctx = {
   const candidateTimelineItem = timeline.items.find((item) => item.kind === "candidate");
   equal(candidateTimelineItem.state, "inferred");
   equal(candidateTimelineItem.badge, "推测");
+  check(/Tibo 说“很快，但不是今天”/.test(candidateTimelineItem.detail));
+  check(/not an official announcement/.test(candidateTimelineItem.detailEnglish));
   equal(Date.parse(candidateTimelineItem.at), Date.parse(providerTeaseForecast.teased_window.window.start_at));
   equal(Date.parse(candidateTimelineItem.endAt), Date.parse(providerTeaseForecast.teased_window.window.end_at));
   check(timeline.items.some((item) => item.kind === "natural" && item.state === "scheduled"));
   check(timeline.items.some((item) => item.kind === "natural" && item.state === "confirmed"));
+  equal(timeline.items.length, 3, "the root timeline must stay focused on current, next, and latest");
+  equal(candidateTimelineItem.link, null, "timeline events must not duplicate source buttons");
   check(
     teaserResetSection.rows.some(
-      (row) => row.label === "推测观察窗" && /不是官方承诺/.test(row.secondaryValue),
+      (row) =>
+        row.label === "可能刷新时间" &&
+        /目前没有正式时间/.test(row.secondaryValue) &&
+        row.relativeTimeAt === null,
     ),
-    "the inferred interval must remain available as text and must not be labelled official",
+    "the inferred interval must remain human-readable without an artificial deadline",
   );
   check(
     teaserResetSection.rows.some(
-      (row) => row.label === "候选暗示原文" && row.link.url === providerTeaseForecast.teased_window.url,
+      (row) =>
+        row.label === "候选暗示原文" &&
+        row.group === "official" &&
+        row.link.url === providerTeaseForecast.teased_window.url &&
+        /查看候选暗示原帖/.test(row.link.label) &&
+        /View candidate source/.test(row.link.labelEnglish),
     ),
     "the full source and its direct link must remain available outside the visualization",
+  );
+  equal(
+    teaserResetSection.rows.some((row) => row.group === "current"),
+    false,
+    "reset status details belong under Official Updates rather than a duplicate root group",
+  );
+  equal(
+    teaserResetSection.rows.some((row) => row.label === "对当前计划的影响"),
+    false,
+    "plan impact belongs under Why This Plan instead of the reset center",
+  );
+  const officialSourceLabels = teaserResetSection.rows
+    .filter((row) => row.group === "official" && row.link)
+    .map((row) => row.link.label);
+  equal(
+    new Set(officialSourceLabels).size,
+    officialSourceLabels.length,
+    "adjacent official source actions must use distinct contextual labels",
   );
   equal(seenURLs.length, 3, "cached public data should prevent redundant public calls");
   check(seenURLs.every((url) => url.startsWith("http://127.0.0.1:18765/")));
@@ -4243,16 +4282,16 @@ const ctx = {
   );
   check(
     signalEventSection.rows.some(
-      (row) => row.label === "当前状态" && row.group === "current",
+      (row) => row.label === "当前状态" && row.group === "official",
     ),
-    "a forced reset signal must become the current state rather than a generic announcement row",
+    "a forced reset signal's status must remain available under Official Updates",
   );
   check(
     signalEventSection.rows.some(
       (row) =>
         row.label === "官方摘要" &&
-        row.group === "current" &&
-        /完整原文见“官方消息”/.test(row.secondaryValue),
+        row.group === "official" &&
+        /完整原文与来源见下方/.test(row.secondaryValue),
     ),
     "the current reset state must include a concise official summary before the full official post",
   );
@@ -4264,7 +4303,11 @@ const ctx = {
   );
   check(
     signalEventSection.rows.some(
-      (row) => row.label === "强制重置公告" && row.link && row.link.label === "打开这条 Tibo 原帖",
+      (row) =>
+        row.label === "强制重置公告" &&
+        row.link &&
+        /查看重置公告原帖/.test(row.link.label) &&
+        /View reset announcement source/.test(row.link.labelEnglish),
     ),
     "each official post must retain its own adjacent source action",
   );

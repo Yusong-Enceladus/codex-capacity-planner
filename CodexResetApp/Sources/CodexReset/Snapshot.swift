@@ -72,11 +72,38 @@ struct DetailTimelineItem: Codable, Equatable, Identifiable, Sendable {
     let state: String
     let title: String
     let detail: String?
+    let detailEnglish: String?
     let badge: String
     let at: String?
     let endAt: String?
     let publishedAt: String?
     let link: DetailLink?
+
+    init(
+        id: String,
+        kind: String,
+        state: String,
+        title: String,
+        detail: String? = nil,
+        detailEnglish: String? = nil,
+        badge: String,
+        at: String? = nil,
+        endAt: String? = nil,
+        publishedAt: String? = nil,
+        link: DetailLink? = nil)
+    {
+        self.id = id
+        self.kind = kind
+        self.state = state
+        self.title = title
+        self.detail = detail
+        self.detailEnglish = detailEnglish
+        self.badge = badge
+        self.at = at
+        self.endAt = endAt
+        self.publishedAt = publishedAt
+        self.link = link
+    }
 }
 
 struct DetailRow: Codable, Equatable, Identifiable, Sendable {
@@ -128,5 +155,12 @@ struct DetailAction: Codable, Equatable, Sendable {
 
 struct DetailLink: Codable, Equatable, Sendable {
     let label: String
+    let labelEnglish: String?
     let url: String
+
+    init(label: String, labelEnglish: String? = nil, url: String) {
+        self.label = label
+        self.labelEnglish = labelEnglish
+        self.url = url
+    }
 }

@@ -320,6 +320,143 @@ private struct ResetTimelineConnector: Shape {
     }
 }
 
+enum ResetTimelinePresentation {
+    static func title(
+        for item: DetailTimelineItem,
+        language: ResetPresentationLanguage) -> String
+    {
+        switch item.kind {
+        case "candidate": language.text("候选暗示", "Candidate hint")
+        case "announcement": language.text("明确重置公告", "Confirmed reset announcement")
+        case "commitment": language.text("有期限重置承诺", "Dated reset commitment")
+        case "natural":
+            item.state == "confirmed"
+                ? language.text("自然刷新", "Natural reset")
+                : language.text("下次自然刷新", "Next natural reset")
+        case "upgrade": language.text("套餐升级刷新", "Plan upgrade reset")
+        case "credit": language.text("重置券发放", "Reset credit delivery")
+        case "reset": language.text("强制刷新", "Forced reset")
+        default: item.title
+        }
+    }
+
+    static func badge(
+        for item: DetailTimelineItem,
+        language: ResetPresentationLanguage) -> String
+    {
+        switch item.state {
+        case "inferred": language.text("未确认", "Unconfirmed")
+        case "pending": language.text("等待到账", "Pending")
+        case "confirmed": language.text("已确认", "Confirmed")
+        case "scheduled": language.text("计划", "Scheduled")
+        default: item.badge
+        }
+    }
+
+    static func detail(
+        for item: DetailTimelineItem,
+        language: ResetPresentationLanguage) -> String?
+    {
+        language == .english ? item.detailEnglish ?? item.detail : item.detail
+    }
+
+    static func timeText(
+        for item: DetailTimelineItem,
+        language: ResetPresentationLanguage) -> String?
+    {
+        if item.kind == "candidate" {
+            guard let start = self.date(item.at) else {
+                return language.text(
+                    "有刷新暗示，但时间还不确定",
+                    "There is a reset hint, but no confirmed timing.")
+            }
+            return self.candidateTimeText(
+                start: start,
+                end: self.date(item.endAt),
+                language: language)
+        }
+
+        guard let start = self.date(item.at) else { return nil }
+        return "\(self.pointText(start, language: language)) \(language.timeZoneLabel)"
+    }
+
+    static func publishedText(
+        for item: DetailTimelineItem,
+        language: ResetPresentationLanguage) -> String?
+    {
+        guard
+            let published = self.date(item.publishedAt),
+            ["candidate", "announcement", "commitment"].contains(item.kind)
+        else { return nil }
+        let point = "\(self.pointText(published, language: language)) \(language.timeZoneLabel)"
+        return language.text("发布于 \(point)", "Published \(point)")
+    }
+
+    private static func candidateTimeText(
+        start: Date,
+        end: Date?,
+        language: ResetPresentationLanguage) -> String
+    {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = language.timeZone
+        let end = end ?? start
+        let sameDay = calendar.isDate(start, inSameDayAs: end)
+
+        if language == .english {
+            if sameDay {
+                let formatter = self.formatter("EEEE", language: language)
+                return "Reset may happen \(formatter.string(from: start)) (PT)"
+            }
+            let startComponents = calendar.dateComponents([.year, .month], from: start)
+            let endComponents = calendar.dateComponents([.year, .month], from: end)
+            let startText = self.formatter("MMM d", language: language).string(from: start)
+            let endPattern = startComponents == endComponents ? "d" : "MMM d"
+            let endText = self.formatter(endPattern, language: language).string(from: end)
+            return "Reset may happen \(startText)–\(endText) (PT)"
+        }
+
+        let startComponents = calendar.dateComponents([.year, .month], from: start)
+        let endComponents = calendar.dateComponents([.year, .month], from: end)
+        let startText = self.formatter("M月d日", language: language)
+            .string(from: start)
+            .filter { !$0.isWhitespace }
+        let endPattern = startComponents == endComponents ? "d日" : "M月d日"
+        let endText = self.formatter(endPattern, language: language)
+            .string(from: end)
+            .filter { !$0.isWhitespace }
+        let range = sameDay
+            ? startText
+            : "\(startText)至\(endText)"
+        return "可能在 \(range)刷新（UTC+8）"
+    }
+
+    private static func pointText(
+        _ date: Date,
+        language: ResetPresentationLanguage) -> String
+    {
+        let pattern = language == .english ? "MMM d, h:mm a" : "M月d日 HH:mm"
+        return self.formatter(pattern, language: language).string(from: date)
+    }
+
+    private static func formatter(
+        _ pattern: String,
+        language: ResetPresentationLanguage) -> DateFormatter
+    {
+        let formatter = DateFormatter()
+        formatter.locale = language == .english
+            ? Locale(identifier: "en_US_POSIX")
+            : language.locale
+        formatter.timeZone = language.timeZone
+        formatter.dateFormat = pattern
+        return formatter
+    }
+
+    private static func date(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        return AlternatingDisplay.date(from: value)
+    }
+}
+
 private struct ResetEventTimeline: View {
     @Environment(\.resetPresentationLanguage) private var presentationLanguage
     let visualization: DetailVisualization
@@ -385,28 +522,30 @@ private struct ResetEventTimeline: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(item.title)
+                    Text(ResetTimelinePresentation.title(
+                        for: item,
+                        language: self.presentationLanguage))
                         .font(.caption.weight(.semibold))
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(item.badge)
+                    Text(ResetTimelinePresentation.badge(
+                        for: item,
+                        language: self.presentationLanguage))
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(tint)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .background(tint.opacity(0.12), in: Capsule())
                     Spacer(minLength: 0)
-                    if item.link != nil {
-                        Image(systemName: "arrow.up.right.square")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
                 }
                 if let timeText = self.timeText(for: item) {
                     Text(timeText)
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                if let detail = item.detail, !detail.isEmpty {
+                if let detail = ResetTimelinePresentation.detail(
+                    for: item,
+                    language: self.presentationLanguage), !detail.isEmpty
+                {
                     Text(detail)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -498,34 +637,20 @@ private struct ResetEventTimeline: View {
     }
 
     private func timeText(for item: DetailTimelineItem) -> String? {
-        guard let start = self.date(item.at) else { return nil }
-        let startText = self.format(start)
-        if let end = self.date(item.endAt), abs(end.timeIntervalSince(start)) > 60 {
-            return "\(startText)–\(self.format(end)) UTC+8"
-        }
-        return "\(startText) UTC+8"
+        ResetTimelinePresentation.timeText(for: item, language: self.presentationLanguage)
     }
 
     private func publishedText(for item: DetailTimelineItem) -> String? {
-        guard
-            let published = self.date(item.publishedAt),
-            item.kind == "candidate" || item.kind == "announcement" || item.kind == "commitment"
-        else { return nil }
-        return self.presentationLanguage.text(
-            "发布于 \(self.format(published)) UTC+8",
-            "Published \(self.format(published)) UTC+8")
-    }
-
-    private func format(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = self.presentationLanguage.locale
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.dateFormat = self.presentationLanguage == .english ? "MMM d HH:mm" : "MM-dd HH:mm"
-        return formatter.string(from: date)
+        ResetTimelinePresentation.publishedText(for: item, language: self.presentationLanguage)
     }
 
     private func accessibilityText(for item: DetailTimelineItem) -> String {
-        [item.badge, item.title, self.timeText(for: item), item.detail]
+        [
+            ResetTimelinePresentation.badge(for: item, language: self.presentationLanguage),
+            ResetTimelinePresentation.title(for: item, language: self.presentationLanguage),
+            self.timeText(for: item),
+            ResetTimelinePresentation.detail(for: item, language: self.presentationLanguage),
+        ]
             .compactMap { $0 }
             .filter { !$0.isEmpty }
             .joined(separator: "，")

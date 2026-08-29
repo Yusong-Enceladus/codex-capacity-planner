@@ -587,7 +587,7 @@ private enum ResetGalleryFixtures {
                 action: "继续可靠主线",
                 actionSecondary: "当前未达目标；候选暗示仅增加有上限的使用预留",
                 extraMain: [
-                    self.row("重置", "候选暗示 · 推测观察窗至明天", "并非官方截止时间"),
+                    self.row("重置", "候选暗示 · 可能在周六至周日刷新（UTC+8）", "Tibo 说“很快，但不是今天”；目前还不是正式公告。"),
                 ],
                 progress: self.progress(current: 42, target: 68, lower: 54, median: 60, upper: 66),
                 why: self.whyRows(
@@ -596,10 +596,10 @@ private enum ResetGalleryFixtures {
                     conclusion: "继续可靠主线",
                     explanation: "暗示不改公开概率，只增加有上限的预留"),
                 reset: [
-                    self.row("候选暗示", "推测观察窗至明天", "不是官方截止时间", group: "current"),
-                    self.row("下次自然刷新", "09-02 10:48 UTC+8", group: "current"),
                     self.row("最近一次刷新", "强制刷新 · 08-28 00:35 UTC+8", "本机已经确认到账", group: "history"),
-                    self.row("候选暗示原文", "Synthetic contextual hint: soon, but not today", "完整来源单独保留", group: "official"),
+                    self.row("当前状态", "候选暗示 · 尚未确认", "不会改写公开概率，只增加有上限的使用预留", group: "official"),
+                    self.row("可能刷新时间", "可能在 8月29日至30日刷新（UTC+8）", "根据原文与上下文推测，目前没有正式时间", group: "official"),
+                    self.row("候选暗示原文", "Synthetic contextual hint: soon, but not today", "完整原文与来源单独保留", group: "official"),
                 ],
                 resetVisualizations: [
                     DetailVisualization(
@@ -612,7 +612,8 @@ private enum ResetGalleryFixtures {
                                 kind: "candidate",
                                 state: "inferred",
                                 title: "候选重置暗示",
-                                detail: "推测观察窗；不是官方承诺，也不会改写概率",
+                                detail: "Tibo 说“很快，但不是今天”；目前还不是正式公告。",
+                                detailEnglish: "Tibo said “soon, but not today”; this is not an official announcement.",
                                 badge: "推测",
                                 at: "2026-08-29T09:00:00Z",
                                 endAt: "2026-08-30T06:59:59Z",

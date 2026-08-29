@@ -137,10 +137,17 @@ the axis carries time and order; an interval plus a dashed connector and hollow
 node carries inference; familiar symbols, fill state, and visible text badges
 carry lifecycle. Color is only a redundant semantic accent, never the sole
 distinction, and red remains reserved for actual errors or urgent failures.
-Natural refreshes, unresolved public signals, reset-credit events, and locally
-confirmed refreshes share the same axis around an explicit “now” marker. Full
-source text, links, evidence, and exact timestamps remain available through
-progressive disclosure, so the visualization never replaces facts.
+The reset submenu opens directly on this axis rather than hiding it behind a
+second timeline submenu. Its compact root contains at most the active public
+signal (or pending credit delivery), the next natural reset, and the latest
+locally confirmed reset. Earlier events remain as text rows in Reset History;
+status, interpretation, and full public posts remain in Official Updates.
+Source actions live beside those full posts and use event-specific labels, not
+as duplicated buttons beneath the timeline. Candidate intervals never produce
+a countdown or an invented deadline. Chinese presentation uses Asia/Shanghai
+(UTC+8), while English presentation uses America/Los_Angeles (PT). Timeline
+kind/state fields, rather than server-composed Chinese labels, drive localized
+titles, badges, symbols, and time formatting.
 
 ## Real capacity and account scheduling
 
