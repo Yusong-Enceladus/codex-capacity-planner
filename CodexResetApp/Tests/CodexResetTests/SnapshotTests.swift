@@ -64,7 +64,7 @@ import Testing
               "at":"2026-08-29T07:00:00Z",
               "endAt":"2026-08-30T06:59:59Z",
               "publishedAt":"2026-08-29T04:07:10Z",
-              "link":{"label":"查看候选暗示原帖 · 08-29","labelEnglish":"View candidate source · Aug 28 PT","url":"https://example.invalid/status/2000000000000000000"}
+              "link":{"label":"查看可能重置暗示原帖 · 08-29","labelEnglish":"View possible-reset source · Aug 28 PT","url":"https://example.invalid/status/2000000000000000000"}
             },
             {
               "id":"natural-1",
@@ -94,11 +94,11 @@ import Testing
     #expect(timeline.items.first?.detailEnglish?.contains("not an official announcement") == true)
     #expect(timeline.items.first?.endAt == "2026-08-30T06:59:59Z")
     #expect(timeline.items.first?.link?.url == "https://example.invalid/status/2000000000000000000")
-    #expect(timeline.items.first?.link?.labelEnglish == "View candidate source · Aug 28 PT")
+    #expect(timeline.items.first?.link?.labelEnglish == "View possible-reset source · Aug 28 PT")
     #expect(timeline.items.last?.state == "scheduled")
 }
 
-@Test func `timeline semantics localize copy and time zones without candidate countdown jargon`() throws {
+@Test func `timeline semantics use plain possible reset language and selected time zones`() throws {
     let candidate = DetailTimelineItem(
         id: "candidate",
         kind: "candidate",
@@ -113,10 +113,10 @@ import Testing
 
     #expect(ResetTimelinePresentation.title(
         for: candidate,
-        language: .simplifiedChinese) == "候选暗示")
+        language: .simplifiedChinese) == "可能重置的时间范围")
     #expect(ResetTimelinePresentation.title(
         for: candidate,
-        language: .english) == "Candidate hint")
+        language: .english) == "Possible reset window")
     #expect(ResetTimelinePresentation.badge(
         for: candidate,
         language: .simplifiedChinese) == "未确认")
@@ -125,10 +125,10 @@ import Testing
         language: .english) == "Unconfirmed")
     #expect(ResetTimelinePresentation.timeText(
         for: candidate,
-        language: .simplifiedChinese) == "可能在 8月29日至30日刷新（UTC+8）")
+        language: .simplifiedChinese) == "8月29日 15:00–8月30日 14:59 UTC+8")
     #expect(ResetTimelinePresentation.timeText(
         for: candidate,
-        language: .english) == "Reset may happen Saturday (PT)")
+        language: .english) == "Aug 29, 12:00 AM–11:59 PM PT")
     #expect(ResetTimelinePresentation.detail(
         for: candidate,
         language: .english)?.contains("not an official announcement") == true)
@@ -147,10 +147,58 @@ import Testing
         badge: "legacy")
     #expect(ResetTimelinePresentation.timeText(
         for: unknown,
-        language: .simplifiedChinese) == "有刷新暗示，但时间还不确定")
+        language: .simplifiedChinese) == "有可能重置，但目前无法确定时间")
     #expect(ResetTimelinePresentation.timeText(
         for: unknown,
-        language: .english) == "There is a reset hint, but no confirmed timing.")
+        language: .english) == "A reset is possible, but its timing is unknown.")
+}
+
+@Test func `timeline flows from past through now to future and keeps now inside an active range`() throws {
+    let now = try #require(AlternatingDisplay.date(from: "2026-08-29T08:30:00Z"))
+    let items = [
+        DetailTimelineItem(
+            id: "future-far",
+            kind: "natural",
+            state: "scheduled",
+            title: "future far",
+            badge: "scheduled",
+            at: "2026-09-04T03:19:46Z"),
+        DetailTimelineItem(
+            id: "active-range",
+            kind: "candidate",
+            state: "inferred",
+            title: "active",
+            badge: "inferred",
+            at: "2026-08-29T07:00:00Z",
+            endAt: "2026-08-30T06:59:59Z"),
+        DetailTimelineItem(
+            id: "past-reset",
+            kind: "reset",
+            state: "confirmed",
+            title: "past",
+            badge: "confirmed",
+            at: "2026-08-27T16:25:36Z"),
+        DetailTimelineItem(
+            id: "future-near",
+            kind: "natural",
+            state: "scheduled",
+            title: "future near",
+            badge: "scheduled",
+            at: "2026-08-31T03:19:46Z"),
+    ]
+
+    #expect(ResetTimelineLayout.pastItems(items, at: now).map(\.id) == ["past-reset"])
+    #expect(ResetTimelineLayout.activeItems(items, at: now).map(\.id) == ["active-range"])
+    #expect(ResetTimelineLayout.futureItems(items, at: now).map(\.id) == [
+        "future-near",
+        "future-far",
+    ])
+    #expect(ResetTimelinePresentation.rangeStartTitle(
+        for: items[1],
+        language: .simplifiedChinese) == "可能重置的时间范围开始")
+    #expect(ResetTimelinePresentation.rangeEndTitle(
+        for: items[1],
+        language: .simplifiedChinese) == "可能重置的时间范围结束")
 }
 
 @Test func `exact timeline times follow the selected language time zone`() {
@@ -178,7 +226,7 @@ import Testing
     #expect(timeline.items.count == 3)
     #expect(timeline.items.allSatisfy { $0.link == nil })
     #expect(reset.rows.contains(where: { $0.group == "current" }) == false)
-    #expect(reset.rows.contains(where: { $0.label == "Possible reset time" }))
+    #expect(reset.rows.contains(where: { $0.label == "Possible reset window" }))
     #expect(reset.rows.contains(where: { $0.label == "Next natural reset" }) == false)
 
     let sourceLabels = reset.rows

@@ -364,7 +364,7 @@ private enum ResetGalleryFixtures {
                         self.row("当前状态", "明确强制刷新将在 12 小时后到达", group: "current"),
                         self.row("重置券 · 当前账号", "1 次可用", group: "assets"),
                         self.row("重置策略", "先等待明确强制刷新，券保持不动", "到账后整条链重新计算", group: "assets"),
-                        self.row("净容量价值", "当前没有可验证的正收益兑换点", "强制刷新前的候选节点全部作废", group: "assets"),
+                        self.row("净容量价值", "当前没有可验证的正收益兑换点", "强制刷新前的兑换节点全部作废", group: "assets"),
                         self.row("高价值节点", "尚未形成安全兑换点", "刷新到账后再规划", group: "assets"),
                     ]),
                 detail: "重置", groups: ["current", "assets"]),
@@ -579,15 +579,15 @@ private enum ResetGalleryFixtures {
     private static var candidateTimelineScenario: ResetGalleryScenario {
         self.scenario(
             "candidate-timeline",
-            "候选暗示时间轴",
+            "可能重置的时间范围",
             phase: "推测 · 非公告",
             explanation: "位置表达时间；空心节点和虚线表达推测；图标与文字徽标独立表达状态。",
             tint: .secondary,
             snapshot: self.snapshot(
                 action: "继续可靠主线",
-                actionSecondary: "当前未达目标；候选暗示仅增加有上限的使用预留",
+                actionSecondary: "当前未达目标；可能重置的暗示仅增加有上限的使用预留",
                 extraMain: [
-                    self.row("重置", "候选暗示 · 可能在周六至周日刷新（UTC+8）", "Tibo 说“很快，但不是今天”；目前还不是正式公告。"),
+                    self.row("重置", "可能重置 · 周六至周日（UTC+8）", "Tibo 说“很快，但不是今天”；目前还不是正式公告。"),
                 ],
                 progress: self.progress(current: 42, target: 68, lower: 54, median: 60, upper: 66),
                 why: self.whyRows(
@@ -597,9 +597,9 @@ private enum ResetGalleryFixtures {
                     explanation: "暗示不改公开概率，只增加有上限的预留"),
                 reset: [
                     self.row("最近一次刷新", "强制刷新 · 08-28 00:35 UTC+8", "本机已经确认到账", group: "history"),
-                    self.row("当前状态", "候选暗示 · 尚未确认", "不会改写公开概率，只增加有上限的使用预留", group: "official"),
-                    self.row("可能刷新时间", "可能在 8月29日至30日刷新（UTC+8）", "根据原文与上下文推测，目前没有正式时间", group: "official"),
-                    self.row("候选暗示原文", "Synthetic contextual hint: soon, but not today", "完整原文与来源单独保留", group: "official"),
+                    self.row("当前状态", "可能重置 · 尚未确认", "不会改写公开概率，只增加有上限的使用预留", group: "official"),
+                    self.row("可能重置的时间范围", "8月29日至30日（UTC+8）", "根据原文与上下文推测，目前没有正式时间", group: "official"),
+                    self.row("可能重置暗示原文", "Synthetic contextual hint: soon, but not today", "完整原文与来源单独保留", group: "official"),
                 ],
                 resetVisualizations: [
                     DetailVisualization(
@@ -611,7 +611,7 @@ private enum ResetGalleryFixtures {
                                 id: "gallery-candidate",
                                 kind: "candidate",
                                 state: "inferred",
-                                title: "候选重置暗示",
+                                title: "可能重置的时间范围",
                                 detail: "Tibo 说“很快，但不是今天”；目前还不是正式公告。",
                                 detailEnglish: "Tibo said “soon, but not today”; this is not an official announcement.",
                                 badge: "推测",

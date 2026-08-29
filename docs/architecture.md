@@ -76,12 +76,20 @@ Local quota facts outrank inconsistent public lifecycle fields.
 A reset credit is a finite-lived capacity option, not an isolated countdown.
 The decision simulates every account on one time-ordered capacity chain and
 compares the real work served by redeeming with the work served by holding
-through at least one post-redemption weekly cycle. A candidate is ineligible
-until every account's existing capacity is exhausted, and it is invalid when a
-non-credit refresh would arrive within the following 24 hours. Natural and
-verified forced refreshes, probabilistic reset risk, expected real work,
-expiry, and the new weekly boundary created by redemption are all processed by
-the same simulator.
+through at least one post-redemption weekly cycle. Immediate redemption is
+ineligible until every tracked account has fresh, exact usage and every
+account's existing capacity is exhausted.
+
+A possible-reset signal is not assigned a made-up probability. The planner
+evaluates deterministic branches in which a free reset lands at the inferred
+window boundaries and a branch in which it does not land. If the credit safely
+outlives that window, every redemption node inside the window is deferred. A
+future free reset blocks a redemption when the observed work rate cannot use
+the minimum high-value portion of the restored capacity before that reset;
+this decision boundary is derived from capacity and demand rather than a fixed
+number of hours. Natural and verified forced refreshes, probabilistic reset
+risk, expected real work, expiry, and the new weekly boundary created by
+redemption are all processed by the same simulator.
 
 The planner must form a high-value redemption node before expiry by arranging
 existing valuable work. It must not wait until the final moment, manufacture

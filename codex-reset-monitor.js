@@ -3737,14 +3737,14 @@ function notificationCopy(model, reason) {
     return {
       subtitle: "现在进入较优兑换窗口",
       body: plan && Number.isFinite(plan.expectedAdditionalWorkUSD)
-        ? `所有账号当前均无可用容量，未来 24 小时没有非券刷新；兑换预计可多承接约 $${plan.expectedAdditionalWorkUSD.toFixed(0)} API 等价工作。请在 Codex 中手动确认。`
-        : "统一容量链确认现在兑换优于继续持有；请在 Codex 中手动确认。",
+        ? `所有账号的新鲜额度均确认已经阻塞；系统比较了可能刷新与不刷新两种结果，兑换仍可多承接约 $${plan.expectedAdditionalWorkUSD.toFixed(0)} API 等价工作。请在 Codex 中手动确认。`
+        : "统一容量链确认在可能刷新与不刷新两种情况下，现在兑换都优于继续持有；请在 Codex 中手动确认。",
     };
   }
   if (reason === "banked-window") {
     return {
       subtitle: "重置券的较优窗口提前了",
-      body: "统一容量链已同时核对其他账号、下一次非券刷新和真实工作需求；安全兑换节点进入未来 24 小时。系统仍只建议，不会自动兑换。",
+      body: "统一容量链已同时核对其他账号、下一次免费刷新和真实工作需求；按当前使用速度，已经需要为安全兑换节点做准备。系统仍只建议，不会自动兑换。",
     };
   }
   if (reason === "banked-redeemed") {
@@ -3828,7 +3828,7 @@ function notificationCopy(model, reason) {
           )}%。${resumeSuggestion}`
         : "";
     const candidateSuffix = Number(decision.candidateUse || 0) > 0.05
-      ? `，候选暗示独立预留 ${whole(decision.candidateUse)}%`
+      ? `，可能重置的暗示独立预留 ${whole(decision.candidateUse)}%`
       : "";
     return {
       subtitle: "近期使用目标上调",

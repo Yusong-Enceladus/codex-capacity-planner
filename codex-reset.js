@@ -883,6 +883,7 @@ function codexResetLocalOnlyForecast(nowMs) {
 // keeps the action monotonic and explainable while preventing a hint alone
 // from turning the target into 100%.
 const CODEX_RESET_CANDIDATE_RESERVE_FRACTION = 0.1;
+const CODEX_RESET_HIGH_VALUE_CREDIT_FRACTION = 0.35;
 
 function codexResetComputeDecision(input) {
   const nowMs = input.nowMs;
@@ -1715,6 +1716,39 @@ function codexResetChainDemandRateUSD(account, behavior, nowMs) {
   return (capacityUSD === null ? 100 : capacityUSD) * percentRate / 100;
 }
 
+// A possible-reset signal is intentionally not converted into a probability.
+// Reset-credit planning evaluates both outcomes instead: the reset lands at
+// one of the inferred window boundaries, or it does not land at all. When the
+// credit safely outlives the window, redemption nodes inside that window are
+// deferred so "wait" remains a real option rather than a fake probability.
+function codexResetPossibleResetDecision(forecast, nowMs) {
+  const signal = codexResetObject(forecast && forecast.signal) || {};
+  if (signal.level !== "hint") return null;
+  const rawStartMs = codexResetFinite(signal.windowStartMs);
+  const rawEndMs =
+    codexResetFinite(signal.windowEndMs) ?? codexResetFinite(signal.deadlineMs);
+  if (rawEndMs !== null && rawEndMs <= nowMs) return null;
+  const startMs = rawStartMs !== null && rawStartMs > nowMs ? rawStartMs : nowMs + 1;
+  const endMs = rawEndMs !== null && rawEndMs >= startMs ? rawEndMs : null;
+  const forcedTimes = [];
+  if (endMs !== null) {
+    forcedTimes.push(Math.min(startMs, endMs));
+    if (endMs > startMs + 1) forcedTimes.push(endMs);
+  }
+  return {
+    startMs: rawStartMs,
+    endMs: rawEndMs,
+    timingKnown: endMs !== null,
+    branches: [
+      ...forcedTimes.map((forcedAtMs) => ({
+        source: "possible-reset-happens",
+        forcedAtMs,
+      })),
+      { source: "possible-reset-does-not-happen", forcedAtMs: null },
+    ],
+  };
+}
+
 function codexResetCapacityChainScenarios(forecast, nowMs, horizonMs) {
   const signal = codexResetObject(forecast && forecast.signal) || {};
   if (signal.level === "explicit") return [{ weight: 1, forcedAtMs: null, source: "explicit" }];
@@ -1769,6 +1803,12 @@ function codexResetSimulateCapacityChain(accounts, options) {
   const scenarioForcedAtMs = Number.isFinite(options.scenarioForcedAtMs)
     ? options.scenarioForcedAtMs
     : null;
+  const minimumUsefulFraction = codexResetClamp(
+    codexResetFinite(options.minimumUsefulFraction) ??
+      CODEX_RESET_HIGH_VALUE_CREDIT_FRACTION,
+    0,
+    1,
+  );
   const states = accounts.map((candidate) => {
     const knownCapacityUSD = codexResetChainCapacityUSD(candidate);
     const capacityUSD = knownCapacityUSD === null ? 100 : knownCapacityUSD;
@@ -1842,8 +1882,12 @@ function codexResetSimulateCapacityChain(accounts, options) {
     redeemEligible = remainingBeforeRedeemUSD <= toleranceUSD;
     const upcoming = states.map(nextResetAt).filter(Number.isFinite);
     nextFreeResetAtRedeemMs = upcoming.length ? Math.min(...upcoming) : null;
+    const workBeforeNextFreeResetUSD = nextFreeResetAtRedeemMs === null
+      ? Infinity
+      : demandRateUSD * Math.max(0, (nextFreeResetAtRedeemMs - atMs) / 3_600_000);
     blockedByNearFreeReset =
-      nextFreeResetAtRedeemMs !== null && nextFreeResetAtRedeemMs - atMs <= 24 * 3_600_000;
+      nextFreeResetAtRedeemMs !== null &&
+      workBeforeNextFreeResetUSD < owner.capacityUSD * minimumUsefulFraction;
     if (!redeemEligible || blockedByNearFreeReset) return;
     owner.remainingUSD = owner.capacityUSD;
     owner.naturalAtMs = atMs + owner.windowMs;
@@ -1951,6 +1995,32 @@ function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs, f
     };
   }
 
+  const earliestKnownExpiryMs = creditEntries.reduce((earliest, entry) => {
+    if (entry.credit.expiresAtMs === null) return earliest;
+    return earliest === null
+      ? entry.credit.expiresAtMs
+      : Math.min(earliest, entry.credit.expiresAtMs);
+  }, null);
+  const hoursToExpiry = earliestKnownExpiryMs === null
+    ? null
+    : Math.max(0, (earliestKnownExpiryMs - nowMs) / 3_600_000);
+  const accountDataReady =
+    allAccounts.length > 0 &&
+    allAccounts.every((candidate) =>
+      candidate &&
+      candidate.usage &&
+      candidate.usage.exact === true &&
+      candidate.usage.fresh === true &&
+      Number.isFinite(candidate.usage.updatedAtMs),
+    );
+  const possibleReset = codexResetPossibleResetDecision(forecast, nowMs);
+  const possibleResetFirst = Boolean(
+    possibleReset &&
+      (!possibleReset.timingKnown ||
+        earliestKnownExpiryMs === null ||
+        possibleReset.endMs < earliestKnownExpiryMs),
+  );
+
   const accountUsable = (candidate) =>
     candidate.usage.usedPercent < 99 &&
     (!candidate.usage.shortWindow || candidate.usage.shortWindow.usedPercent < 99);
@@ -1966,8 +2036,34 @@ function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs, f
       : candidate.freeResetDeadlineMs;
     return earliest === null ? conservativeAtMs : Math.min(earliest, conservativeAtMs);
   }, null);
+  const nextVerifiedForcedResetAtMs = allAccounts.reduce((earliest, candidate) => {
+    const forcedAtMs = Number.isFinite(candidate.explicitForcedResetAtMs)
+      ? candidate.explicitForcedResetAtMs
+      : null;
+    if (forcedAtMs === null || forcedAtMs <= nowMs) return earliest;
+    return earliest === null ? forcedAtMs : Math.min(earliest, forcedAtMs);
+  }, null);
+  const verifiedForcedResetFirst = Boolean(
+    nextVerifiedForcedResetAtMs !== null &&
+      (earliestKnownExpiryMs === null ||
+        nextVerifiedForcedResetAtMs < earliestKnownExpiryMs),
+  );
+  const minimumUsefulCreditUSD = creditEntries.reduce((smallest, entry) => {
+    const capacityUSD = codexResetChainCapacityUSD(entry.account) ?? 100;
+    const thresholdUSD = capacityUSD * CODEX_RESET_HIGH_VALUE_CREDIT_FRACTION;
+    return smallest === null ? thresholdUSD : Math.min(smallest, thresholdUSD);
+  }, null);
+  const demandBeforeNextFreeResetUSD = nextNonCouponResetAtMs === null
+    ? Infinity
+    : naturalDemandRateUSD * Math.max(
+        0,
+        (nextNonCouponResetAtMs - nowMs) / 3_600_000,
+      );
   const freeResetFirst =
-    nextNonCouponResetAtMs !== null && nextNonCouponResetAtMs - nowMs <= 24 * 3_600_000;
+    verifiedForcedResetFirst ||
+    (nextNonCouponResetAtMs !== null &&
+      minimumUsefulCreditUSD !== null &&
+      demandBeforeNextFreeResetUSD < minimumUsefulCreditUSD);
   const candidates = [];
   for (const entry of creditEntries) {
     const candidateAccount = entry.account;
@@ -2013,12 +2109,36 @@ function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs, f
         scenarioForcedAtMs: scenario.forcedAtMs,
       }),
     }));
+    const robustBranches = possibleReset && possibleReset.timingKnown
+      ? possibleReset.branches
+      : [];
+    const robustBaselineByBranch = robustBranches.map((branch) => ({
+      branch,
+      result: codexResetSimulateCapacityChain(allAccounts, {
+        nowMs,
+        horizonMs,
+        demandRateUSD: naturalDemandRateUSD,
+        scenarioForcedAtMs: branch.forcedAtMs,
+      }),
+    }));
     const candidateTimes = [nowMs];
     for (let atMs = nowMs + 3_600_000; atMs < expiryMs; atMs += 3_600_000) {
       candidateTimes.push(atMs);
     }
     if (expiryMs > nowMs) candidateTimes.push(expiryMs - 1);
     for (const atMs of candidateTimes) {
+      if (
+        verifiedForcedResetFirst &&
+        atMs <= nextVerifiedForcedResetAtMs
+      ) {
+        continue;
+      }
+      if (
+        possibleResetFirst &&
+        (!possibleReset.timingKnown || atMs <= possibleReset.endMs)
+      ) {
+        continue;
+      }
       let expectedAdditionalWorkUSD = 0;
       let eligibleWeight = 0;
       let representative = null;
@@ -2040,14 +2160,43 @@ function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs, f
         }
       }
       if (eligibleWeight < 0.5 || !representative) continue;
+      let robustAdditionalWorkUSD = null;
+      let robustEligible = true;
+      for (const item of robustBaselineByBranch) {
+        const redeemedResult = codexResetSimulateCapacityChain(allAccounts, {
+          nowMs,
+          horizonMs,
+          demandRateUSD: naturalDemandRateUSD,
+          scenarioForcedAtMs: item.branch.forcedAtMs,
+          redeemAtMs: atMs,
+          redeemAccountId: candidateAccount.id,
+        });
+        if (!redeemedResult.redeemed) {
+          robustEligible = false;
+          break;
+        }
+        const additionalWorkUSD = Math.max(
+          0,
+          redeemedResult.servedUSD - item.result.servedUSD,
+        );
+        robustAdditionalWorkUSD = robustAdditionalWorkUSD === null
+          ? additionalWorkUSD
+          : Math.min(robustAdditionalWorkUSD, additionalWorkUSD);
+      }
+      if (!robustEligible) continue;
+      const decisionAdditionalWorkUSD = robustAdditionalWorkUSD === null
+        ? expectedAdditionalWorkUSD
+        : Math.min(expectedAdditionalWorkUSD, robustAdditionalWorkUSD);
       const fullCapacityUSD = capacityUSD === null ? 100 : capacityUSD;
       candidates.push({
         account: candidateAccount,
         credit: entry.credit,
         atMs,
-        expectedAdditionalWorkUSD,
-        netPercent: codexResetClamp(expectedAdditionalWorkUSD / fullCapacityUSD * 100, 0, 100),
-        score: expectedAdditionalWorkUSD,
+        expectedAdditionalWorkUSD: decisionAdditionalWorkUSD,
+        modeledExpectedAdditionalWorkUSD: expectedAdditionalWorkUSD,
+        robustAdditionalWorkUSD,
+        netPercent: codexResetClamp(decisionAdditionalWorkUSD / fullCapacityUSD * 100, 0, 100),
+        score: decisionAdditionalWorkUSD,
         capacityUSD,
         measuredRate,
         expiryMs,
@@ -2068,20 +2217,19 @@ function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs, f
     naturalDemandRateUSD /
       Math.max(1, codexResetChainCapacityUSD(account) === null ? 1 : codexResetChainCapacityUSD(account) / 100),
   );
-  const earliestKnownExpiryMs = creditEntries.reduce((earliest, entry) => {
-    if (entry.credit.expiresAtMs === null) return earliest;
-    return earliest === null
-      ? entry.credit.expiresAtMs
-      : Math.min(earliest, entry.credit.expiresAtMs);
-  }, null);
-  const hoursToExpiry = earliestKnownExpiryMs === null
-    ? null
-    : Math.max(0, (earliestKnownExpiryMs - nowMs) / 3_600_000);
   if (!best) {
     return {
-      status: earliestKnownExpiryMs === null ? "expiry-unknown" : freeResetFirst ? "free-reset-first" : "must-form-node",
+      status: !accountDataReady
+        ? "account-data-unready"
+        : possibleResetFirst
+          ? "possible-reset-first"
+          : earliestKnownExpiryMs === null
+            ? "expiry-unknown"
+            : freeResetFirst
+              ? "free-reset-first"
+              : "must-form-node",
       creditAction:
-        freeResetFirst
+        !accountDataReady || possibleResetFirst || freeResetFirst
           ? "hold"
           : earliestKnownExpiryMs !== null && hoursToExpiry <= 72
             ? "prepare"
@@ -2106,21 +2254,38 @@ function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs, f
       optimalWindowEndMs: null,
       nextFreeResetAtMs: nextNonCouponResetAtMs,
       freeResetFirst,
+      verifiedForcedResetFirst,
+      possibleResetFirst,
+      possibleResetWindowStartMs: possibleReset && possibleReset.startMs,
+      possibleResetWindowEndMs: possibleReset && possibleReset.endMs,
+      accountDataReady,
       valuationMethod: "capacity-chain",
       naturalDemandRateUSD,
       confidence: "low",
     };
   }
   const hoursToBest = Math.max(0, (best.atMs - nowMs) / 3_600_000);
-  const highValueNode = best.netPercent >= 35;
+  const highValueNode = best.netPercent >= CODEX_RESET_HIGH_VALUE_CREDIT_FRACTION * 100;
+  const preparationLeadHours =
+    naturalDemandRateUSD > 0 && best.capacityUSD !== null
+      ? (best.capacityUSD * CODEX_RESET_HIGH_VALUE_CREDIT_FRACTION) / naturalDemandRateUSD
+      : null;
   let creditAction = "hold";
   let status = "ready";
-  if (freeResetFirst) {
+  if (!accountDataReady) {
+    status = "account-data-unready";
+  } else if (possibleResetFirst) {
+    status = "possible-reset-first";
+  } else if (freeResetFirst) {
     status = "free-reset-first";
   } else if (allAccountsBlocked && highValueNode && hoursToBest <= 1) {
     creditAction = "redeem";
     status = "interruption-now";
-  } else if (highValueNode && hoursToBest <= 24) {
+  } else if (
+    highValueNode &&
+    preparationLeadHours !== null &&
+    hoursToBest <= preparationLeadHours
+  ) {
     creditAction = "prepare";
   } else if (!highValueNode && hoursToExpiry !== null && hoursToExpiry <= 72) {
     creditAction = "prepare";
@@ -2160,8 +2325,14 @@ function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs, f
       ? nextNonCouponResetAtMs
       : best.nextFreeResetAtRedeemMs,
     freeResetFirst,
+    verifiedForcedResetFirst,
+    possibleResetFirst,
+    possibleResetWindowStartMs: possibleReset && possibleReset.startMs,
+    possibleResetWindowEndMs: possibleReset && possibleReset.endMs,
+    accountDataReady,
     valuationMethod: "capacity-chain",
     naturalDemandRateUSD,
+    preparationLeadHours,
     expectedAdditionalWorkUSD: best.expectedAdditionalWorkUSD,
     remainingBeforeRedeemUSD: best.remainingBeforeRedeemUSD,
     ownerRemainingBeforeRedeemUSD: best.ownerRemainingBeforeRedeemUSD,
@@ -2548,6 +2719,13 @@ defineProvider({
       return `${signalTeaser(summary, summaryLimit)}${suffix}`;
     }
 
+    function appendPlanReason(existing, clause) {
+      const base = String(existing == null ? "" : existing)
+        .trim()
+        .replace(/[。；;]+$/, "");
+      return base ? `${base}；${clause}` : clause;
+    }
+
     function percent(value, digits) {
       const places = typeof digits === "number" ? digits : 0;
       return `${Math.max(0, value).toFixed(places)}%`;
@@ -2573,7 +2751,7 @@ defineProvider({
     function candidateWindowUTC8(startMs, endMs) {
       const start = Number.isFinite(startMs) ? new Date(startMs + 8 * 60 * 60 * 1000) : null;
       const end = Number.isFinite(endMs) ? new Date(endMs + 8 * 60 * 60 * 1000) : start;
-      if (!start || !end) return "有刷新暗示，但时间还不确定";
+      if (!start || !end) return "有可能重置，但目前无法确定时间";
       const startMonth = start.getUTCMonth() + 1;
       const startDay = start.getUTCDate();
       const endMonth = end.getUTCMonth() + 1;
@@ -2598,7 +2776,7 @@ defineProvider({
     function sourceLink(kind, valueMs, url) {
       if (!url) return null;
       const labels = {
-        candidate: ["查看候选暗示原帖", "View candidate source"],
+        candidate: ["查看可能重置暗示原帖", "View possible-reset source"],
         commitment: ["查看重置承诺原帖", "View reset commitment source"],
         announcement: ["查看重置公告原帖", "View reset announcement source"],
         confirmation: ["查看重置确认原帖", "View reset confirmation source"],
@@ -2787,7 +2965,7 @@ defineProvider({
         : forecast.signal.level === "commitment"
           ? "有期限承诺"
           : forecast.signal.level === "hint"
-            ? "候选暗示"
+            ? "可能重置的暗示"
             : "无强制重置预告";
     const signalWindowIsInferred =
       forecast.signal.level === "hint" && forecast.signal.windowProvenance === "inferred";
@@ -2981,7 +3159,7 @@ defineProvider({
           : forecast.signal.level === "commitment"
             ? "同时存在带期限的重置承诺，提前刷新的风险高于平时。"
             : forecast.signal.level === "hint"
-              ? "目前只有候选重置暗示，系统会提前安排少量额外用量，但不会把它当成确定刷新。"
+              ? "目前只有一条可能重置的暗示，系统会提前安排少量额外用量，但不会把它当成确定刷新。"
               : forecast.p24 >= 60
                 ? "当前没有未兑现的官方公告，但公开预测认为近期刷新可能性偏高。"
                 : forecast.p24 >= 25
@@ -2997,12 +3175,30 @@ defineProvider({
           ? "当前账号额度或短窗口已经阻塞；该账号仍可工作。切号只需重新登录，不会自动执行"
           : "另一个账号在更早刷新前有更多真实容量可能被清掉；建议先在那里继续，但不会自动切号";
         whyReasonText = recommendationSecondary;
+      } else if (model.bankedPlan && model.bankedPlan.status === "possible-reset-first") {
+        const waitUntil = model.bankedPlan.possibleResetWindowEndMs
+          ? utc8(model.bankedPlan.possibleResetWindowEndMs)
+          : "这条暗示得到确认或失效";
+        recommendationSecondary = appendPlanReason(
+          recommendationSecondary,
+          `目前存在可能重置的时间范围，重置券先保留到 ${waitUntil}，届时按所有账号的最新额度重新计算`,
+        );
+        whyReasonText = recommendationSecondary;
+      } else if (model.bankedPlan && model.bankedPlan.status === "account-data-unready") {
+        recommendationSecondary = appendPlanReason(
+          recommendationSecondary,
+          "部分账号额度还没有同时完成新鲜、精确的确认，因此不会建议立即使用重置券",
+        );
+        whyReasonText = recommendationSecondary;
       } else if (model.bankedPlan && model.bankedPlan.status === "interruption-now") {
         recommendationValue = `所有账号都已阻塞，使用 ${model.bankedPlan.accountLabel || "当前账号"} 的重置券`;
-        recommendationSecondary = "所有账号均已无容量，且未来 24 小时没有非券刷新；统一容量链确认兑换能承接足够真实工作，只提示、不自动兑换";
+        recommendationSecondary = "所有账号的新鲜额度都确认已经阻塞；系统比较了可能刷新与不刷新两种结果，只有两种情况下兑换都能承接足够真实工作才会这样建议。只提示，不自动兑换";
         whyReasonText = recommendationSecondary;
       } else if (model.bankedPlan && model.bankedPlan.status === "free-reset-first") {
-        recommendationSecondary = `${recommendationSecondary}；明确强制刷新先到，重置券保持不动并在到账后重新规划`;
+        recommendationSecondary = appendPlanReason(
+          recommendationSecondary,
+          "更早的免费刷新会先到，重置券保持不动并在到账后重新规划",
+        );
       } else if (
         model.bankedPlan &&
         model.bankedPlan.status === "must-form-node" &&
@@ -3227,11 +3423,11 @@ defineProvider({
               ? "确认公告按 100% 处理；个人到账由本机额度另行确认"
             : forecast.signal.level === "commitment"
               ? "承诺概率下限与历史模型取较高值，不当作已经到账"
-              : `候选暗示不改服务端概率；证据强度${
+              : `这条可能重置的暗示不改服务端概率；证据强度${
                   forecast.signal.signalScore === null
                     ? "只用于分级"
                     : ` ${forecast.signal.signalScore.toFixed(0)}/100 只用于分级`
-                }，规划器独立预留届时剩余额度的 10%，候选本身不会把目标推到 100%`,
+                }，规划器独立预留届时剩余额度的 10%，这条暗示本身不会把目标推到 100%`,
       });
       const currentOfficialSummary = forecast.signal.level !== "none"
         ? signalWindowIsInferred
@@ -3251,7 +3447,7 @@ defineProvider({
         : stateTime(receiverEvent && (receiverEvent.announced_at || receiverEvent.announcedAt));
       if (currentOfficialSummary) {
         submenuEventRows.push({
-          label: signalWindowIsInferred ? "候选摘要" : "官方摘要",
+          label: signalWindowIsInferred ? "可能重置的消息摘要" : "官方摘要",
           value: signalTeaser(currentOfficialSummary, 180),
           group: "official",
           secondaryValue: signalWindowIsInferred
@@ -3261,7 +3457,7 @@ defineProvider({
       }
       if (forecast.signal.level !== "none" && forecast.signal.deadlineMs) {
         submenuEventRows.push({
-          label: signalWindowIsInferred ? "可能刷新时间" : "官方预计时间",
+          label: signalWindowIsInferred ? "可能重置的时间范围" : "官方预计时间",
           value: signalWindowIsInferred
             ? candidateWindowUTC8(
                 forecast.signal.windowStartMs,
@@ -3337,7 +3533,7 @@ defineProvider({
             : "announcement",
         state: timelineState,
         title: forecast.signal.level === "hint"
-          ? "候选重置暗示"
+          ? "可能重置的时间范围"
           : forecast.signal.level === "commitment"
             ? "有期限重置承诺"
             : "明确重置公告",
@@ -3365,7 +3561,7 @@ defineProvider({
             ? "强制重置公告"
             : forecast.signal.level === "commitment"
               ? "重置承诺原文"
-              : "候选暗示原文",
+              : "可能重置暗示原文",
         value: clip([
           forecast.signal.summary,
           forecast.signal.localizedSummary && forecast.signal.localizedSummary !== forecast.signal.summary
@@ -3662,6 +3858,10 @@ defineProvider({
           value:
             banked.creditAction === "redeem"
               ? `现在兑换 · ${banked.accountLabel}`
+              : banked.status === "possible-reset-first"
+                ? "先等可能重置的时间范围结束，券保持不动"
+              : banked.status === "account-data-unready"
+                ? "等待所有账号额度确认，暂不兑换"
               : banked.status === "free-reset-first"
                 ? "先等待明确强制刷新，券保持不动"
                 : banked.status === "expiry-unknown"
@@ -3672,7 +3872,13 @@ defineProvider({
                   : `准备在 ${banked.accountLabel} 形成兑换点`
                 : "保留选择权，先用现有账号容量",
           group: "assets",
-          secondaryValue: banked.status === "free-reset-first"
+          secondaryValue: banked.status === "possible-reset-first"
+            ? banked.possibleResetWindowEndMs
+              ? `现在兑换可能被随后到来的免费刷新覆盖；先等到 ${utc8(banked.possibleResetWindowEndMs)}，或本机更早确认刷新后重算`
+              : "现在还不能确定可能重置的时间；等暗示得到确认、失效或本机确认刷新后重算"
+            : banked.status === "account-data-unready"
+              ? "至少一个账号的额度不是同时获取的新鲜精确值；数据确认前不会给出立即兑换建议"
+          : banked.status === "free-reset-first"
             ? `先在 ${utc8(banked.nextFreeResetAtMs)} 前使用会被清零的现有容量；刷新到账后整条链重新计算`
             : banked.accountId === currentAccount?.id
               ? "策略作用于当前账号；其他账号的可用容量已排在券之前"
@@ -3683,10 +3889,14 @@ defineProvider({
         {
           label: "净容量价值",
           value: Number.isFinite(banked.expectedAdditionalWorkUSD)
-            ? `相对继续持有，预计多承接 ${percent(banked.bestNetPercent, 1)} 完整容量 · API 等价约 $${banked.expectedAdditionalWorkUSD.toFixed(2)}`
+            ? banked.status === "possible-reset-first"
+              ? `条件估算 · 若时间范围结束后仍未免费刷新，可多承接 ${percent(banked.bestNetPercent, 1)} 完整容量`
+              : `相对继续持有，预计多承接 ${percent(banked.bestNetPercent, 1)} 完整容量 · API 等价约 $${banked.expectedAdditionalWorkUSD.toFixed(2)}`
             : "当前没有可验证的正收益兑换点",
           group: "assets",
-          secondaryValue: "同时模拟所有账号、真实工作、自然/强制刷新、券到期与兑换后新周期；不再使用独立的周期年龄公式",
+          secondaryValue: banked.status === "possible-reset-first"
+            ? "分别计算时间范围内发生免费刷新和没有发生刷新两种结果；不把暗示强度冒充概率"
+            : "同时模拟所有账号、真实工作、自然/强制刷新、券到期与兑换后新周期；不再使用独立的周期年龄公式",
         },
         {
           label: "高价值节点",
@@ -3694,14 +3904,18 @@ defineProvider({
             ? `${utc8(banked.optimalWindowStartMs)}–${utc8(banked.optimalWindowEndMs)} · ${banked.accountLabel}`
             : "尚未形成安全兑换点",
           group: "assets",
-          secondaryValue: banked.highValueNode
-            ? `预计净得 ${percent(banked.bestNetPercent, 1)} 完整容量${
-                banked.bestNetCapacityUSD === null
-                  ? ""
-                  : ` · API 等价约 $${banked.bestNetCapacityUSD.toFixed(2)}`
-              }`
+          secondaryValue: banked.status === "possible-reset-first"
+            ? "仅为条件节点：若期间发生免费刷新，这个节点立即作废，并按新周期重新规划"
+            : banked.status === "account-data-unready"
+              ? "账号额度尚未同时确认，系统不会把不完整数据包装成安全兑换点"
             : banked.status === "free-reset-first"
-              ? "当前明确强制刷新先到；刷新之前的候选兑换点全部作废，到账后重新规划"
+              ? "当前免费刷新先到；刷新之前的兑换点全部作废，到账后重新规划"
+            : banked.highValueNode
+              ? `预计净得 ${percent(banked.bestNetPercent, 1)} 完整容量${
+                  banked.bestNetCapacityUSD === null
+                    ? ""
+                    : ` · API 等价约 $${banked.bestNetCapacityUSD.toFixed(2)}`
+                }`
               : banked.status === "expiry-unknown"
                 ? "没有可靠到期时间，系统不会编造日期或伪精确价值"
                 : "当前工作与账号容量尚不能形成高价值节点；需要提前调整真实任务顺序，不能把过期当作正常结果",
@@ -3956,7 +4170,7 @@ defineProvider({
             1,
           )} + 预测加速 ${percent(model.decision.predictionUse, 1)}${
             model.decision.candidateUse > 0
-              ? ` + 候选预留 ${percent(model.decision.candidateUse, 1)}`
+              ? ` + 可能刷新预留 ${percent(model.decision.candidateUse, 1)}`
               : ""
           }`,
           secondaryValue: model.decision.targetReached
@@ -3974,7 +4188,7 @@ defineProvider({
                 )}${forecast.signal.signalScore === null
                   ? ""
                   : `；暗示证据强度 ${forecast.signal.signalScore.toFixed(0)}/100 不是概率`
-                }；候选另预留预测调整后剩余额度的 ${percent(
+                }；可能重置的暗示另预留预测调整后剩余额度的 ${percent(
                   model.decision.candidateReservePercent,
                   0,
                 )}`
@@ -4039,7 +4253,7 @@ defineProvider({
       submenuMainlineRows.push({
         label: "主线排序原则",
         value: "明确标注 > 进行中的 Goal > 跨日持续性 > 最近仍在推进",
-        secondaryValue: `token 只描述负载与数据把握，不直接决定优先级；5/3/1 是最多展示数，低置信候选会主动缺席 · ${updatedFreshness(
+        secondaryValue: `token 只描述负载与数据把握，不直接决定优先级；5/3/1 是最多展示数，把握不足的任务会主动缺席 · ${updatedFreshness(
           sessionSuggestions.updatedAtMs,
         )}`,
       });

@@ -60,8 +60,8 @@ enum ResetDemoFixtures {
                         DetailRow(
                             label: language.text("重置", "Reset"),
                             value: language.text(
-                                "候选暗示 · 可能很快刷新（UTC+8）",
-                                "Candidate hint · A reset may happen soon (PT)"),
+                                "可能重置 · 时间范围尚未确认（UTC+8）",
+                                "Possible reset · Window is unconfirmed (PT)"),
                             secondaryValue: language.text(
                                 "“很快，但不是今天”——还不是正式公告。",
                                 "Tibo: “soon, not today”; no official announcement yet.")),
@@ -99,8 +99,8 @@ enum ResetDemoFixtures {
             DetailRow(
                 label: language.text("为什么", "Why"),
                 value: language.text(
-                    "当前还没达到目标，又出现了尚未证实的重置暗示；自然趋势也不足以覆盖目标。",
-                    "Usage is below target, an unconfirmed reset hint appeared, and the natural trend does not cover the target."),
+                    "当前还没达到目标，又出现了一条尚未证实、可能重置的消息；自然趋势也不足以覆盖目标。",
+                    "Usage is below target, an unconfirmed possible-reset signal appeared, and the natural trend does not cover the target."),
                 secondaryValue: language.text("暗示只增加有上限的预留，不改写公开概率", "The hint adds only a bounded reserve and does not rewrite public probability"),
                 group: "summary"),
             DetailRow(
@@ -129,7 +129,7 @@ enum ResetDemoFixtures {
         resetAt: Date) -> DetailSection
     {
         let formatter = ISO8601DateFormatter()
-        let candidateStart = now.addingTimeInterval(2 * 3_600)
+        let candidateStart = now.addingTimeInterval(-2 * 3_600)
         let candidateEnd = now.addingTimeInterval(22 * 3_600)
         let candidatePublished = now.addingTimeInterval(-3 * 3_600)
         let previousReset = now.addingTimeInterval(-3 * 86_400)
@@ -148,8 +148,8 @@ enum ResetDemoFixtures {
         let candidateTime = ResetTimelinePresentation.timeText(
             for: candidateItem,
             language: language) ?? language.text(
-                "有刷新暗示，但时间还不确定",
-                "There is a reset hint, but no confirmed timing.")
+                "有可能重置，但目前无法确定时间",
+                "A reset is possible, but its timing is unknown.")
         return DetailSection(
             title: language.text("重置", "Resets"),
             rows: [
@@ -165,25 +165,25 @@ enum ResetDemoFixtures {
                     group: "history"),
                 DetailRow(
                     label: language.text("当前状态", "Current status"),
-                    value: language.text("候选暗示 · 尚未确认", "Candidate hint · Unconfirmed"),
+                    value: language.text("可能重置 · 尚未确认", "Possible reset · Unconfirmed"),
                     secondaryValue: language.text(
                         "不会改写公开概率，只会增加有上限的使用预留",
                         "It does not rewrite public probability; it only adds a bounded usage reserve"),
                     group: "official"),
                 DetailRow(
-                    label: language.text("可能刷新时间", "Possible reset time"),
+                    label: language.text("可能重置的时间范围", "Possible reset window"),
                     value: candidateTime,
                     secondaryValue: language.text(
                         "根据原文与上下文推测，目前没有正式时间",
                         "Inferred from the source and context; no official time has been announced"),
                     group: "official"),
                 DetailRow(
-                    label: language.text("候选暗示原文", "Candidate source"),
+                    label: language.text("可能重置暗示原文", "Possible-reset source"),
                     value: language.text("很快会有合适的刷新时机，但不是今天。", "There may be a suitable time for resets soon, but not today."),
                     secondaryValue: language.text("完整原文与来源单独保留", "The full source remains available separately"),
                     link: DetailLink(
-                        label: "查看候选暗示原帖 · 08-29",
-                        labelEnglish: "View candidate source · Aug 28 PT",
+                        label: "查看可能重置暗示原帖 · 08-29",
+                        labelEnglish: "View possible-reset source · Aug 28 PT",
                         url: "https://example.invalid/status/candidate"),
                     group: "official"),
                 DetailRow(

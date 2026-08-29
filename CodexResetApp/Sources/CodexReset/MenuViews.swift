@@ -326,7 +326,7 @@ enum ResetTimelinePresentation {
         language: ResetPresentationLanguage) -> String
     {
         switch item.kind {
-        case "candidate": language.text("候选暗示", "Candidate hint")
+        case "candidate": language.text("可能重置的时间范围", "Possible reset window")
         case "announcement": language.text("明确重置公告", "Confirmed reset announcement")
         case "commitment": language.text("有期限重置承诺", "Dated reset commitment")
         case "natural":
@@ -335,7 +335,10 @@ enum ResetTimelinePresentation {
                 : language.text("下次自然刷新", "Next natural reset")
         case "upgrade": language.text("套餐升级刷新", "Plan upgrade reset")
         case "credit": language.text("重置券发放", "Reset credit delivery")
-        case "reset": language.text("强制刷新", "Forced reset")
+        case "reset":
+            item.state == "confirmed"
+                ? language.text("已确认的强制刷新", "Confirmed forced reset")
+                : language.text("强制刷新", "Forced reset")
         default: item.title
         }
     }
@@ -367,10 +370,10 @@ enum ResetTimelinePresentation {
         if item.kind == "candidate" {
             guard let start = self.date(item.at) else {
                 return language.text(
-                    "有刷新暗示，但时间还不确定",
-                    "There is a reset hint, but no confirmed timing.")
+                    "有可能重置，但目前无法确定时间",
+                    "A reset is possible, but its timing is unknown.")
             }
-            return self.candidateTimeText(
+            return self.possibleResetWindowText(
                 start: start,
                 end: self.date(item.endAt),
                 language: language)
@@ -392,7 +395,33 @@ enum ResetTimelinePresentation {
         return language.text("发布于 \(point)", "Published \(point)")
     }
 
-    private static func candidateTimeText(
+    static func rangeStartTitle(
+        for item: DetailTimelineItem,
+        language: ResetPresentationLanguage) -> String
+    {
+        item.kind == "candidate"
+            ? language.text("可能重置的时间范围开始", "Possible reset window begins")
+            : language.text("重置时间范围开始", "Reset window begins")
+    }
+
+    static func rangeEndTitle(
+        for item: DetailTimelineItem,
+        language: ResetPresentationLanguage) -> String
+    {
+        item.kind == "candidate"
+            ? language.text("可能重置的时间范围结束", "Possible reset window ends")
+            : language.text("重置时间范围结束", "Reset window ends")
+    }
+
+    static func boundaryText(
+        _ value: String?,
+        language: ResetPresentationLanguage) -> String?
+    {
+        guard let value, let date = self.date(value) else { return nil }
+        return "\(self.pointText(date, language: language)) \(language.timeZoneLabel)"
+    }
+
+    private static func possibleResetWindowText(
         start: Date,
         end: Date?,
         language: ResetPresentationLanguage) -> String
@@ -402,32 +431,14 @@ enum ResetTimelinePresentation {
         let end = end ?? start
         let sameDay = calendar.isDate(start, inSameDayAs: end)
 
-        if language == .english {
-            if sameDay {
-                let formatter = self.formatter("EEEE", language: language)
-                return "Reset may happen \(formatter.string(from: start)) (PT)"
-            }
-            let startComponents = calendar.dateComponents([.year, .month], from: start)
-            let endComponents = calendar.dateComponents([.year, .month], from: end)
-            let startText = self.formatter("MMM d", language: language).string(from: start)
-            let endPattern = startComponents == endComponents ? "d" : "MMM d"
-            let endText = self.formatter(endPattern, language: language).string(from: end)
-            return "Reset may happen \(startText)–\(endText) (PT)"
-        }
-
-        let startComponents = calendar.dateComponents([.year, .month], from: start)
-        let endComponents = calendar.dateComponents([.year, .month], from: end)
-        let startText = self.formatter("M月d日", language: language)
-            .string(from: start)
-            .filter { !$0.isWhitespace }
-        let endPattern = startComponents == endComponents ? "d日" : "M月d日"
-        let endText = self.formatter(endPattern, language: language)
-            .string(from: end)
-            .filter { !$0.isWhitespace }
-        let range = sameDay
-            ? startText
-            : "\(startText)至\(endText)"
-        return "可能在 \(range)刷新（UTC+8）"
+        let startPattern = language == .english ? "MMM d, h:mm a" : "M月d日 HH:mm"
+        let sameDayEndPattern = language == .english ? "h:mm a" : "HH:mm"
+        let differentDayEndPattern = startPattern
+        let startText = self.formatter(startPattern, language: language).string(from: start)
+        let endText = self.formatter(
+            sameDay ? sameDayEndPattern : differentDayEndPattern,
+            language: language).string(from: end)
+        return "\(startText)–\(endText) \(language.timeZoneLabel)"
     }
 
     private static func pointText(
@@ -457,29 +468,119 @@ enum ResetTimelinePresentation {
     }
 }
 
+enum ResetTimelineLayout {
+    static func pastItems(_ items: [DetailTimelineItem], at now: Date) -> [DetailTimelineItem] {
+        items
+            .filter { item in
+                guard let boundary = self.date(item.endAt) ?? self.date(item.at) else { return false }
+                return boundary < now
+            }
+            .sorted {
+                (self.date($0.at) ?? .distantPast) < (self.date($1.at) ?? .distantPast)
+            }
+    }
+
+    static func activeItems(_ items: [DetailTimelineItem], at now: Date) -> [DetailTimelineItem] {
+        items
+            .filter { item in
+                guard
+                    let start = self.date(item.at),
+                    let end = self.date(item.endAt),
+                    end >= start
+                else { return false }
+                return start <= now && now <= end
+            }
+            .sorted {
+                (self.date($0.at) ?? .distantPast) < (self.date($1.at) ?? .distantPast)
+            }
+    }
+
+    static func futureItems(_ items: [DetailTimelineItem], at now: Date) -> [DetailTimelineItem] {
+        items
+            .filter { item in
+                guard let start = self.date(item.at) else { return false }
+                return start > now
+            }
+            .sorted {
+                (self.date($0.at) ?? .distantFuture) < (self.date($1.at) ?? .distantFuture)
+            }
+    }
+
+    static func undatedItems(_ items: [DetailTimelineItem]) -> [DetailTimelineItem] {
+        items.filter { self.date($0.at) == nil && self.date($0.endAt) == nil }
+    }
+
+    private static func date(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        return AlternatingDisplay.date(from: value)
+    }
+}
+
 private struct ResetEventTimeline: View {
     @Environment(\.resetPresentationLanguage) private var presentationLanguage
     let visualization: DetailVisualization
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
-            let upcoming = self.upcomingItems(at: context.date)
-            let past = self.pastItems(at: context.date)
+            let past = ResetTimelineLayout.pastItems(self.visualization.items, at: context.date)
+            let active = ResetTimelineLayout.activeItems(self.visualization.items, at: context.date)
+            let future = ResetTimelineLayout.futureItems(self.visualization.items, at: context.date)
+            let undated = ResetTimelineLayout.undatedItems(self.visualization.items)
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(upcoming.enumerated()), id: \.element.id) { index, item in
-                    self.eventRow(item, connectsBelow: index < upcoming.count - 1 || !past.isEmpty)
+                ForEach(past) { item in
+                    self.eventRow(item, connectsBelow: true)
                 }
-                self.nowDivider
+                if active.isEmpty {
+                    self.nowDivider(activeItems: [])
+                        .padding(.vertical, 3)
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(active) { item in
+                            self.eventRow(
+                                item,
+                                connectsBelow: true,
+                                titleOverride: ResetTimelinePresentation.rangeStartTitle(
+                                    for: item,
+                                    language: self.presentationLanguage),
+                                timeOverride: ResetTimelinePresentation.boundaryText(
+                                    item.at,
+                                    language: self.presentationLanguage))
+                        }
+                        self.nowDivider(activeItems: active)
+                            .padding(.vertical, 3)
+                        ForEach(Array(active.enumerated()), id: \.element.id) { index, item in
+                            self.rangeEndRow(
+                                item,
+                                connectsBelow: index < active.count - 1 || !future.isEmpty || !undated.isEmpty)
+                        }
+                    }
+                    .padding(6)
+                    .background {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.secondary.opacity(0.035))
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(
+                                Color.secondary.opacity(0.38),
+                                style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    }
                     .padding(.vertical, 3)
-                ForEach(Array(past.enumerated()), id: \.element.id) { index, item in
-                    self.eventRow(item, connectsBelow: index < past.count - 1)
+                }
+                ForEach(Array(future.enumerated()), id: \.element.id) { index, item in
+                    self.eventRow(
+                        item,
+                        connectsBelow: index < future.count - 1 || !undated.isEmpty)
+                }
+                ForEach(Array(undated.enumerated()), id: \.element.id) { index, item in
+                    self.eventRow(item, connectsBelow: index < undated.count - 1)
                 }
             }
         }
     }
 
-    private var nowDivider: some View {
-        HStack(spacing: 8) {
+    private func nowDivider(activeItems: [DetailTimelineItem]) -> some View {
+        let insidePossibleResetWindow = activeItems.contains { $0.kind == "candidate" }
+        let insideConfirmedResetWindow = !activeItems.isEmpty && !insidePossibleResetWindow
+        return HStack(spacing: 8) {
             ZStack {
                 Circle().fill(Color.secondary.opacity(0.14))
                 Image(systemName: "clock")
@@ -487,7 +588,15 @@ private struct ResetEventTimeline: View {
                     .foregroundStyle(.secondary)
             }
             .frame(width: 22, height: 22)
-            Text(self.presentationLanguage.text("现在", "Now"))
+            Text(insidePossibleResetWindow
+                ? self.presentationLanguage.text(
+                    "现在 · 正处于这个可能重置的时间范围内",
+                    "Now · Within this possible reset window")
+                : insideConfirmedResetWindow
+                    ? self.presentationLanguage.text(
+                        "现在 · 正处于已公告的重置时间范围内",
+                        "Now · Within the announced reset window")
+                : self.presentationLanguage.text("现在", "Now"))
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
             Rectangle()
@@ -495,12 +604,24 @@ private struct ResetEventTimeline: View {
                 .frame(height: 1)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(self.presentationLanguage.text("现在", "Now"))
+        .accessibilityLabel(insidePossibleResetWindow
+            ? self.presentationLanguage.text(
+                "现在，正处于这个可能重置的时间范围内",
+                "Now, within this possible reset window")
+            : insideConfirmedResetWindow
+                ? self.presentationLanguage.text(
+                    "现在，正处于已公告的重置时间范围内",
+                    "Now, within the announced reset window")
+            : self.presentationLanguage.text("现在", "Now"))
     }
 
     private func eventRow(
         _ item: DetailTimelineItem,
-        connectsBelow: Bool) -> some View
+        connectsBelow: Bool,
+        titleOverride: String? = nil,
+        timeOverride: String? = nil,
+        includeDetail: Bool = true,
+        includePublished: Bool = true) -> some View
     {
         let tint = self.tint(for: item)
         return HStack(alignment: .top, spacing: 8) {
@@ -522,7 +643,7 @@ private struct ResetEventTimeline: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(ResetTimelinePresentation.title(
+                    Text(titleOverride ?? ResetTimelinePresentation.title(
                         for: item,
                         language: self.presentationLanguage))
                         .font(.caption.weight(.semibold))
@@ -537,12 +658,12 @@ private struct ResetEventTimeline: View {
                         .background(tint.opacity(0.12), in: Capsule())
                     Spacer(minLength: 0)
                 }
-                if let timeText = self.timeText(for: item) {
+                if let timeText = timeOverride ?? self.timeText(for: item) {
                     Text(timeText)
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                if let detail = ResetTimelinePresentation.detail(
+                if includeDetail, let detail = ResetTimelinePresentation.detail(
                     for: item,
                     language: self.presentationLanguage), !detail.isEmpty
                 {
@@ -552,7 +673,7 @@ private struct ResetEventTimeline: View {
                         .lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if let publishedText = self.publishedText(for: item) {
+                if includePublished, let publishedText = self.publishedText(for: item) {
                     Text(publishedText)
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
@@ -563,6 +684,23 @@ private struct ResetEventTimeline: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(self.accessibilityText(for: item))
+    }
+
+    private func rangeEndRow(
+        _ item: DetailTimelineItem,
+        connectsBelow: Bool) -> some View
+    {
+        self.eventRow(
+            item,
+            connectsBelow: connectsBelow,
+            titleOverride: ResetTimelinePresentation.rangeEndTitle(
+                for: item,
+                language: self.presentationLanguage),
+            timeOverride: ResetTimelinePresentation.boundaryText(
+                item.endAt,
+                language: self.presentationLanguage),
+            includeDetail: false,
+            includePublished: false)
     }
 
     private func node(for item: DetailTimelineItem, tint: Color) -> some View {
@@ -602,33 +740,6 @@ private struct ResetEventTimeline: View {
         case "pending": .accentColor
         default: .secondary
         }
-    }
-
-    private func upcomingItems(at now: Date) -> [DetailTimelineItem] {
-        self.visualization.items
-            .filter { item in
-                guard let boundary = self.date(item.endAt) ?? self.date(item.at) else { return true }
-                return boundary >= now
-            }
-            .sorted { left, right in
-                let leftDate = self.date(left.at) ?? .distantPast
-                let rightDate = self.date(right.at) ?? .distantPast
-                let leftActive = leftDate <= now && (self.date(left.endAt) ?? leftDate) >= now
-                let rightActive = rightDate <= now && (self.date(right.endAt) ?? rightDate) >= now
-                if leftActive != rightActive { return leftActive }
-                return leftDate < rightDate
-            }
-    }
-
-    private func pastItems(at now: Date) -> [DetailTimelineItem] {
-        self.visualization.items
-            .filter { item in
-                guard let boundary = self.date(item.endAt) ?? self.date(item.at) else { return false }
-                return boundary < now
-            }
-            .sorted {
-                (self.date($0.at) ?? .distantPast) > (self.date($1.at) ?? .distantPast)
-            }
     }
 
     private func date(_ value: String?) -> Date? {

@@ -1113,6 +1113,65 @@ const earlyBurnBanked = bankedModel(
 check(earlyBurnBanked.bankedPlan.quotaEdge > 98);
 equal(earlyBurnBanked.actions.creditAction, "redeem");
 check(earlyBurnBanked.bankedPlan.netCapacityUSD > 196);
+const possibleResetForecast = {
+  ...noResetForecast,
+  teased_window: {
+    tweet_id: "2093551005711679011",
+    summary: "Synthetic contextual hint: soon, but not today",
+    url: "https://x.com/thsottiaux/status/2093551005711679011",
+    at: new Date(now - hour).toISOString(),
+    window: {
+      label: "later today through tomorrow",
+      start_at: new Date(now + 2 * hour).toISOString(),
+      end_at: new Date(now + 20 * hour).toISOString(),
+      time_zone: "UTC",
+    },
+    score: { band: "tease", value: 50, modifiers: [] },
+  },
+};
+const possibleResetBeforeCoupon = bankedModel(
+  99,
+  new Date(now + 167 * hour).toISOString(),
+  new Date(now + 30 * day).toISOString(),
+  possibleResetForecast,
+);
+equal(possibleResetBeforeCoupon.forecast.signal.level, "hint");
+equal(possibleResetBeforeCoupon.bankedPlan.status, "possible-reset-first");
+equal(
+  possibleResetBeforeCoupon.actions.creditAction,
+  "hold",
+  "a credit that outlives a possible-reset window must be held until both reset outcomes are safe",
+);
+equal(
+  possibleResetBeforeCoupon.bankedPlan.possibleResetWindowEndMs,
+  now + 20 * hour,
+);
+check(
+  possibleResetBeforeCoupon.bankedPlan.optimalAtMs === null ||
+    possibleResetBeforeCoupon.bankedPlan.optimalAtMs > now + 20 * hour,
+  "redemption nodes inside a possible-reset window must be deferred",
+);
+const staleCreditAccount = {
+  ...earlyBurnBanked.accounts[0],
+  usage: {
+    ...earlyBurnBanked.accounts[0].usage,
+    fresh: false,
+  },
+};
+const staleCreditPlan = bankedPlanFor(
+  staleCreditAccount,
+  [staleCreditAccount],
+  {},
+  null,
+  now,
+  noResetForecast,
+);
+equal(staleCreditPlan.status, "account-data-unready");
+equal(
+  staleCreditPlan.creditAction,
+  "hold",
+  "stale account usage must fail closed instead of recommending immediate redemption",
+);
 const bankedWithFreeAccount = bankedPlanFor(
   earlyBurnBanked.accounts[0],
   [
@@ -1125,6 +1184,8 @@ const bankedWithFreeAccount = bankedPlanFor(
         windowMinutes: 10080,
         resetsAtMs: now + 5 * day,
         updatedAtMs: now,
+        exact: true,
+        fresh: true,
         shortWindow: null,
       },
       pace: null,
@@ -3818,7 +3879,7 @@ const ctx = {
       (row) =>
         row.label === "主线排序原则" &&
         /token 只描述负载/.test(row.secondaryValue) &&
-        /低置信候选会主动缺席/.test(row.secondaryValue),
+        /把握不足的任务会主动缺席/.test(row.secondaryValue),
     ),
     "the recommendation evidence must separate intent ranking from token load",
   );
@@ -3951,7 +4012,7 @@ const ctx = {
   });
   const teaserHomeReset = teaserSnapshot.details[0].rows.find((row) => row.label === "重置");
   check(
-    /候选暗示 · 可能在 .+刷新（UTC\+8）/.test(teaserHomeReset.value),
+    /可能重置的暗示 · 可能在 .+刷新（UTC\+8）/.test(teaserHomeReset.value),
     "the structured tease must outrank the natural refresh in plain language and UTC+8",
   );
   check(
@@ -3970,7 +4031,7 @@ const ctx = {
   );
   check(
     teaserWhy.rows.some(
-      (row) => row.label === "为什么" && /候选重置暗示/.test(row.value),
+      (row) => row.label === "为什么" && /可能重置的暗示/.test(row.value),
     ),
     "the plain-language explanation must say that the candidate hint affected the plan",
   );
@@ -4001,7 +4062,7 @@ const ctx = {
   check(
     teaserResetSection.rows.some(
       (row) =>
-        row.label === "可能刷新时间" &&
+        row.label === "可能重置的时间范围" &&
         /目前没有正式时间/.test(row.secondaryValue) &&
         row.relativeTimeAt === null,
     ),
@@ -4010,11 +4071,11 @@ const ctx = {
   check(
     teaserResetSection.rows.some(
       (row) =>
-        row.label === "候选暗示原文" &&
+        row.label === "可能重置暗示原文" &&
         row.group === "official" &&
         row.link.url === providerTeaseForecast.teased_window.url &&
-        /查看候选暗示原帖/.test(row.link.label) &&
-        /View candidate source/.test(row.link.labelEnglish),
+        /查看可能重置暗示原帖/.test(row.link.label) &&
+        /View possible-reset source/.test(row.link.labelEnglish),
     ),
     "the full source and its direct link must remain available outside the visualization",
   );

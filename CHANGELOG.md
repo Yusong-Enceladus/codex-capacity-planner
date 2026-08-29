@@ -5,6 +5,15 @@ versioning once the first public release is tagged.
 
 ## Unreleased
 
+- Make the reset timeline flow monotonically from past through “Now” to the
+  future. An active possible-reset interval now renders with explicit start and
+  end boundaries and contains the “Now” marker instead of appearing as a point
+  above an unrelated date.
+- Make reset-credit advice fail closed on stale account usage and evaluate a
+  possible reset as deterministic “lands” and “does not land” branches without
+  inventing a probability. Credits that outlive the possible-reset interval are
+  held until that interval ends, while free-reset conflicts are derived from
+  capacity and observed demand instead of a fixed 24-hour cutoff.
 - Recommend logical work mainlines—not sessions or raw workspaces—using
   explicit local labels, ongoing Goals, related-task repetition, cross-day
   continuity, and recency. Rolling token growth remains load evidence and does
@@ -35,15 +44,15 @@ versioning once the first public release is tagged.
   candidate hints; admit only explicit candidate lifecycle fields or a
   top-level, reset-related corpus fallback, so retrospective replies cannot
   become future signals.
-- Give a real candidate a separate bounded 10% capacity reserve without
+- Give a real possible-reset signal a separate bounded 10% capacity reserve without
   rewriting the hosted 24-hour probability or allowing a hint alone to target
   100% usage.
 - Rebase a zeroed immediate/deadline trajectory when the signal is corrected
   to a continuous policy, automatically repairing previously poisoned plans.
-- Keep candidate post IDs out of durable trajectory and behavior-notification
+- Keep possible-reset post IDs out of durable trajectory and behavior-notification
   identities while retaining their risk effect through the continuous hazard.
-- Label candidate, commitment, and explicit source text separately and expose
-  the candidate reserve in the target equation.
+- Label possible-reset, commitment, and explicit source text separately and expose
+  the possible-reset reserve in the target equation.
 
 ## 0.1.5 - 2026-08-23
 

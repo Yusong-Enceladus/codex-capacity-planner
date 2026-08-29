@@ -80,6 +80,8 @@ See [Privacy and data flow](docs/privacy.md) and the [Security policy](SECURITY.
 - Prebuilt downloads support Apple Silicon and macOS 14 or later.
 - Recommendations remain advisory; the planner does not run tasks, switch accounts, or use reset credits automatically.
 - Ordinary reset forecasts remain probabilistic; explicit announcements and delivery to the current account are shown separately.
+- Evidence for a possible reset is never presented as a probability. The reset timeline runs from past to present to future, and places “Now” inside a possible-reset window when applicable. Chinese uses UTC+8; English uses Pacific Time.
+- Reset-credit advice checks every account and evaluates both “a free reset happens” and “no free reset happens.” It cannot recommend immediate redemption while account usage is unconfirmed or another account still has usable capacity.
 - Changes to Codex quota rules may require updates to the calculations.
 
 ## Technical documentation
