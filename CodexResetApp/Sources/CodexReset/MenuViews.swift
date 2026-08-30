@@ -209,7 +209,7 @@ private struct CompactDecisionProgress: View {
     }
 }
 
-private struct DetailDecisionProgress: View {
+struct DetailDecisionProgress: View {
     let progress: DecisionProgress
 
     private let tint = Color(red: 0.55, green: 0.39, blue: 0.96)
@@ -1381,6 +1381,7 @@ struct ResetDetailsView: View {
     var history: DecisionHistory?
     var decisionContext: DecisionContext?
     var historyEvents: [ResetHistoryEvent]?
+    var usageHistory: UsageHistoryStore?
 
     init(
         sections: [DetailSection],
@@ -1388,7 +1389,8 @@ struct ResetDetailsView: View {
         onAction: MainlineActionHandler? = nil,
         history: DecisionHistory? = nil,
         decisionContext: DecisionContext? = nil,
-        historyEvents: [ResetHistoryEvent]? = nil)
+        historyEvents: [ResetHistoryEvent]? = nil,
+        usageHistory: UsageHistoryStore? = nil)
     {
         self.sections = sections
         self.width = width
@@ -1396,6 +1398,7 @@ struct ResetDetailsView: View {
         self.history = history
         self.decisionContext = decisionContext
         self.historyEvents = historyEvents
+        self.usageHistory = usageHistory
     }
 
     var body: some View {
@@ -1403,7 +1406,9 @@ struct ResetDetailsView: View {
             ForEach(Array(self.sections.enumerated()), id: \.offset) { sectionIndex, section in
                 if sectionIndex > 0 { Divider() }
                 VStack(alignment: .leading, spacing: 9) {
-                    if DetailMenuLayout.isCalculation(section.title) {
+                    if DetailMenuLayout.isUsage(section.title), let usageHistory = self.usageHistory {
+                        UsageTargetsView(section: section, store: usageHistory)
+                    } else if DetailMenuLayout.isCalculation(section.title) {
                         CalculationHistoryView(section: section, history: self.history)
                     } else if ["为什么这样建议", "Why This Plan"].contains(section.title), let context = self.decisionContext {
                         DecisionExplanationView(context: context, history: self.history)

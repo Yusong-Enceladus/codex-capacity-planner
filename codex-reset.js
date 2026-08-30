@@ -4091,6 +4091,7 @@ defineProvider({
             }
           : null;
         submenuAccountRows.push({
+          accountId: account.id,
           label: `${account.label} · ${account.planLabel}${markers ? ` · ${markers}` : ""}`,
           value: account.decision
             ? account.decision.targetReached

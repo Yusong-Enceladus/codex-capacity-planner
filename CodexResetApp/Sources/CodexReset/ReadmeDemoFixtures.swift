@@ -141,7 +141,7 @@ enum ResetDemoFixtures {
                     targetLabel: language.text("目标 68.0%", "Target 68.0%"),
                     projectedLabel: language.text(
                         "预计 54.0%–66.0% · 中心 60.0%",
-                        "Forecast 54.0%–66.0% · Midpoint 60.0%"))),
+                        "Forecast 54.0%–66.0% · Midpoint 60.0%")), accountId: "demo-work"),
             DetailRow(
                 label: language.text("备用账户 · Pro", "Backup account · Pro"),
                 value: language.text("当前已用 31%", "31% used"),
@@ -160,7 +160,7 @@ enum ResetDemoFixtures {
                     targetLabel: language.text("目标 52.0%", "Target 52.0%"),
                     projectedLabel: language.text(
                         "预计 44.0%–58.0% · 中心 49.0%",
-                        "Forecast 44.0%–58.0% · Midpoint 49.0%"))),
+                        "Forecast 44.0%–58.0% · Midpoint 49.0%")), accountId: "demo-backup"),
         ])
     }
 

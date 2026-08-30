@@ -18,16 +18,28 @@ Depending on the installed connector, the monitor may read:
   terms and are neither retained in planner state nor returned by the local API;
 - local mainline corrections, stored as opaque target IDs plus their display
   label and status.
+- normalized local usage events (time, model, mode, input/cache/output counts)
+  for daily history. The history importer reads only whitelisted fields from
+  a bounded first session-metadata line and the local task index. Full paths
+  become opaque project keys plus basenames; instruction bodies are discarded.
 
-It does not read response text, source code, tool output, full project paths,
-authentication tokens, or browser cookies. It does not scan rollout
-transcripts.
+The planner does not retain response text, source code, tool output, full
+project paths, authentication tokens, or browser cookies. The bundled
+CodexBar cost collector scans local rollout usage events to normalize token
+counters; it does not send transcripts anywhere. History collection never
+reads credentials, invokes a quota probe, or infers past ownership from a
+current login.
 
 ## External requests
 
 The optional signal service receives ordinary HTTP metadata plus locale and
 time zone. It must not receive account identifiers, quota values, reset times,
 session metadata, project data, or recommendations.
+
+The bundled cost collector may refresh a public model-price catalog when it
+encounters unknown pricing. That request contains no local usage records or
+account identifiers. The history chart labels its own bundled-price estimates
+explicitly; it does not treat them as billed charges.
 
 Push subscription setup sends the browser-created push endpoint and language
 to the signal service. The local monitor retains only a one-way digest of the
@@ -48,6 +60,12 @@ attempt/success/failure times, a coarse trigger reason, status, and error kind;
 notification titles and bodies are not retained. Loopback callers receive only
 fields needed to render the UI.
 
+`GET /api/usage-history?days=30&tz=Asia/Shanghai` returns bounded-day aggregates,
+model totals, project basenames and bounded task labels. Supported time zones
+are Asia/Shanghai and America/Los_Angeles; ranges are integers from 1 to 365.
+Per-event records and hashed identity evidence remain in the private SQLite
+ledger, never in this response or any request to a public service.
+
 ## Retention and deletion
 
 The monitor retains up to 1,024 local decision observations and 96 reset
@@ -61,6 +79,15 @@ See [Inspectable decisions](decision-history.md) for sampling and display rules.
 Runtime state is stored under the user's local configuration directory with
 restrictive permissions. Removing that directory deletes Codex Capacity Planner's own
 history and predictions; it does not delete source Codex records.
+
+The standalone app stores daily-history backing events in `usage-history.sqlite`
+inside its CodexReset Application Support directory, with private permissions.
+Retention includes at most 367 days (365 display days plus time-zone boundary
+slack). Neither a quota reset nor source-cache pruning deletes retained usage.
+The bundled collector uses its own `usage-collector` cache in the same support
+directory. An existing CodexBar cache is a read-only seed, never overwritten.
+Deleting this database and its SQLite sidecars clears the planner's imported
+usage history; original Codex logs and the collector's cache remain separate.
 
 ## Issue reports
 

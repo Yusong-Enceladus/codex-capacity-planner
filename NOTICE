@@ -7,6 +7,16 @@ The build bootstrap materializes a modified copy of CodexBar 0.49.3 in
 Peter Steinberger and is distributed under the MIT License. The bootstrap
 fetches its original repository and license before applying the reviewable
 patch under `patches/codexbar/`.
+The second patch adds an optional isolated cost-cache path and a parser test;
+it does not change the default cache or account credential handling.
+
+`codex-reset-usage-pricing.js` adapts CodexBar's MIT-licensed
+`Sources/CodexBarCore/Vendored/CostUsage/CostUsagePricing.swift` and
+`CostUsageScanner+PricingRows.swift` from that pinned revision. The daily
+history interface adapts the behavior of `CostHistoryChartMenuView.swift`.
+The bundled collector supplies the normalized local token ledger; the planner
+adds independent retention, explicit account attribution and localized day
+boundaries. API-equivalent values are offline estimates, not billed charges.
 
 Codex Capacity Planner is an independent community project. It is not affiliated with or
 endorsed by OpenAI. Codex, ChatGPT, OpenAI, and related marks belong to their

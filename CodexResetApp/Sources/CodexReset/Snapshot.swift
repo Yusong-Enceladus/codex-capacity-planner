@@ -162,6 +162,7 @@ struct DetailRow: Codable, Equatable, Identifiable, Sendable {
     let group: String?
     let progress: DecisionProgress?
     let actions: [DetailAction]?
+    let accountId: String?
 
     var id: String {
         "\(self.label)\u{1f}\(self.value)"
@@ -177,7 +178,8 @@ struct DetailRow: Codable, Equatable, Identifiable, Sendable {
         link: DetailLink? = nil,
         group: String? = nil,
         progress: DecisionProgress? = nil,
-        actions: [DetailAction]? = nil)
+        actions: [DetailAction]? = nil,
+        accountId: String? = nil)
     {
         self.label = label
         self.value = value
@@ -189,6 +191,7 @@ struct DetailRow: Codable, Equatable, Identifiable, Sendable {
         self.group = group
         self.progress = progress
         self.actions = actions
+        self.accountId = accountId
     }
 }
 

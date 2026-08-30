@@ -33,6 +33,7 @@
 - **Recent-work suggestions**: puts up to 5/3/1 logical mainlines and correction actions directly in the main menu. Valid actions share one horizontal row; edits show inline feedback and keep the menu open for successive corrections or restoring automatic judgment. Explicit labels, Goals, and cross-day continuity determine intent; tokens describe load only, and temporary sessions never fill the list.
 - **Reset management**: puts natural resets, possible-reset windows, official resets, plan upgrades, and observed delivery on one past→now→future timeline.
 - **Multiple accounts**: “Usage & Targets” gives every visible account its own current, target, and forecast range while retaining API-equivalent capacity, expected loss, and local sampling provenance.
+- **Daily usage history**: a bar chart sits directly beneath each account's progress bar. Shared 7/30/90-day controls default to 30 days, remember the selection, and support custom 1–365-day ranges. Inspect API-equivalent estimates or tokens, totals, peak days and selected-day details; models, projects and tasks start collapsed, and interactions keep the menu open.
 - **Explainable calculations**: “Calculation & Data” is an independent first-level entry with in-page Results, Method, and Raw Data controls. Key values and aligned trends share one observation and account; formulas, complete records, and live diagnostics expand in clearly separate sections.
 - **Reset-credit planning**: shows every credit with its owning account and individual expiry on one shared axis from “Now,” so more remaining time always means a longer line. It also visualizes net capacity, API-equivalent value, the high-value window, and both “free reset happens” and “no free reset happens” outcomes.
 
@@ -43,8 +44,10 @@
 <p align="center"><sub>Mark complete, then snooze another mainline without reopening the menu. Other actions and Restore automatic decision remain available.</sub></p>
 
 <p align="center">
-  <img src="docs/assets/codex-capacity-planner-details-en.png" width="900" alt="Codex Capacity Planner English account details with independent usage progress bars">
+  <img src="docs/assets/codex-capacity-planner-usage-en.png" width="900" alt="Real macOS Usage & Targets menu with a daily bar chart beneath each account's progress bar">
 </p>
+
+Historical amounts estimate the API equivalent of local logs, not bills or quota percentages. Chinese groups events into UTC+8 days; English uses Pacific Time. Resets never erase consumed usage. Older logs without reliable account evidence appear under Unassigned local usage, never guessed from the current login or duplicated across accounts. Gaps are not zero usage, and selecting 365 days does not promise 365 days of reliable records.
 
 <p align="center">
   <img src="docs/assets/codex-capacity-planner-resets-en.png" width="900" alt="Codex Capacity Planner English reset timeline with message-handling status and inline decision inspection">

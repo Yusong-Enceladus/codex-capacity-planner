@@ -5,6 +5,25 @@ versioning once the first public release is tagged.
 
 ## Unreleased
 
+## 0.1.10 - 2026-08-30
+
+- Add daily history directly below each account's existing Usage & Targets
+  progress bar. Shared 7/30/90-day controls default to 30 days, remember the
+  choice, and support any 1–365-day range. Switch API-equivalent estimates and
+  tokens without navigating away or closing the menu.
+- Preserve period totals, peak days, hover/click selection, input/cache/output
+  breakdowns, models, Fast mode, projects and tasks. Detailed lists start
+  collapsed. Amounts are estimates, never quota percentages or actual charges.
+- Reuse the bundled CodexBar local collector on a background worker; keep a
+  private persistent ledger across resets and upstream cache eviction. Group
+  actual event times by Chinese UTC+8 or English Pacific Time, including DST.
+- Require explicit account evidence. Unattributed old records remain in a
+  separate local-history chart; they are never copied under every account or
+  assigned from the current login. Missing coverage and unpriced models remain
+  visible rather than turning into invented zero usage or zero cost.
+- Refresh the bilingual README gallery using the real native macOS menu and
+  anonymous data, and ship the history collector with the standalone app.
+
 ## 0.1.9 - 2026-08-30
 
 - Measure interactive menu content before opening, instead of reserving fixed

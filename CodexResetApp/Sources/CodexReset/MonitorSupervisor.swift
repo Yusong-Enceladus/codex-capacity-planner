@@ -110,6 +110,8 @@ final class MonitorSupervisor: ObservableObject {
             "codex-reset-behavior.js",
             "codex-reset-short-load.js",
             "codex-reset-workload-eval.js",
+            "codex-reset-usage-history.js",
+            "codex-reset-usage-pricing.js",
         ]
         var hasher = SHA256()
         for filename in filenames {

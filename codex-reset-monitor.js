@@ -8,6 +8,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { createBehaviorEngine } = require("./codex-reset-behavior.js");
 const { createShortLoadWorkerEngine } = require("./codex-reset-short-load.js");
+const { createUsageHistoryWorker, historyRange } = require("./codex-reset-usage-history.js");
 const { normalizeDecisionHistory, recordDecisionHistory, planAccounts, planActions } = require("./codex-reset-history.js");
 
 const hour = 60 * 60 * 1000;
@@ -4171,6 +4172,7 @@ function createRuntime(logic, initialState) {
     logic,
     behaviorEngine: logic.behaviorEngine || null,
     shortLoadEngine: logic.shortLoadEngine || null,
+    usageHistoryEngine: logic.usageHistoryEngine || null,
     state: ensureState(initialState),
     startedAt: iso(Date.now()),
     schedule: {},
@@ -5592,6 +5594,9 @@ function createRuntime(logic, initialState) {
     const settings = object(optionsValue) || {};
     const work = (async () => {
       await refreshUsage({ startup: true }).catch(() => null);
+      // Local cost indexing is independent of quota collection and public
+      // signals. Keep the HTTP service responsive during first-run catch-up.
+      if (runtime.usageHistoryEngine) void runtime.usageHistoryEngine.refresh().catch(() => null);
       await Promise.resolve().then(refreshSessions).catch(() => null);
       await Promise.resolve().then(() => refreshShortLoad(Date.now())).catch(() => null);
       await Promise.all([
@@ -5644,6 +5649,18 @@ function createRuntime(logic, initialState) {
     // Codex's local SQLite database. It never scans rollout transcripts,
     // retains the excerpts, or contacts a website for mainline inference.
     scheduleLoop("sessions", sessionRefreshInterval, refreshSessions);
+    if (runtime.usageHistoryEngine) {
+      scheduleLoop("usageHistory", 5 * minute, () => runtime.usageHistoryEngine.refresh());
+    }
+  }
+
+  async function usageHistory(days, timeZone) {
+    historyRange(days, timeZone);
+    if (!runtime.usageHistoryEngine) throw new Error("usage_history_unavailable");
+    return runtime.usageHistoryEngine.query({ days, timeZone, accounts:
+      Object.values(runtime.state.accountStates).filter((account) => account.present !== false)
+        .map((account) => ({ id: account.id, historyAccountKey: account.historyAccountKey })),
+    });
   }
 
   return {
@@ -5655,6 +5672,7 @@ function createRuntime(logic, initialState) {
     historyContext,
     historyProjection,
     uiSnapshot,
+    usageHistory,
     processEvent,
     recoverMissedExplicitNotification,
     refreshUsage,
@@ -5697,6 +5715,15 @@ function createServer(service) {
       }
       if (request.method === "GET" && requestURL.pathname === "/api/snapshot") {
         jsonResponse(response, 200, await service.uiSnapshot());
+        return;
+      }
+      if (request.method === "GET" && requestURL.pathname === "/api/usage-history") {
+        const days = Number(requestURL.searchParams.get("days") || 30);
+        const timeZone = requestURL.searchParams.get("tz") || "Asia/Shanghai";
+        try { historyRange(days, timeZone); }
+        catch { jsonResponse(response, 400, { error: "invalid_history_range" }); return; }
+        try { jsonResponse(response, 200, await service.usageHistory(days, timeZone)); }
+        catch { jsonResponse(response, 503, { error: "usage_history_unavailable" }); }
         return;
       }
       if (request.method === "GET" && requestURL.pathname === "/api/config") {
@@ -5809,6 +5836,16 @@ async function main() {
     costDatabase: codexCostDatabase,
     stateDatabase: codexStateDatabase,
   });
+  logic.usageHistoryEngine = createUsageHistoryWorker({
+    historyDatabase: path.join(path.dirname(stateFile), "usage-history.sqlite"),
+    // Backfill must not append old work into the row-id stream used by live
+    // capacity calibration. The existing cache is a read-only seed only.
+    costDatabase: path.join(path.dirname(stateFile), "usage-collector", "cost-usage", "cost-usage.sqlite"),
+    seedDatabase: codexCostDatabase,
+    cacheRoot: path.join(path.dirname(stateFile), "usage-collector"),
+    stateDatabase: codexStateDatabase,
+    cli: standaloneCodexBarCLI,
+  });
   const service = createRuntime(logic, readState());
   await service.bootstrap({ waitForBackground: once });
 
@@ -5881,6 +5918,7 @@ async function main() {
           : null,
     };
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
+    logic.usageHistoryEngine.close();
     if (logic.shortLoadEngine && typeof logic.shortLoadEngine.close === "function") {
       logic.shortLoadEngine.close();
     }
@@ -5891,6 +5929,7 @@ async function main() {
   server.listen(listenPort, listenHost, () => service.startLoops());
   function shutdown() {
     for (const timer of Object.values(service.runtime.timers)) clearTimeout(timer);
+    logic.usageHistoryEngine.close();
     if (logic.shortLoadEngine && typeof logic.shortLoadEngine.close === "function") {
       logic.shortLoadEngine.close();
     }

@@ -169,6 +169,32 @@ queues a fresh snapshot even if an older read is already in flight. Each
 Usage & Targets account row carries its own current usage,
 target, optional natural forecast range, API-equivalent capacity, expected
 reset loss, and sampling provenance. Account forecasts are never shared.
+Daily local history sits directly below each account's progress, not in a new
+submenu. Shared range and unit controls drive a read-only, worker-backed
+`/api/usage-history` query. Seven, 30 and 90 days are presets; the retained
+preference supports 1–365 days. Totals, peak and selected-day details remain
+visible, while model/project/task lists expand in place. Menus retain their
+measured outer frame during interaction and scroll only when necessary.
+
+The bundled CodexBar CLI normalizes local Codex cost events on a five-minute
+background cadence, in an isolated collector cache. The old machine-wide
+cache is read only as a seed: historical backfill must not enter the existing
+row-ID stream used for live capacity calibration. A private SQLite import retains events independently of
+quota resets and source-cache eviction, without copying the raw conversation.
+Re-parsed source slices replace rather than append; moved/archived copies of
+one session are deduplicated. Original event timestamps determine UTC+8 or
+Pacific calendar days, including daylight-saving boundaries. Known price
+subtotals and unknown-priced tokens remain distinguishable.
+
+History ownership requires explicit account metadata matched against an
+unambiguous provider account key. A current login, quota delta, workspace, or
+session timestamp is not evidence for past ownership. The existing ambient
+CodexBar cache is machine-wide, not per-account. Records without such evidence
+stay under Unassigned local usage; fully missing account history has no fake
+chart. Only a complete local scan can establish zero-use interior days, and
+unknown ownership prevents inventing zero-use days for an individual account.
+The history read path never changes reset probabilities or target policy.
+
 Percentages, probabilities, model outputs, formulas, and diagnostics that do
 not belong to an account row live under the independent first-level
 Calculation & Data entry, divided into in-page Results, Method, and Raw Data

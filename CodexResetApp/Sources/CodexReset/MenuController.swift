@@ -39,6 +39,10 @@ enum DetailMenuLayout {
         ["计算与数据", "Calculation & Data"].contains(title)
     }
 
+    static func isUsage(_ title: String) -> Bool {
+        ["用量与目标", "Usage & Targets"].contains(title)
+    }
+
     static func usesInlineActions(_ title: String) -> Bool {
         self.isMainlines(title)
     }
@@ -79,6 +83,7 @@ final class MenuController: NSObject, NSMenuDelegate {
     private static let calculationDetailsWidth: CGFloat = 480
 
     private let store: SnapshotStore
+    private let usageHistory: UsageHistoryStore
     private let presentationLanguage: ResetPresentationLanguage
     private let allowsRefresh: Bool
     private let statusItem: NSStatusItem
@@ -95,6 +100,7 @@ final class MenuController: NSObject, NSMenuDelegate {
         allowsRefresh: Bool = true)
     {
         self.store = store
+        self.usageHistory = UsageHistoryStore(language: presentationLanguage, isDemo: !allowsRefresh)
         self.presentationLanguage = presentationLanguage
         self.allowsRefresh = allowsRefresh
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -114,6 +120,7 @@ final class MenuController: NSObject, NSMenuDelegate {
                 guard let self else { return }
                 if self.menuOpen { self.rebuildPending = true }
                 else { self.rebuildMenu() }
+                Task { await self.usageHistory.refresh() }
             }
             .store(in: &self.cancellables)
 
@@ -229,7 +236,7 @@ final class MenuController: NSObject, NSMenuDelegate {
             accessibilityDescription: nil)
         if DetailMenuLayout.isMainlines(section.title) {
             item.submenu = self.makeDetailLeafSubmenu(section)
-        } else if DetailMenuLayout.isCalculation(section.title) {
+        } else if DetailMenuLayout.isCalculation(section.title) || DetailMenuLayout.isUsage(section.title) {
             item.submenu = self.makeCalculationSubmenu(section)
         } else {
             item.submenu = self.makeDetailSectionSubmenu(section)
@@ -367,14 +374,15 @@ final class MenuController: NSObject, NSMenuDelegate {
             onAction: onAction,
             history: self.store.snapshot?.decisionHistory,
             decisionContext: self.store.snapshot?.decisionContext,
-            historyEvents: self.store.snapshot?.resetHistoryEvents)
+            historyEvents: self.store.snapshot?.resetHistoryEvents,
+            usageHistory: self.usageHistory)
             .environment(\.resetPresentationLanguage, self.presentationLanguage)
             .environment(\.locale, self.presentationLanguage.locale)
         let isCalculation = DetailMenuLayout.isCalculation(section.title)
         let isCalendar = section.visualizations?.contains { $0.kind == "resetCalendar" } == true
         let isTimeline = section.visualizations?.contains { $0.kind == "timeline" } == true
         let isExplanation = ["为什么这样建议", "Why This Plan"].contains(section.title) && self.store.snapshot?.decisionContext != nil
-        let interactive = isCalculation || isCalendar || isTimeline || isExplanation
+        let interactive = isCalculation || isCalendar || isTimeline || isExplanation || DetailMenuLayout.isUsage(section.title)
         let hosting: FixedHeightHostingView<AnyView>
         if interactive {
             let screen = self.statusItem.button?.window?.screen ?? NSScreen.main
@@ -530,6 +538,8 @@ final class MenuController: NSObject, NSMenuDelegate {
             captureItem = self.menu.items.first { DetailMenuLayout.isMainlines($0.title) }
         case "calculation":
             captureItem = self.menu.items.first { DetailMenuLayout.isCalculation($0.title) }
+        case "usage":
+            captureItem = self.menu.items.first { DetailMenuLayout.isUsage($0.title) }
         case "explanation":
             captureItem = self.menu.items.first { ["为什么这样建议", "Why This Plan"].contains($0.title) }
         case "resets":

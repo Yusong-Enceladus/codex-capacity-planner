@@ -1,0 +1,44 @@
+diff --git a/Sources/CodexBarCLI/CLICostCommand.swift b/Sources/CodexBarCLI/CLICostCommand.swift
+--- a/Sources/CodexBarCLI/CLICostCommand.swift
++++ b/Sources/CodexBarCLI/CLICostCommand.swift
+@@ -62,4 +62,4 @@ extension CodexBarCLI {
+-        let fetcher = CostUsageFetcher()
++        let fetcher = CostUsageFetcher(cacheRoot: Self.costCacheRoot(from: values))
+         var sections: [String] = []
+         var payload: [CostPayload] = []
+         var exitCode: ExitCode = .success
+@@ -353,3 +353,7 @@ extension CodexBarCLI {
++    static func costCacheRoot(from values: ParsedValues) -> URL? {
++        values.options["cacheRoot"]?.last.map { URL(fileURLWithPath: $0, isDirectory: true) }
++    }
++
+     private static func decodeCostHistoryDays(from values: ParsedValues) -> Int {
+         guard let raw = values.options["days"]?.last,
+               let parsed = Int(raw)
+@@ -480,3 +484,6 @@ struct CostOptions: CommanderParsable {
++    @Option(name: .long("cache-root"), help: "Use an isolated local cost cache directory")
++    var cacheRoot: String?
++
+     @Option(name: .long("group-by"), help: "Group text output by: project")
+     var groupBy: String?
+ }
+diff --git a/Tests/CodexBarTests/PlannerCostCacheTests.swift b/Tests/CodexBarTests/PlannerCostCacheTests.swift
+new file mode 100644
+--- /dev/null
++++ b/Tests/CodexBarTests/PlannerCostCacheTests.swift
+@@ -0,0 +1,15 @@
++import Commander
++import Foundation
++import Testing
++@testable import CodexBarCLI
++
++struct PlannerCostCacheTests {
++    @Test
++    func `cost cache override is explicit and does not change the default`() throws {
++        let parser = CommandParser(signature: CodexBarCLI._costSignatureForTesting())
++        let defaults = try parser.parse(arguments: [])
++        #expect(CodexBarCLI.costCacheRoot(from: defaults) == nil)
++        let custom = try parser.parse(arguments: ["--cache-root", "/tmp/planner-cost-test"])
++        #expect(CodexBarCLI.costCacheRoot(from: custom)?.path == "/tmp/planner-cost-test")
++    }
++}

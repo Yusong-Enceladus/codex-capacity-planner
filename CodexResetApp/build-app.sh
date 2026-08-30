@@ -14,19 +14,17 @@ cp "$app_root/Assets/AppIcon.icns" "$bundle/Contents/Resources/AppIcon.icns"
 cp "$app_root/Assets/StatusIcon.png" "$bundle/Contents/Resources/StatusIcon.png"
 cp "$app_root/Assets/CardIcon.png" "$bundle/Contents/Resources/CardIcon.png"
 project_root="$app_root/.."
-if [[ ! -d "$project_root/CodexBar-upstream/.git" ]]; then
-  "$project_root/scripts/bootstrap-codexbar.sh"
-fi
-if [[ ! -x "$project_root/CodexBar-upstream/.build/release/CodexBarCLI" ]]; then
-  swift build -c release --product CodexBarCLI --package-path "$project_root/CodexBar-upstream"
-fi
+"$project_root/scripts/bootstrap-codexbar.sh"
+swift build -c release --product CodexBarCLI --package-path "$project_root/CodexBar-upstream"
 for source in \
   codex-reset.js \
   codex-reset-monitor.js \
   codex-reset-history.js \
   codex-reset-behavior.js \
   codex-reset-short-load.js \
-  codex-reset-workload-eval.js
+  codex-reset-workload-eval.js \
+  codex-reset-usage-history.js \
+  codex-reset-usage-pricing.js
 do
   cp "$project_root/$source" "$bundle/Contents/Resources/$source"
 done
