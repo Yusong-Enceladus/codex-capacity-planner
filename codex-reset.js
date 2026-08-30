@@ -2589,6 +2589,11 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
       forecast: accountForecast,
       decision: accountDecision,
       behavior: accountBehavior,
+      cyclePhase: !accountDecision ? "unknown" : accountDecision.targetReached ? "target-met"
+        : accountDecision.baselineNow <= 8 && accountUsage.usedPercent < Math.min(20, accountDecision.targetUsed)
+          ? "cycle-start" : "below-target",
+      trend: accountBehavior && accountBehavior.prediction
+        ? codexResetBehaviorZone(accountDecision, accountBehavior.prediction) : "unknown",
       targetTrajectory: accountTrajectory,
       pace: accountPace,
       capacityEstimate,
@@ -3674,6 +3679,7 @@ defineProvider({
         : codexResetText(receiverEvent && receiverEvent.summary) || currentOfficialSummary;
       resetTimelineItems.push({
         id: `signal-${forecast.signal.id || currentOfficialAtMs || "current"}`,
+        eventId: forecast.signal.id || codexResetSignalID(receiverEvent) || null,
         kind: forecast.signal.level === "hint"
           ? "candidate"
           : forecast.signal.level === "commitment"
@@ -3942,6 +3948,7 @@ defineProvider({
               : "reset";
         resetTimelineItems.push({
           id: `history-${codexResetText(reset.eventId) || resetAtMs}-${index}`,
+          eventId: codexResetText(reset.eventId) || null,
           kind: historyKind,
           state: "confirmed",
           title: resetCauseLabel(reset.cause),
@@ -4525,11 +4532,65 @@ defineProvider({
         }))
       : [];
 
+    const decisionHistory = codexResetObject(model.receiver && model.receiver.decisionHistory);
+    const decisionContext = codexResetObject(model.receiver && model.receiver.decisionContext);
+    const allHistoryAccounts = Array.isArray(model.receiver && model.receiver.accounts)
+      ? model.receiver.accounts : [];
+    const resetHistoryEvents = allHistoryAccounts.flatMap((account) => [
+      ...(Array.isArray(account.personalResets) ? account.personalResets : []).map((reset) => ({
+        id: `receipt-${account.id}-${reset.generation || reset.at}`,
+        eventId: codexResetText(reset.eventId) || null,
+        accountId: account.id,
+        accountLabel: account.label,
+        at: reset.at,
+        kind: reset.cause,
+        evidence: reset.evidence,
+        publishedAt: completedPublicEvents.find((event) => codexResetSignalID(event) === reset.eventId)?.announcedAt || null,
+        summaryChinese: completedPublicEvents.find((event) => codexResetSignalID(event) === reset.eventId)?.localizedSummary || null,
+        summaryEnglish: completedPublicEvents.find((event) => codexResetSignalID(event) === reset.eventId)?.summary || null,
+      })),
+      ...(Array.isArray(account.resetCredits?.credits) ? account.resetCredits.credits : [])
+        .filter((credit) => credit.grantedAt).map((credit, index) => ({
+          id: `grant-${account.id}-${credit.grantedAt}-${index}`, eventId: null,
+          accountId: account.id, accountLabel: account.label, at: credit.grantedAt,
+          kind: "credit-grant", evidence: "local-inventory", publishedAt: null,
+          expiresAt: credit.expiresAt || null,
+        })),
+    ]);
+    for (const event of completedPublicEvents) {
+      const id = codexResetSignalID(event);
+      if (!id || resetHistoryEvents.some((row) => row.eventId === id)) continue;
+      resetHistoryEvents.push({
+        id: `public-${id}`, eventId: id, accountId: null, accountLabel: null,
+        at: event.announcedAt, publishedAt: event.announcedAt,
+        kind: "public-announcement", evidence: "public-only",
+        summaryChinese: event.localizedSummary || null, summaryEnglish: event.summary || null,
+      });
+    }
+    resetHistoryEvents.sort((a, b) => stateTime(a.at) - stateTime(b.at));
+    resetVisualizations.push({ kind: "resetCalendar", group: "history", title: "重置历史", items: [] });
+    const recentPublicChange = decisionHistory && Array.isArray(decisionHistory.records)
+      ? decisionHistory.records.slice().reverse().find((record) => record.impact) : null;
+    if (recentPublicChange) {
+      const account = recentPublicChange.accounts.find((item) => item.id === currentAccount?.id);
+      whySummaryRows.push({
+        label: "最近消息如何影响计划",
+        value: account?.reasonChinese || "已记录本次接收，尚缺可靠的本机账户数据。",
+        secondaryValue: recentPublicChange.impact.changed
+          ? "在同一时刻、同一账户数据下比较，公共依据确实改变了计划；具体变化见“计算与数据”。"
+          : "已接收并核对；在同一时刻、同一账户数据下比较，没有进一步改变计划。",
+        group: "summary",
+      });
+    }
+
     return {
       updatedAt: model.usage ? model.usage.updatedAt : undefined,
       dataConfidence: "estimated",
       decisionProgress,
       mainlineCorrections,
+      decisionHistory,
+      decisionContext,
+      resetHistoryEvents,
       details: [
         { title: "现在", rows: actionRows },
       ],

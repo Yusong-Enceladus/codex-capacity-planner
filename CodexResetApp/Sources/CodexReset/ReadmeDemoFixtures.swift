@@ -9,7 +9,7 @@ enum ResetDemoFixtures {
         let possibleResetStart = now.addingTimeInterval(-2 * 3_600)
         let possibleResetEnd = now.addingTimeInterval(22 * 3_600)
         let updatedAt = ISO8601DateFormatter().string(from: now)
-        return ResetSnapshot(
+        var snapshot = ResetSnapshot(
             updatedAt: updatedAt,
             dataConfidence: "estimated",
             decisionProgress: DecisionProgress(
@@ -82,6 +82,8 @@ enum ResetDemoFixtures {
                 self.whySection(language),
                 self.calculationSection(language),
             ])
+        self.attachDecisionHistory(to: &snapshot, language: language, now: now)
+        return snapshot
     }
 
     private static func mainlineSection(_ language: ResetPresentationLanguage) -> DetailSection {
@@ -212,7 +214,7 @@ enum ResetDemoFixtures {
     {
         let formatter = ISO8601DateFormatter()
         let candidatePublished = now.addingTimeInterval(-3 * 3_600)
-        let previousReset = now.addingTimeInterval(-3 * 86_400)
+        let previousReset = now.addingTimeInterval(-6 * 3_600)
         let workCreditExpiry = now.addingTimeInterval(5 * 86_400)
         let backupCreditExpiry1 = now.addingTimeInterval(8 * 86_400 + 6 * 3_600)
         let backupCreditExpiry2 = now.addingTimeInterval(13 * 86_400)
@@ -229,7 +231,8 @@ enum ResetDemoFixtures {
             at: formatter.string(from: candidateStart),
             endAt: formatter.string(from: candidateEnd),
             publishedAt: formatter.string(from: candidatePublished),
-            link: nil)
+            link: nil,
+            eventId: "demo-hint")
         let candidateTime = ResetTimelinePresentation.timeText(
             for: candidateItem,
             language: language) ?? language.text(
@@ -296,18 +299,20 @@ enum ResetDemoFixtures {
                             publishedAt: nil,
                             link: nil),
                         DetailTimelineItem(
-                            id: "demo-upgrade",
-                            kind: "upgrade",
+                            id: "demo-reset",
+                            kind: "reset",
                             state: "confirmed",
-                            title: language.text("套餐升级刷新", "Plan upgrade reset"),
-                            detail: "Free → Pro · 本机额度与窗口已经重建",
-                            detailEnglish: "Free → Pro · Local quota and window were rebuilt",
+                            title: language.text("额外刷新已到账", "Extra reset received"),
+                            detail: "旧事件已结清；之后的暗示仍单独保留",
+                            detailEnglish: "The older event is settled; the later hint remains separate",
                             badge: language.text("已确认", "Confirmed"),
                             at: formatter.string(from: previousReset),
                             endAt: nil,
                             publishedAt: nil,
-                            link: nil),
+                            link: nil,
+                            eventId: "demo-reset-a"),
                     ]),
+                DetailVisualization(kind: "resetCalendar", group: "history", title: language.text("重置历史", "Reset History"), items: []),
                 DetailVisualization(
                     kind: "resetCredits",
                     group: "assets",

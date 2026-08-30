@@ -98,7 +98,7 @@ final class MenuController: NSObject, NSMenuDelegate {
         self.allowsRefresh = allowsRefresh
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
-        self.statusItem.autosaveName = "codex-reset"
+        self.statusItem.autosaveName = allowsRefresh ? "codex-reset" : "codex-reset-demo"
         let statusImage = ResetBrandAssets.statusGlyph()
         statusImage.size = NSSize(width: 18, height: 18)
         self.statusItem.button?.image = statusImage
@@ -122,6 +122,20 @@ final class MenuController: NSObject, NSMenuDelegate {
             }
         }
         if ProcessInfo.processInfo.environment["CODEX_RESET_ACTUAL_MENU"] == "1" {
+            if !self.allowsRefresh {
+                // Reopen the actual menu after a capture tool changes focus,
+                // without restarting the fixture or touching the live planner.
+                let commandBar = NSMenu()
+                let commandRoot = NSMenuItem(title: "Planner Demo", action: nil, keyEquivalent: "")
+                let commands = NSMenu(title: "Planner Demo")
+                let reopen = NSMenuItem(title: "Open Planner Menu", action: #selector(self.showActualMenuForCapture), keyEquivalent: "m")
+                reopen.keyEquivalentModifierMask = [.command, .shift]
+                reopen.target = self
+                commands.addItem(reopen)
+                commandRoot.submenu = commands
+                commandBar.addItem(commandRoot)
+                NSApplication.shared.mainMenu = commandBar
+            }
             let rawDelay = ProcessInfo.processInfo.environment["CODEX_RESET_ACTUAL_MENU_DELAY"]
             let delay = rawDelay.flatMap(Double.init) ?? 2
             // A modal NSMenu opened inside a main-dispatch block prevents that
@@ -291,7 +305,9 @@ final class MenuController: NSObject, NSMenuDelegate {
                 section,
                 width: contentWidth,
                 onAction: usesInlineActions ? self.inlineActionHandler : nil))
-            self.appendLinks(from: section.rows, to: submenu)
+            if !visualizations.contains(where: { $0.kind == "resetCalendar" }) {
+                self.appendLinks(from: section.rows, to: submenu)
+            }
             if !usesInlineActions {
                 self.appendActions(from: section.rows, to: submenu)
             }
@@ -317,26 +333,8 @@ final class MenuController: NSObject, NSMenuDelegate {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         submenu.minimumWidth = Self.detailsWidth
-        let visualizations = section.visualizations ?? []
-        for key in DetailMenuLayout.calculationGroups {
-            let rows = section.rows.filter { $0.group == key }
-            let groupVisualizations = visualizations.filter { ($0.group ?? "all") == key }
-            guard !rows.isEmpty || !groupVisualizations.isEmpty else { continue }
-            let title = Self.calculationGroupTitle(key, language: self.presentationLanguage)
-            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            item.image = NSImage(
-                systemSymbolName: Self.calculationGroupSymbol(key),
-                accessibilityDescription: nil)
-            item.submenu = self.makeDetailContentSubmenu(DetailSection(
-                title: title,
-                rows: rows,
-                visualizations: groupVisualizations.isEmpty ? nil : groupVisualizations))
-            item.isEnabled = true
-            submenu.addItem(item)
-        }
-        if submenu.items.isEmpty {
-            return self.makeDetailContentSubmenu(section)
-        }
+        // Results, Method and Raw Data are in-page controls, not a third menu.
+        submenu.addItem(self.makeDetailContentItem(section, width: Self.mainlineDetailsWidth))
         return submenu
     }
 
@@ -359,16 +357,29 @@ final class MenuController: NSObject, NSMenuDelegate {
         let root = ResetDetailsView(
             sections: [section],
             width: contentWidth,
-            onAction: onAction)
+            onAction: onAction,
+            history: self.store.snapshot?.decisionHistory,
+            decisionContext: self.store.snapshot?.decisionContext,
+            historyEvents: self.store.snapshot?.resetHistoryEvents)
             .environment(\.resetPresentationLanguage, self.presentationLanguage)
             .environment(\.locale, self.presentationLanguage.locale)
-        let hosting = FixedHeightHostingView(rootView: root)
+        let isCalculation = DetailMenuLayout.isCalculation(section.title)
+        let isCalendar = section.visualizations?.contains { $0.kind == "resetCalendar" } == true
+        let isTimeline = section.visualizations?.contains { $0.kind == "timeline" } == true
+        let isExplanation = ["为什么这样建议", "Why This Plan"].contains(section.title) && self.store.snapshot?.decisionContext != nil
+        let interactive = isCalculation || isCalendar || isTimeline || isExplanation
+        // A stable scroll viewport lets disclosures and calendar selection stay
+        // in the same tracking session without resizing the NSMenu under it.
+        let content = interactive
+            ? AnyView(ScrollView { root }.frame(width: contentWidth, height: isCalculation ? 540 : isCalendar ? 470 : 420))
+            : AnyView(root)
+        let hosting = FixedHeightHostingView(rootView: content)
         let measuredHeight = hosting.measuredFittingHeight(width: contentWidth)
         hosting.apply(width: contentWidth, height: measuredHeight)
         let details = NSMenuItem()
         details.view = hosting
-        details.isEnabled = onAction != nil
-        if onAction != nil {
+        details.isEnabled = onAction != nil || interactive
+        if onAction != nil || interactive {
             details.target = self
             details.action = #selector(self.noOp)
         }
@@ -499,24 +510,37 @@ final class MenuController: NSObject, NSMenuDelegate {
 
     @objc private func noOp() {}
 
-    private func showActualMenuForCapture() {
+    @objc private func showActualMenuForCapture() {
         guard let button = self.statusItem.button else { return }
         NSApplication.shared.activate(ignoringOtherApps: true)
         button.highlight(true)
-        let captureMenu: NSMenu
-        if ProcessInfo.processInfo.environment["CODEX_RESET_ACTUAL_MENU_SECTION"] == "mainlines",
-           let mainlines = self.menu.items.first(where: {
-               DetailMenuLayout.isMainlines($0.title)
-           })?.submenu
-        {
-            captureMenu = mainlines
-        } else {
-            captureMenu = self.menu
+        let captureItem: NSMenuItem?
+        switch ProcessInfo.processInfo.environment["CODEX_RESET_ACTUAL_MENU_SECTION"] {
+        case "mainlines":
+            captureItem = self.menu.items.first { DetailMenuLayout.isMainlines($0.title) }
+        case "calculation":
+            captureItem = self.menu.items.first { DetailMenuLayout.isCalculation($0.title) }
+        case "resets":
+            captureItem = self.menu.items.first { DetailMenuLayout.isReset($0.title) }
+        case "history":
+            captureItem = self.menu.items.first { DetailMenuLayout.isReset($0.title) }?
+                .submenu?.items.first { ["重置历史", "Reset History"].contains($0.title) }
+        default:
+            captureItem = nil
         }
-        captureMenu.popUp(
-            positioning: nil,
-            at: NSPoint(x: button.bounds.minX, y: button.bounds.minY - 3),
-            in: button)
+        let captureMenu = captureItem?.submenu ?? self.menu
+        if !self.allowsRefresh, let screen = NSScreen.screens.first {
+            // Demo-only positioning keeps the real NSMenu visible even when
+            // a crowded/notched status bar hides the extra demo status item,
+            // and keeps it on the primary display when keyboard focus moves.
+            captureMenu.popUp(positioning: nil,
+                at: NSPoint(x: screen.visibleFrame.minX + 80, y: screen.visibleFrame.maxY - 40), in: nil)
+        } else {
+            captureMenu.popUp(
+                positioning: nil,
+                at: NSPoint(x: button.bounds.minX, y: button.bounds.minY - 3),
+                in: button)
+        }
         button.highlight(false)
     }
 

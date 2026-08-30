@@ -50,6 +50,14 @@ fields needed to render the UI.
 
 ## Retention and deletion
 
+The monitor retains up to 1,024 local decision observations and 96 reset
+receipts per account. Decision observations contain minimized public evidence,
+masked account labels and local aliases, quota/target numbers, calculation
+components, and before/after public-input comparisons. They contain no task
+transcripts, credentials, or raw reset-credit identifiers and never leave
+loopback. An upgrade starts observing rather than inventing past predictions.
+See [Inspectable decisions](decision-history.md) for sampling and display rules.
+
 Runtime state is stored under the user's local configuration directory with
 restrictive permissions. Removing that directory deletes Codex Capacity Planner's own
 history and predictions; it does not delete source Codex records.
@@ -57,5 +65,5 @@ history and predictions; it does not delete source Codex records.
 ## Issue reports
 
 Use synthetic fixtures. Never attach `auth.json`, cookies, local databases,
-raw provider JSON, or screenshots showing real email addresses, reset-credit
+raw provider JSON, decision-history records, or screenshots showing real email addresses, reset-credit
 IDs, quota history, or private task names.

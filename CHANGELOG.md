@@ -5,6 +5,25 @@ versioning once the first public release is tagged.
 
 ## Unreleased
 
+## 0.1.8 - 2026-08-30
+
+- Record the local evidence → interpretation → account plan → delivery chain.
+  Controlled comparisons fix time, account usage, work forecasts and trajectory
+  anchors; elapsed time or quota growth is not blamed on a new message.
+- Preserve historical observations across restarts without backfilling missing
+  predictions. Repeated posts are deduplicated, source failures remain gaps,
+  and cadence probabilities, promise weights and usage targets stay distinct.
+- Inspect handling in place on the reset timeline. Add a calendar and complete
+  per-account receipt rows to Reset History without counting a shared public
+  event twice. Individual credit grants and expiries remain visible.
+- Put Results, Method and Raw Data inside one Calculation & Data page. Add
+  selectable probability/target history plots and the saved calculation inputs.
+  Native controls stay open during inspection, using Chinese UTC+8 or English
+  Pacific Time and retaining the existing mainline interactions.
+- Keep WillCodexReset as a design reference only; no unauthorized data access,
+  second-provider placeholder, notification subscription or policy replacement
+  is introduced.
+
 ## 0.1.7 - 2026-08-30
 
 - Keep a future public commitment active when it was published during staggered

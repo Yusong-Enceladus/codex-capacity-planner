@@ -47,10 +47,20 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/codex-capacity-planner-resets-zh.png" width="900" alt="Codex Capacity Planner 中文重置时间轴与重置券保留策略">
+  <img src="docs/assets/codex-capacity-planner-resets-zh.png" width="900" alt="Codex Capacity Planner 中文重置时间轴与消息处理状态，可直接查看系统判断">
 </p>
 
 <p align="center"><sub>截图来自实际构建并运行的 macOS 状态栏 App，使用匿名演示数据，不包含真实账号信息。</sub></p>
+
+<details>
+<summary><strong>核对消息影响与重置历史</strong></summary>
+
+<p align="center"><img src="docs/assets/codex-capacity-planner-calculation-zh.png" width="900" alt="真实 macOS 计算页：分别查看重置概率、账户目标和固定条件下的消息影响"></p>
+<p align="center"><img src="docs/assets/codex-capacity-planner-history-zh.png" width="900" alt="真实 macOS 重置历史：日历选择与同一事件的逐账户到账记录"></p>
+
+图中的每个历史点代表当时保存的判断；没有记录的过去不会补画。示例使用匿名合成数据，界面与正式应用共用实现。
+
+</details>
 
 ## 一份统一的使用计划
 
@@ -105,6 +115,9 @@ Intel Mac 可以从源码构建对应架构版本。
 - 同一账户持有多张重置券时，每张券保留自己的发放与到期时间，不会用“最早到期”替代其余券的真实期限；
 - 重置券的可视化表示“从现在到到期”的剩余时间，而不是已经过去的生命周期百分比；所有可见券使用同一时间尺度，因而较晚到期的券一定显示得更长；
 - 主页内容会自然换行并完整显示，时间、时区与建议结论不会用省略号截断；
+- 重置消息可核对“收到时间 → 系统解读 → 每账户计划 → 实际到账”。消息没有改变计划时也会说明原因；前后比较固定评估时间和账户数据，不把时间流逝当成消息影响；
+- “计算与数据”在同页切换结果、方法和原始数据；重置概率、信号权重与账户用量目标分开展示。历史页可选日期看逐条记录，同一公开事件不会因两个账户到账而重复计数；
+- 判断历史只在本机保存，从真实观察开始积累；来源失败留空，不显示成零概率。WillCodexReset 仅作为产品参考，目前没有自动接入其数据；
 - Codex 额度规则变化后，相关计算可能需要更新。
 
 ## 技术文档
@@ -112,6 +125,7 @@ Intel Mac 可以从源码构建对应架构版本。
 - [架构与决策边界](docs/architecture.md)
 - [容量基线与个人校准](docs/capacity-baselines.md)
 - [外部信号契约](docs/signal-contract.md)
+- [可核对的判断与历史记录](docs/decision-history.md)
 - [macOS 分发与安装边界](docs/distribution.md)
 - [贡献指南](CONTRIBUTING.md)
 

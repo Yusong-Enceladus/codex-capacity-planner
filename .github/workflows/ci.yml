@@ -19,6 +19,7 @@ jobs:
       - run: ./scripts/scan-public-content.sh
       - run: node --check codex-reset.js
       - run: node --check codex-reset-monitor.js
+      - run: node --check codex-reset-history.js
       - run: node --check codex-reset-behavior.js
       - run: node --check codex-reset-short-load.js
       - run: node --check codex-reset-workload-eval.js

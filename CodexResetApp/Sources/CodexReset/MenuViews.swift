@@ -539,6 +539,8 @@ enum ResetTimelineLayout {
 private struct ResetEventTimeline: View {
     @Environment(\.resetPresentationLanguage) private var presentationLanguage
     let visualization: DetailVisualization
+    var history: DecisionHistory? = nil
+    @State private var expandedEventID: String?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -641,7 +643,8 @@ private struct ResetEventTimeline: View {
         titleOverride: String? = nil,
         timeOverride: String? = nil,
         includeDetail: Bool = true,
-        includePublished: Bool = true) -> some View
+        includePublished: Bool = true,
+        includeHandling: Bool = true) -> some View
     {
         let tint = self.tint(for: item)
         return HStack(alignment: .top, spacing: 8) {
@@ -698,11 +701,30 @@ private struct ResetEventTimeline: View {
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                 }
+                if includeHandling, let eventID = item.eventId,
+                   let record = self.history?.latestRecord(for: eventID) {
+                    Text(record.evidence.first(where: { $0.id == eventID })?.disposition == "adopted"
+                        ? self.presentationLanguage.text("已用于本轮计划 · 可核对具体影响", "Used in this plan · Inspect its effect")
+                        : self.presentationLanguage.text("已关联本机处理记录", "Linked to the local handling record"))
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Button {
+                        self.expandedEventID = self.expandedEventID == eventID ? nil : eventID
+                    } label: {
+                        Label(self.expandedEventID == eventID
+                              ? self.presentationLanguage.text("收起系统判断", "Hide decision")
+                              : self.presentationLanguage.text("查看系统判断", "Inspect decision"),
+                              systemImage: self.expandedEventID == eventID ? "chevron.up" : "chevron.down")
+                    }
+                    .buttonStyle(.bordered).controlSize(.mini).font(.caption2)
+                    if self.expandedEventID == eventID {
+                        DecisionEvidenceDetails(record: record, eventID: eventID)
+                    }
+                }
             }
             .padding(.bottom, connectsBelow ? 3 : 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(self.accessibilityText(for: item))
     }
 
@@ -720,7 +742,8 @@ private struct ResetEventTimeline: View {
                 item.endAt,
                 language: self.presentationLanguage),
             includeDetail: false,
-            includePublished: false)
+            includePublished: false,
+            includeHandling: false)
     }
 
     private func node(for item: DetailTimelineItem, tint: Color) -> some View {
@@ -1355,15 +1378,24 @@ struct ResetDetailsView: View {
     let sections: [DetailSection]
     let width: CGFloat
     var onAction: MainlineActionHandler?
+    var history: DecisionHistory?
+    var decisionContext: DecisionContext?
+    var historyEvents: [ResetHistoryEvent]?
 
     init(
         sections: [DetailSection],
         width: CGFloat,
-        onAction: MainlineActionHandler? = nil)
+        onAction: MainlineActionHandler? = nil,
+        history: DecisionHistory? = nil,
+        decisionContext: DecisionContext? = nil,
+        historyEvents: [ResetHistoryEvent]? = nil)
     {
         self.sections = sections
         self.width = width
         self.onAction = onAction
+        self.history = history
+        self.decisionContext = decisionContext
+        self.historyEvents = historyEvents
     }
 
     var body: some View {
@@ -1371,6 +1403,14 @@ struct ResetDetailsView: View {
             ForEach(Array(self.sections.enumerated()), id: \.offset) { sectionIndex, section in
                 if sectionIndex > 0 { Divider() }
                 VStack(alignment: .leading, spacing: 9) {
+                    if DetailMenuLayout.isCalculation(section.title) {
+                        CalculationHistoryView(section: section, history: self.history)
+                    } else if ["为什么这样建议", "Why This Plan"].contains(section.title), let context = self.decisionContext {
+                        DecisionExplanationView(context: context, history: self.history)
+                    } else if section.visualizations?.contains(where: { $0.kind == "resetCalendar" }) == true,
+                              let events = self.historyEvents {
+                        ResetHistoryCalendar(events: events)
+                    } else {
                     if self.onAction == nil {
                         Text(section.title)
                             .font(.caption.weight(.semibold))
@@ -1380,7 +1420,7 @@ struct ResetDetailsView: View {
                     if let visualizations = section.visualizations {
                         ForEach(visualizations) { visualization in
                             if visualization.kind == "timeline" {
-                                ResetEventTimeline(visualization: visualization)
+                                ResetEventTimeline(visualization: visualization, history: self.history)
                             } else if visualization.kind == "resetCredits" {
                                 ResetCreditSummaryView(visualization: visualization)
                             }
@@ -1427,6 +1467,7 @@ struct ResetDetailsView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     }
                 }
             }

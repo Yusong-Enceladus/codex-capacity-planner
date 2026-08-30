@@ -23,6 +23,7 @@ fi
 for source in \
   codex-reset.js \
   codex-reset-monitor.js \
+  codex-reset-history.js \
   codex-reset-behavior.js \
   codex-reset-short-load.js \
   codex-reset-workload-eval.js

@@ -7,6 +7,9 @@ struct ResetSnapshot: Codable, Equatable, Sendable {
     var mainlineCorrections: [MainlineCorrection]? = nil
     let details: [DetailSection]
     let submenuDetails: [DetailSection]
+    var decisionHistory: DecisionHistory? = nil
+    var decisionContext: DecisionContext? = nil
+    var resetHistoryEvents: [ResetHistoryEvent]? = nil
 }
 
 struct MainlineCorrection: Codable, Equatable, Identifiable, Sendable {
@@ -115,6 +118,7 @@ struct DetailTimelineItem: Codable, Equatable, Identifiable, Sendable {
     let publishedAt: String?
     let link: DetailLink?
     let timingKind: String?
+    let eventId: String?
 
     init(
         id: String,
@@ -128,7 +132,8 @@ struct DetailTimelineItem: Codable, Equatable, Identifiable, Sendable {
         endAt: String? = nil,
         publishedAt: String? = nil,
         link: DetailLink? = nil,
-        timingKind: String? = nil)
+        timingKind: String? = nil,
+        eventId: String? = nil)
     {
         self.id = id
         self.kind = kind
@@ -142,6 +147,7 @@ struct DetailTimelineItem: Codable, Equatable, Identifiable, Sendable {
         self.publishedAt = publishedAt
         self.link = link
         self.timingKind = timingKind
+        self.eventId = eventId
     }
 }
 

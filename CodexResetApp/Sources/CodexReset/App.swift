@@ -148,7 +148,9 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
             window.setFrame(screen.frame, display: true)
             window.level = .floating
             window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
-            window.ignoresMouseEvents = true
+            // The demo backdrop must shield the user's real windows from
+            // clicks while native-menu screenshots are being captured.
+            window.ignoresMouseEvents = false
             window.hasShadow = false
             window.orderFrontRegardless()
             return window

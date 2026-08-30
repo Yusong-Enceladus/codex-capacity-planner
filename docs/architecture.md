@@ -17,6 +17,8 @@ Public reset signals ──────┘
   presentation snapshot logic used by the CodexBar provider.
 - `codex-reset-monitor.js`: loopback service, durable state machine, local
   notification coordination, source polling, and `/api/snapshot` endpoint.
+- `codex-reset-history.js`: local immutable observations and controlled
+  public-input comparisons of the existing planner, with no separate policy.
 - `codex-reset-behavior.js`: longer-horizon personal usage forecast.
 - `codex-reset-short-load.js`: independent one-hour load forecast.
 - `CodexResetApp/`: native macOS menu-bar presentation and monitor supervisor.
@@ -87,6 +89,12 @@ not fabricate a deadline or turn 83 into a 24h probability, and cannot impose
 an unbounded automatic credit deferral without timing evidence.
 
 ## Reset-credit planning
+
+The received-evidence → interpretation → per-account-plan → delivery chain is
+inspectable through a bounded local decision history. Before/after public-input
+comparisons fix time, account data, work forecasts, and pre-update trajectory
+anchors. Historical results are not recomputed after upgrades. See
+[`decision-history.md`](decision-history.md) for scope, schema, and retention.
 
 A reset credit is a finite-lived capacity option, not an isolated countdown.
 The decision simulates every account on one time-ordered capacity chain and
@@ -163,12 +171,20 @@ target, optional natural forecast range, API-equivalent capacity, expected
 reset loss, and sampling provenance. Account forecasts are never shared.
 Percentages, probabilities, model outputs, formulas, and diagnostics that do
 not belong to an account row live under the independent first-level
-Calculation & Data entry, divided into Results, Method, and Raw Data. Why This
+Calculation & Data entry, divided into in-page Results, Method, and Raw Data
+controls rather than deeper submenus. Why This
 Plan therefore contains causal prose only. An unresolved explicit
 announcement, commitment, or candidate hint is the primary reset state ahead
 of natural refresh. Its concise source summary appears with the state, while
 the full source and resolved local outcome remain in official updates and
 reset history respectively.
+
+The reset timeline can disclose a related handling record in place. Reset
+History adds a selectable calendar above the detailed account records. A
+public event is grouped once while its separate account receipts remain
+visible. Probability and target history have separate plots in Calculation &
+Data; source weights never share the probability axis. These views use stable
+scroll viewports so inspection does not dismiss the native menu.
 
 Temporal reset state is also exposed as structured timeline data. Position on
 the axis carries time and order; an interval plus a dashed connector and hollow

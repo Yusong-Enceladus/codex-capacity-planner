@@ -12,7 +12,7 @@ for required_file in $required_files; do
   fi
 done
 
-owned_paths="README.md CodexResetApp codex-reset.js codex-reset-monitor.js codex-reset-behavior.js codex-reset-short-load.js codex-reset-workload-eval.js codex-reset.test.js receiver docs scripts patches"
+owned_paths="README.md CodexResetApp codex-reset.js codex-reset-monitor.js codex-reset-history.js codex-reset-behavior.js codex-reset-short-load.js codex-reset-workload-eval.js codex-reset.test.js receiver docs scripts patches"
 absolute_user_path='/Users'"/"
 temporary_item_path='Temporary'"Items/"
 

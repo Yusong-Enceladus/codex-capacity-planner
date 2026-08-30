@@ -105,6 +105,7 @@ final class MonitorSupervisor: ObservableObject {
     private static func runtimeID(in resources: URL) -> String? {
         let filenames = [
             "codex-reset-monitor.js",
+            "codex-reset-history.js",
             "codex-reset.js",
             "codex-reset-behavior.js",
             "codex-reset-short-load.js",

@@ -47,10 +47,20 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/codex-capacity-planner-resets-en.png" width="900" alt="Codex Capacity Planner English reset timeline and reset-credit hold plan">
+  <img src="docs/assets/codex-capacity-planner-resets-en.png" width="900" alt="Codex Capacity Planner English reset timeline with message-handling status and inline decision inspection">
 </p>
 
 <p align="center"><sub>Screenshots come from the built macOS menu-bar app running with anonymous demo data; no real account information is included.</sub></p>
+
+<details>
+<summary><strong>Inspect message effects and reset history</strong></summary>
+
+<p align="center"><img src="docs/assets/codex-capacity-planner-calculation-en.png" width="900" alt="Real macOS calculation page with separate probability and target history and a controlled message-effect comparison"></p>
+<p align="center"><img src="docs/assets/codex-capacity-planner-history-en.png" width="900" alt="Real macOS reset-history calendar with separate account receipts for one public event"></p>
+
+Each historical point is a decision saved at that time; missing past predictions are never backfilled. These anonymous synthetic scenarios use the production native interface.
+
+</details>
 
 ## One unified usage plan
 
@@ -105,6 +115,9 @@ See [Privacy and data flow](docs/privacy.md) and the [Security policy](SECURITY.
 - When one account owns multiple reset credits, each credit retains its own grant and expiry rather than borrowing the inventory's earliest expiry.
 - The reset-credit visualization shows remaining time from now to expiry, not elapsed lifecycle percentage. All visible credits share one scale, so a later expiry always produces a longer line.
 - Home-card content wraps to show complete recommendations, dates, and time zones instead of truncating them with ellipses.
+- Inspect received evidence, its interpretation, per-account plans, and actual delivery. Unchanged plans have an explanation too; public-input comparisons fix time and account data rather than attributing elapsed time to a message.
+- Results, Method, and Raw Data are in-page controls. Cadence probabilities, signal weights, and usage targets remain separate. A calendar opens detailed receipt rows without counting a shared public event twice.
+- Decision history remains local and starts with real observations. Source failures create gaps, not zero probabilities. WillCodexReset is a product reference only and is not an automatically integrated source.
 - Changes to Codex quota rules may require updates to the calculations.
 
 ## Technical documentation
@@ -112,6 +125,7 @@ See [Privacy and data flow](docs/privacy.md) and the [Security policy](SECURITY.
 - [Architecture and decision boundaries](docs/architecture.md)
 - [Capacity baselines and personal calibration](docs/capacity-baselines.md)
 - [External signal contract](docs/signal-contract.md)
+- [Inspectable decisions and history](docs/decision-history.md)
 - [macOS distribution and installation boundary](docs/distribution.md)
 - [Contributing](CONTRIBUTING.md)
 

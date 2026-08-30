@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
+const { normalizeDecisionHistory, recordDecisionHistory, comparePlans, planAccounts } = require("./codex-reset-history.js");
 const {
   advanceGlobalSettlement,
   apiEquivalentCost,
@@ -2946,7 +2947,7 @@ const staleEpisodeRuntime = createRuntime(
   },
 );
 const staleEpisodeState = staleEpisodeRuntime.publicReceiverState();
-equal(staleEpisodeState.version, 20);
+equal(staleEpisodeState.version, 21);
 equal(staleEpisodeState.activeEpisode, null, "migration must clear an already-settled episode");
 equal(staleEpisodeState.signalSettlement.throughAt, landedAt);
 check(
@@ -4928,6 +4929,88 @@ const ctx = {
   const independentSnapshot = await snapshotRuntime.uiSnapshot();
   equal(independentSnapshot.details[0].title, "现在");
   equal(independentSnapshot.submenuDetails[0].title, "模型诊断");
+
+  // One end-to-end chain: receipt A, future promise B, immutable observation,
+  // same-time comparison, repeated delivery, outage, restart and UI payload.
+  const historyInputs = { forecast: watchForecast, feed: { events: [watchForecast.official_signal] }, sourceHost: "example.invalid" };
+  let history = recordDecisionHistory(null, watchModel, { nowMs: now, trigger: "public-update", inputs: historyInputs });
+  equal(history.records.length, 1);
+  equal(history.startedAt, new Date(now).toISOString(), "an upgrade does not backfill old predictions");
+  equal(history.records[0].evidence.filter((row) => row.id === watchPromiseID).length, 1, "same post is one piece of evidence");
+  equal(history.records[0].source.p24, 25);
+  equal(history.records[0].source.p48, 44);
+  equal(history.records[0].accounts[0].signalWeight, 93, "promise weight is not cadence probability");
+  equal(history.records[0].evidence[0].signalTier, "likely");
+  equal(history.records[0].evidence[0].alertEventId, `signal:${watchPromiseID}:likely`);
+  const components = history.records[0].accounts[0].calculation;
+  close(components.targetNowUsed + components.normalUse + components.predictionUse + components.candidateUse, components.targetUsed);
+  check(history.records[0].accounts.every((row) => row.signalId === watchPromiseID));
+  check(history.records[0].accounts.every((row) => row.deliveredEventId === watchResetID));
+  const firstRecordJSON = JSON.stringify(history.records[0]);
+  history = recordDecisionHistory(history, watchModel, { nowMs: now + minute, inputs: historyInputs });
+  equal(history.records.length, 1, "identical polling does not create more events or points");
+  const renewedTimestamp = { ...historyInputs, forecast: { ...watchForecast, updated_at: new Date(now + minute).toISOString() } };
+  history = recordDecisionHistory(history, watchModel, { nowMs: now + 2 * minute, inputs: renewedTimestamp });
+  equal(history.records.length, 1, "a publication-fetch timestamp alone is not a new interpretation");
+  const outage = recordDecisionHistory(history, watchModel, { nowMs: now + 3 * minute, sourceStatus: "fetch-failed", inputs: historyInputs });
+  equal(outage.records.at(-1).source.p24, null, "missing data is a gap, not a fabricated zero");
+  equal(outage.records.at(-1).source.cachedP24, 25, "last-known inputs remain inspectable");
+  equal(JSON.stringify(outage.records[0]), firstRecordJSON, "a later failure cannot rewrite old observations");
+  equal(JSON.stringify(normalizeDecisionHistory(JSON.parse(JSON.stringify(outage)))), JSON.stringify(outage), "history survives restart without reinterpreting past rows");
+  const identityComparison = comparePlans(watchModel, watchModel, now);
+  equal(identityComparison.changed, false);
+  equal(identityComparison.before[0].usedPercent, identityComparison.after[0].usedPercent);
+  check(planAccounts(build(watchUsage.map((row) => ({ ...row, usage: { ...row.usage,
+    secondary: { ...row.usage.secondary, resetsAt: new Date(now + 2 * hour).toISOString() } } })),
+  watchForecast, null, now, watchReceiver)).every((row) => row.reason === "natural-first"));
+  const partialHistory = recordDecisionHistory(null, partialWatchModel, { nowMs: now, inputs: historyInputs });
+  equal(partialHistory.records[0].accounts[0].signalId, watchPromiseID, "the landed account can plan for B");
+  equal(partialHistory.records[0].accounts[1].signalId, watchResetID, "the pending account must still handle A first");
+  check(partialHistory.records[0].evidence.some((row) => row.id === watchPromiseID && row.disposition === "adopted"), "A's staggered receipts never erase B's recorded evidence");
+  const untimedHistory = recordDecisionHistory(null, untimedModel, { nowMs: now, inputs: { ...historyInputs, forecast: untimedForecast } });
+  check(untimedHistory.records[0].accounts.every((row) => row.reason === "promise-untimed"));
+
+  const actualNow = Date.now;
+  try {
+    Date.now = () => now;
+    const historyRuntime = createRuntime({ buildModel: build, pickUsage: parseUsage, pickUsages: parseUsages, provider }, {
+      activeAccountId: "watch-a",
+      events: { closedIds: [watchResetID] },
+      accountStates: Object.fromEntries(watchReceiver.accounts.map((account) => [account.id, {
+        ...account, present: true, usage: {}, cycleGeneration: 2,
+      }])),
+      cache: { forecast: forecastFixture(new Date(now).toISOString()), feed: { events: [] } },
+    });
+    historyRuntime.runtime.state.usage.payload = watchUsage;
+    historyRuntime.recordHistory("usage");
+    equal(historyRuntime.runtime.state.decisionHistory.lastError, null);
+    const beforeContext = historyRuntime.historyContext(now);
+    historyRuntime.runtime.state.cache.forecast = watchForecast;
+    historyRuntime.runtime.state.cache.feed = { events: [watchForecast.official_signal] };
+    historyRuntime.recordHistory("public-update", beforeContext);
+    const recorded = historyRuntime.runtime.state.decisionHistory.records.at(-1);
+    equal(historyRuntime.runtime.state.decisionHistory.lastError, null);
+    equal(recorded.impact.method, "same-time-public-inputs");
+    check(recorded.impact.changed, "a real timed promise should have a measured plan effect");
+    check(recorded.impact.before.every((row, index) => row.usedPercent === recorded.impact.after[index].usedPercent));
+    check(recorded.impact.after.every((row) => row.signalId === watchPromiseID));
+    for (const account of recorded.accounts) {
+      const hypothetical = recorded.impact.after.find((row) => row.id === account.id);
+      close(account.targetPercent, hypothetical.targetPercent, 0.01);
+      equal(account.targetAt, hypothetical.targetAt);
+    }
+    const runtimeSnapshot = await historyRuntime.uiSnapshot();
+    equal(runtimeSnapshot.decisionHistory.records.at(-1).id, recorded.id, "native and provider use the saved record");
+    check(runtimeSnapshot.decisionContext.accounts.every((row) => row.signalId === watchPromiseID));
+    check(runtimeSnapshot.resetHistoryEvents.filter((row) => row.eventId === watchResetID).length === 2);
+    check(runtimeSnapshot.resetHistoryEvents.filter((row) => row.kind === "credit-grant").length === 2);
+    check(!JSON.stringify(runtimeSnapshot.decisionHistory).includes("credit-sha256:"), "credit IDs never enter history presentation");
+    const beforeUsageOnly = historyRuntime.runtime.state.decisionHistory.records.length;
+    Date.now = () => now + hour;
+    historyRuntime.recordHistory("usage");
+    check(historyRuntime.runtime.state.decisionHistory.records.length > beforeUsageOnly);
+    equal(historyRuntime.runtime.state.decisionHistory.records.at(-1).impact, null, "time advancement is not attributed to a message");
+  } finally { Date.now = actualNow; }
   process.stdout.write(`codex-reset: ${checks} checks passed\n`);
 })().catch((error) => {
   process.stderr.write(`${error.stack || error}\n`);

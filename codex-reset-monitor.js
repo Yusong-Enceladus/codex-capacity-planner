@@ -8,6 +8,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { createBehaviorEngine } = require("./codex-reset-behavior.js");
 const { createShortLoadWorkerEngine } = require("./codex-reset-short-load.js");
+const { normalizeDecisionHistory, recordDecisionHistory, planAccounts, planActions } = require("./codex-reset-history.js");
 
 const hour = 60 * 60 * 1000;
 const minute = 60 * 1000;
@@ -640,12 +641,13 @@ function normalizedPersonalResets(value) {
         previous.cause === record.cause &&
         previous.evidence === record.evidence &&
         previous.eventId === record.eventId &&
+        (!previous.generation || !record.generation || previous.generation === record.generation) &&
         millis(record.at) - millis(previous.at) <= 2 * hour,
     );
     if (sameBurst) deduped[deduped.length - 1] = record;
     else deduped.push(record);
   }
-  return deduped.slice(-24);
+  return deduped.slice(-96);
 }
 
 function resetRecordsWithGenerations(value) {
@@ -2239,7 +2241,8 @@ function updateTargetTrajectory(previousValue, modelValue, nowMs) {
 
 function ensureState(value) {
   const state = object(value) || {};
-  state.version = 20;
+  state.version = 21;
+  state.decisionHistory = normalizeDecisionHistory(state.decisionHistory);
   state.costMeter = {
     lastRowID: Number.isFinite(state.costMeter && state.costMeter.lastRowID)
       ? state.costMeter.lastRowID
@@ -3035,7 +3038,7 @@ function writeState(value) {
   fs.renameSync(temporary, stateFile);
 }
 
-function safePublicState(state, runtime) {
+function safePublicState(state, runtime, includeHistory = true) {
   syncActiveAccountState(state);
   const activeEpisode = object(state.activeEpisode);
   const activeDeliveryValues = Object.values(
@@ -3109,7 +3112,7 @@ function safePublicState(state, runtime) {
     usageBehavior: publicUsageBehavior(account.usage && account.usage.behavior),
     resetCredits: publicResetCreditInventory(account.resetCredits),
     cycleGeneration: Math.max(0, Math.floor(Number(account.cycleGeneration) || 0)),
-    personalResets: normalizedPersonalResets(account.personalResets).slice(-6),
+    personalResets: normalizedPersonalResets(account.personalResets),
     lastPersonalReset: object(account.lastPersonalReset) || null,
     deliveryState: activeEpisode
       ? (object(activeEpisode.accountDelivery) && activeEpisode.accountDelivery[account.id]) || "pending"
@@ -3117,6 +3120,7 @@ function safePublicState(state, runtime) {
   }));
   return {
     version: state.version,
+    ...(includeHistory ? { decisionHistory: state.decisionHistory } : {}),
     startedAt: runtime.startedAt,
     push: {
       registered: state.push.registered === true,
@@ -3155,7 +3159,7 @@ function safePublicState(state, runtime) {
           eventId: lastPersonalReset.eventId || null,
         }
       : null,
-    personalResets: normalizedPersonalResets(state.personalResets).slice(-6),
+    personalResets: normalizedPersonalResets(state.personalResets),
     signalSettlement: settlement.throughAt
       ? {
           throughAt: settlement.throughAt,
@@ -3167,7 +3171,7 @@ function safePublicState(state, runtime) {
     closedEventIds: state.events.closedIds.slice(),
     completedPublicEvents: normalizedCompletedPublicEvents(
       state.events.completedPublicEvents,
-    ).slice(-4),
+    ),
     activeAccountId: state.activeAccountId,
     selectedAccountId: state.selectedAccountId,
     accounts,
@@ -4181,6 +4185,84 @@ function createRuntime(logic, initialState) {
     }
   }
 
+  function historyContext(nowMs = Date.now()) {
+    // Capture after a network await, before applying its response. A concurrent
+    // quota collection therefore cannot become an apparent message effect.
+    return {
+      nowMs,
+      forecast: runtime.state.cache.forecast || null,
+      feed: runtime.state.cache.feed || null,
+      receiver: safePublicState(runtime.state, runtime, false),
+    };
+  }
+
+  function historyProjection(context, facts, nowMs) {
+    const previous = context.receiver;
+    const receiver = {
+      ...facts,
+      activeEpisode: previous.activeEpisode,
+      currentEvent: previous.currentEvent,
+      closedEventIds: previous.closedEventIds,
+      completedPublicEvents: previous.completedPublicEvents,
+      signalSettlement: previous.signalSettlement,
+      // Preserve the same pre-update trajectory anchors in both branches.
+      accounts: (facts.accounts || []).map((account) => ({
+        ...account,
+        targetTrajectory: (previous.accounts || []).find((item) => item.id === account.id)?.targetTrajectory || null,
+      })),
+      targetTrajectory: previous.targetTrajectory,
+    };
+    const draft = runtime.logic.buildModel(
+      runtime.state.usage.payload || null, context.forecast, context.feed, nowMs, receiver,
+    );
+    receiver.accounts = receiver.accounts.map((account) => {
+      const plan = (draft.accounts || []).find((item) => item.id === account.id);
+      return plan ? { ...account, targetTrajectory: updateTargetTrajectory(account.targetTrajectory, {
+        usage: plan.usage, decision: plan.decision, forecast: plan.forecast || draft.forecast,
+      }, nowMs) } : account;
+    });
+    receiver.targetTrajectory = receiver.accounts.find((account) => account.id === receiver.activeAccountId)?.targetTrajectory
+      || receiver.targetTrajectory;
+    return runtime.logic.buildModel(
+      runtime.state.usage.payload || null, context.forecast, context.feed, nowMs, receiver,
+    );
+  }
+
+  function recordHistory(trigger, previousContext = null, sourceStatus = null) {
+    const nowMs = previousContext ? previousContext.nowMs : Date.now();
+    try {
+      const model = currentModel(nowMs);
+      const facts = safePublicState(runtime.state, runtime, false);
+      let beforeModel = null;
+      let afterModel = null;
+      if (previousContext) {
+        beforeModel = historyProjection(previousContext, facts, nowMs);
+        afterModel = historyProjection({
+          ...historyContext(nowMs),
+          receiver: {
+            ...facts,
+            targetTrajectory: previousContext.receiver.targetTrajectory,
+            accounts: (facts.accounts || []).map((account) => ({
+              ...account,
+              targetTrajectory: (previousContext.receiver.accounts || []).find((item) => item.id === account.id)?.targetTrajectory || null,
+            })),
+          },
+        }, facts, nowMs);
+      }
+      runtime.state.decisionHistory = recordDecisionHistory(runtime.state.decisionHistory, model, {
+        nowMs, trigger, sourceStatus: sourceStatus || runtime.state.health.publicSourceStatus || null, beforeModel, afterModel,
+        inputs: {
+          forecast: runtime.state.cache.forecast, feed: runtime.state.cache.feed,
+          sourceHost: new URL(signalBaseURL).host,
+        },
+      });
+    } catch {
+      // History must never disable the real planner or expose private errors.
+      runtime.state.decisionHistory.lastError = "record-unavailable";
+    }
+    save();
+  }
+
   function deliverNativeNotification(reason, subtitle, body) {
     const attemptedAt = Date.now();
     runtime.state.notificationDelivery = {
@@ -4363,8 +4445,15 @@ function createRuntime(logic, initialState) {
   }
 
   function publicReceiverState() {
-    refreshBehavior(Date.now());
-    return safePublicState(runtime.state, runtime);
+    const nowMs = Date.now();
+    refreshBehavior(nowMs);
+    const receiver = safePublicState(runtime.state, runtime);
+    const model = runtime.logic.buildModel(runtime.state.usage.payload || null,
+      runtime.state.cache.forecast || null, runtime.state.cache.feed || null, nowMs, receiver);
+    return {
+      ...receiver,
+      decisionContext: { at: iso(nowMs), accounts: planAccounts(model), actions: planActions(model) },
+    };
   }
 
   function currentModel(nowMs) {
@@ -4413,7 +4502,7 @@ function createRuntime(logic, initialState) {
           return { json: value };
         },
       },
-      date: { now: () => new Date() },
+      date: { now: () => new Date(Date.now()) },
       fail: { parseFailure: (message) => new Error(message) },
       log() {},
     };
@@ -4464,6 +4553,14 @@ function createRuntime(logic, initialState) {
   }
 
   function processEvent(event, options) {
+    const settings = object(options) || {};
+    const before = settings.deferHistory ? null : historyContext();
+    const result = processEventWithoutHistory(event, settings);
+    if (!settings.deferHistory) recordHistory("public-event", before);
+    return result;
+  }
+
+  function processEventWithoutHistory(event, options) {
     if (!event || !event.id) return { isNew: false, event: null };
     if (!trustedExplicitEvent(event)) {
       rememberRejectedEvent(runtime.state, event, "untrusted-event-identity");
@@ -5064,10 +5161,12 @@ function createRuntime(logic, initialState) {
         const copy = notificationCopy(null, "banked-disappeared");
         deliverNativeNotification("banked-disappeared", copy.subtitle, copy.body);
       }
+      recordHistory(anyLanded ? "account-reset" : "usage");
       return { landed: anyLanded, parsed: activeParsed };
     } catch (error) {
       healthFailure("usage");
       save();
+      recordHistory("usage-unavailable");
       throw error;
     }
   }
@@ -5294,9 +5393,12 @@ function createRuntime(logic, initialState) {
   async function refreshSite(options) {
     const settings = object(options) || {};
     const results = await Promise.allSettled([getJSON(forecastURL, 15_000), getJSON(feedURL, 15_000)]);
+    const before = historyContext();
     let feedSucceeded = false;
+    let forecastSucceeded = false;
     if (results[0].status === "fulfilled" && object(results[0].value)) {
       runtime.state.cache.forecast = results[0].value;
+      forecastSucceeded = true;
       healthSuccess("Forecast");
     } else {
       if (!object(runtime.state.cache.forecast)) {
@@ -5332,9 +5434,13 @@ function createRuntime(logic, initialState) {
             Date.now(),
           ),
           viaPush: settings.viaPush,
+          deferHistory: true,
         })
       : { isNew: false, event: null };
     const processedEvent = processed.event;
+    runtime.state.health.publicSourceStatus = forecastSucceeded && feedSucceeded
+      ? null : "fetch-failed";
+    recordHistory("public-update", before);
     const signalReason = evaluateSignalNotification(settings.startup);
     const forecastReason = evaluateForecastNotification(settings.startup);
     // A forecast increase already carries the behavior shortfall, so do not emit a
@@ -5545,6 +5651,9 @@ function createRuntime(logic, initialState) {
     save,
     publicReceiverState,
     currentModel,
+    recordHistory,
+    historyContext,
+    historyProjection,
     uiSnapshot,
     processEvent,
     recoverMissedExplicitNotification,
