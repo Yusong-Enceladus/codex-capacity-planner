@@ -71,10 +71,10 @@ index af7e70e..9365ff9 100644
      var groupBy: String?
  }
 diff --git a/Sources/CodexBarCore/CostUsageFetcher.swift b/Sources/CodexBarCore/CostUsageFetcher.swift
-index f459c14..51d01d8 100644
+index f459c14..c489cad 100644
 --- a/Sources/CodexBarCore/CostUsageFetcher.swift
 +++ b/Sources/CodexBarCore/CostUsageFetcher.swift
-@@ -70,6 +70,26 @@ public struct CostUsageFetcher: Sendable {
+@@ -70,6 +70,30 @@ public struct CostUsageFetcher: Sendable {
          self.scannerOptions = cacheRoot.map { CostUsageScanner.Options(cacheRoot: $0) }
      }
  
@@ -89,7 +89,11 @@ index f459c14..51d01d8 100644
 +        options.calendar.timeZone = timeZone
 +        options.forceRescan = false
 +        options.refreshMinIntervalSeconds = 0
-+        options.maxCodexScanDurationPerRefresh = Self.codexAutomaticScanDurationPerRefresh
++        // This runs in the planner's isolated background process, not its UI.
++        // A foreground-sized two-second slice repeatedly spends most of its
++        // budget reopening large caches before it can reach older transcripts.
++        // Retain the native byte cap and publish after one bounded batch.
++        options.maxCodexScanDurationPerRefresh = 20
 +        try await PlannerUsageExport.write(
 +            options: options,
 +            destination: destination,
@@ -101,7 +105,7 @@ index f459c14..51d01d8 100644
      init(scannerOptions: CostUsageScanner.Options) {
          self.scannerOptions = scannerOptions
      }
-@@ -544,7 +564,9 @@ public struct CostUsageFetcher: Sendable {
+@@ -544,7 +568,9 @@ public struct CostUsageFetcher: Sendable {
                          calendar: options.scanOptions.calendar),
                      scopedTo: roots)
                  let range = CostUsageScanner.CostUsageDayRange(

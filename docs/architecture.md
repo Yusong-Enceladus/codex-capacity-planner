@@ -188,8 +188,12 @@ uses the original event times and native calendar logic, including DST. An
 existing matching-calendar cache can seed the private collector via a read-only
 SQLite online backup (including WAL), never a bare copy of a live database.
 Historical backfill cannot enter the row-ID stream used by live calibration.
-Bounded scans continue until the native completion flag is true, with progress
-and no-progress backoff; successful process exit alone does not mean complete.
+The isolated collector has a 20-second background time budget per native pass,
+retaining the native byte limit; the interactive CodexBar scan budget is unchanged.
+Catch-up prioritizes the least-complete calendar and skips completed calendars;
+regular refreshes still revisit both. Bounded scans continue until the native
+completion flag is true, with byte progress next to the date controls and
+no-progress backoff. Successful process exit alone does not mean complete.
 
 Version 2 imports canonical reports transactionally into private SQLite tables,
 preserving history across quota resets and upstream cache eviction. Complete
@@ -224,8 +228,11 @@ The reset timeline can disclose a related handling record in place. Reset
 History adds a selectable calendar above the detailed account records. A
 public event is grouped once while its separate account receipts remain
 visible. Probability and target history have separate plots in Calculation &
-Data; source weights never share the probability axis. These views use stable
-scroll viewports so inspection does not dismiss the native menu.
+Data; source weights never share the probability axis. Native Charts share one
+observation-time domain and selection, align percentage axes, and break lines at
+missing data, long gaps, model changes and account-cycle changes. All five primary
+pages share a typography hierarchy. These views use stable scroll viewports so
+inspection does not dismiss the native menu.
 
 Temporal reset state is also exposed as structured timeline data. Position on
 the axis carries time and order; an interval plus a dashed connector and hollow

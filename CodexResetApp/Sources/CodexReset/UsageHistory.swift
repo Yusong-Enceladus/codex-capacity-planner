@@ -116,6 +116,13 @@ struct UsageHistorySnapshot: Decodable, Equatable, Sendable {
     let unassigned: UsageHistoryAccount
     var completedFiles: Int? = nil
     var totalFiles: Int? = nil
+    var processedBytes: Int64? = nil
+    var totalBytes: Int64? = nil
+
+    var indexingFraction: Double? {
+        guard let processedBytes, let totalBytes, totalBytes > 0 else { return nil }
+        return min(1, max(0, Double(processedBytes) / Double(totalBytes)))
+    }
 }
 
 @MainActor

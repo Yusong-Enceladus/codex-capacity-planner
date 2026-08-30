@@ -272,6 +272,7 @@ function createUsageHistoryStore(options) {
       updatedAt: source.scannedAt || null, collectorStatus: status, sourceComplete: source.complete === true,
       skippedEvents: 0, pricingSource: "codexbar-report",
       completedFiles: source.completedFiles || 0, totalFiles: source.totalFiles || 0,
+      processedBytes: source.processedBytes || 0, totalBytes: source.totalBytes || 0,
       accounts: payloadGroups.filter((group) => group.id !== "unassigned"),
       unassigned: payloadGroups.find((group) => group.id === "unassigned"),
     };
@@ -283,6 +284,16 @@ function createUsageHistoryStore(options) {
     setCollectorStatus: (status, zone) => {
       for (const timeZone of zone ? [zone] : timeZones) statuses.set(timeZone, status);
     } };
+}
+
+function historyRefreshZones(sources, catchUpOnly = false) {
+  const progress = (zone) => {
+    const value = sources[zone] || {};
+    if (value.complete) return 1;
+    return value.totalBytes > 0 ? Math.min(0.999, (value.processedBytes || 0) / value.totalBytes) : 0;
+  };
+  return [...timeZones].filter((zone) => !catchUpOnly || sources[zone]?.complete !== true)
+    .sort((a, b) => progress(a) - progress(b));
 }
 
 function createUsageHistoryWorker(options) {
@@ -405,10 +416,11 @@ if (!isMainThread && workerData?.usageHistory) {
   let previousProgress = null;
   let stalledPasses = 0;
 
-  async function refresh() {
+  async function refresh(catchUpOnly = false) {
     clearTimeout(timer);
     const states = [];
-    for (const zone of [timeZones[1], timeZones[0]]) {
+    const sources = Object.fromEntries(timeZones.map((zone) => [zone, store.source(zone)]));
+    for (const zone of historyRefreshZones(sources, catchUpOnly)) {
       if (stopping) break;
       if (!options.cli || !options.cacheRoot) {
         const file = options.reportFiles?.[zone];
@@ -440,13 +452,13 @@ if (!isMainThread && workerData?.usageHistory) {
         [state.completedFiles, state.totalFiles, state.processedBytes, state.totalBytes]));
       stalledPasses = progress === previousProgress ? stalledPasses + 1 : 0;
       previousProgress = progress;
-      timer = setTimeout(() => { void refreshOnce(); }, stalledPasses >= 2 ? 60000 : 2000);
+      timer = setTimeout(() => { void refreshOnce(true); }, stalledPasses >= 2 ? 60000 : 2000);
       timer.unref();
     }
     return true;
   }
-  function refreshOnce() {
-    if (!refreshing) refreshing = refresh().finally(() => { refreshing = null; });
+  function refreshOnce(catchUpOnly = false) {
+    if (!refreshing) refreshing = refresh(catchUpOnly).finally(() => { refreshing = null; });
     return refreshing;
   }
   parentPort.on("message", async ({ id, action, input }) => {
@@ -467,4 +479,4 @@ if (!isMainThread && workerData?.usageHistory) {
 }
 
 module.exports = { createUsageHistoryStore, createUsageHistoryWorker, historyRange, dayKey, identityRefs, ownerResolver,
-  prepareCollectorRoot };
+  prepareCollectorRoot, historyRefreshZones };

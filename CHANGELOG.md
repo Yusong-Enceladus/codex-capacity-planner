@@ -5,6 +5,21 @@ versioning once the first public release is tagged.
 
 ## Unreleased
 
+## 0.1.12 - 2026-08-30
+
+- Give isolated history backfill a bounded background processing budget rather
+  than the foreground collector's two-second slice. Prioritize the lagging
+  calendar and stop repeating completed calendars during catch-up, so older
+  UTC+8 records become available without waiting behind fresh Pacific scans.
+- Show history indexing and byte progress immediately below the date controls.
+  Unread dates remain missing, not zero. Account attribution and native
+  CodexBar deduplication/pricing are unchanged.
+- Apply the same 16/14/13/12-point hierarchy to first-level pages, including
+  Reset and Why This Plan; enlarge timeline dates and inspection controls.
+- Replace hand-drawn calculation plots with native Charts, lighter surfaces,
+  aligned percentage scales, one shared time axis and clearer selected points.
+  Missing observations and cycle/model boundaries still break the lines.
+
 ## 0.1.11 - 2026-08-30
 
 - Correct historical usage using CodexBar's canonical reports. Copied fork

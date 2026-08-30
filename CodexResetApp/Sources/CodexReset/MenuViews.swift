@@ -222,10 +222,10 @@ struct DetailDecisionProgress: View {
                 Spacer(minLength: 8)
                 self.legend(color: .red, text: self.progress.targetLabel)
             }
-            .font(.caption2)
+            .font(PlannerTypography.detail)
             .monospacedDigit()
             self.legend(color: .cyan, text: self.progress.projectedLabel)
-                .font(.caption2)
+                .font(PlannerTypography.detail)
                 .monospacedDigit()
         }
         .accessibilityElement(children: .combine)
@@ -619,7 +619,7 @@ private struct ResetEventTimeline: View {
                         "现在 · 正处于已公告的重置时间范围内",
                         "Now · Within the announced reset window")
                 : self.presentationLanguage.text("现在", "Now"))
-                .font(.caption2.weight(.semibold))
+                .font(PlannerTypography.body.weight(.semibold))
                 .foregroundStyle(.secondary)
             Rectangle()
                 .fill(Color.secondary.opacity(0.22))
@@ -664,17 +664,17 @@ private struct ResetEventTimeline: View {
             }
             .frame(width: 22)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(titleOverride ?? ResetTimelinePresentation.title(
                         for: item,
                         language: self.presentationLanguage))
-                        .font(.caption.weight(.semibold))
+                        .font(PlannerTypography.heading)
                         .fixedSize(horizontal: false, vertical: true)
                     Text(ResetTimelinePresentation.badge(
                         for: item,
                         language: self.presentationLanguage))
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(PlannerTypography.detail.weight(.semibold))
                         .foregroundStyle(tint)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
@@ -683,7 +683,7 @@ private struct ResetEventTimeline: View {
                 }
                 if let timeText = timeOverride ?? self.timeText(for: item) {
                     Text(timeText)
-                        .font(.caption2.monospacedDigit())
+                        .font(PlannerTypography.body.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
                 if includeDetail, let detail = ResetTimelinePresentation.detail(
@@ -691,22 +691,21 @@ private struct ResetEventTimeline: View {
                     language: self.presentationLanguage), !detail.isEmpty
                 {
                     Text(detail)
-                        .font(.caption2)
+                        .font(PlannerTypography.body)
                         .foregroundStyle(.secondary)
-                        .lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if includePublished, let publishedText = self.publishedText(for: item) {
                     Text(publishedText)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
+                        .font(PlannerTypography.detail)
+                        .foregroundStyle(.secondary)
                 }
                 if includeHandling, let eventID = item.eventId,
                    let record = self.history?.latestRecord(for: eventID) {
                     Text(record.evidence.first(where: { $0.id == eventID })?.disposition == "adopted"
                         ? self.presentationLanguage.text("已用于本轮计划 · 可核对具体影响", "Used in this plan · Inspect its effect")
                         : self.presentationLanguage.text("已关联本机处理记录", "Linked to the local handling record"))
-                        .font(.caption2).foregroundStyle(.secondary)
+                        .font(PlannerTypography.detail).foregroundStyle(.secondary)
                     Button {
                         self.expandedEventID = self.expandedEventID == eventID ? nil : eventID
                     } label: {
@@ -715,7 +714,7 @@ private struct ResetEventTimeline: View {
                               : self.presentationLanguage.text("查看系统判断", "Inspect decision"),
                               systemImage: self.expandedEventID == eventID ? "chevron.up" : "chevron.down")
                     }
-                    .buttonStyle(.bordered).controlSize(.mini).font(.caption2)
+                    .buttonStyle(.bordered).controlSize(.regular).font(PlannerTypography.body)
                     if self.expandedEventID == eventID {
                         DecisionEvidenceDetails(record: record, eventID: eventID)
                     }
@@ -1418,9 +1417,7 @@ struct ResetDetailsView: View {
                     } else {
                     if self.onAction == nil {
                         Text(section.title)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .textCase(.uppercase)
+                            .font(PlannerTypography.title)
                     }
                     if let visualizations = section.visualizations {
                         ForEach(visualizations) { visualization in
@@ -1439,7 +1436,7 @@ struct ResetDetailsView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 5) {
                                 Text(row.label)
-                                    .font(self.onAction == nil ? .caption.weight(.semibold) : .system(size: 14, weight: .semibold))
+                                    .font(PlannerTypography.heading)
                                     .foregroundStyle(.secondary)
                                 if row.link != nil {
                                     Image(systemName: "arrow.up.right.square")
@@ -1452,7 +1449,7 @@ struct ResetDetailsView: View {
                                 alternate: row.alternateValue,
                                 relativeTimeAt: row.relativeTimeAt,
                                 relativeTimePrefix: row.relativeTimePrefix)
-                                .font(self.onAction == nil ? .caption : .system(size: 13))
+                                .font(PlannerTypography.body)
                                 .fixedSize(horizontal: false, vertical: true)
                             if let progress = row.progress {
                                 DetailDecisionProgress(progress: progress)
@@ -1460,7 +1457,7 @@ struct ResetDetailsView: View {
                             }
                             if let secondary = row.secondaryValue {
                                 Text(secondary)
-                                    .font(self.onAction == nil ? .caption2 : .system(size: 12))
+                                    .font(PlannerTypography.detail)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }

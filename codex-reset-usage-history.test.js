@@ -8,7 +8,7 @@ const path = require("node:path");
 const http = require("node:http");
 const { DatabaseSync } = require("node:sqlite");
 const { createUsageHistoryStore, createUsageHistoryWorker, prepareCollectorRoot,
-  historyRange, dayKey, ownerResolver, identityRefs } = require("./codex-reset-usage-history.js");
+  historyRange, dayKey, ownerResolver, identityRefs, historyRefreshZones } = require("./codex-reset-usage-history.js");
 const { createServer } = require("./codex-reset-monitor.js");
 
 const nowMs = Date.parse("2026-08-30T18:00:00Z");
@@ -185,6 +185,62 @@ test("retention survives narrower reports, source eviction, reopening and quota 
       accounts: accounts.map((account) => ({ ...account, usedPercent: 0, resetGeneration: 2 })) });
     assert.equal(value.accounts[0].totalTokens, 220);
   } finally { reopened.close(); }
+});
+
+test("a lagging calendar backfills June and July into a ninety-day view and reports byte progress", (t) => {
+  const f = fixture(t);
+  for (const timeZone of zones) {
+    f.ingest([source("recent", [row()])], {timeZone, complete:false, processedBytes:20, totalBytes:100});
+    const partial = f.read({days:90,timeZone});
+    assert.equal(partial.processedBytes,20);
+    assert.equal(partial.totalBytes,100);
+    assert.equal(partial.accounts[0].days.find(day=>day.date==="2026-07-15").known,false);
+    f.ingest([source("june", [row({date:"2026-06-15"})]), source("july", [row({date:"2026-07-15"})])],
+      {timeZone, complete:true, processedBytes:100, totalBytes:100});
+    const complete = f.read({days:90,timeZone});
+    assert.equal(complete.accounts[0].totalTokens,330);
+    assert.deepEqual(complete.accounts[0].days.filter(day=>day.eventCount).map(day=>day.date),
+      ["2026-06-15","2026-07-15","2026-08-29"]);
+    assert.equal(complete.sourceComplete,true);
+  }
+});
+
+test("catch-up prioritizes the lagging calendar and skips completed calendars until a regular refresh", () => {
+  const states = {[zones[0]]:{complete:false,processedBytes:20,totalBytes:100},
+    [zones[1]]:{complete:true,processedBytes:100,totalBytes:100}};
+  assert.deepEqual(historyRefreshZones(states,true),[zones[0]]);
+  assert.deepEqual(historyRefreshZones(states,false),zones);
+  states[zones[1]].complete=false;
+  assert.deepEqual(historyRefreshZones(states,true),zones);
+  states[zones[0]].complete=true;
+  states[zones[1]].complete=true;
+  assert.deepEqual(historyRefreshZones(states,true),[]);
+  assert.equal(historyRefreshZones(states,false).length,2);
+});
+
+test("automatic catch-up actually resumes old dates without rescanning a completed calendar", async (t) => {
+  const f = fixture(t);
+  const cli = path.join(f.directory,"collector");
+  fs.writeFileSync(cli, `#!/usr/bin/env node\nconst fs=require('node:fs');
+const args=process.argv.slice(2), zone=args[args.indexOf('--history-time-zone')+1], out=args[args.indexOf('--history-output')+1];
+const countFile=out+'.calls';let count=fs.existsSync(countFile)?Number(fs.readFileSync(countFile)):0;count++;fs.writeFileSync(countFile,String(count));
+const complete=zone==='America/Los_Angeles'||count>1;
+fs.writeFileSync(out,JSON.stringify({...${JSON.stringify(snapshot([]))},timeZone:zone,complete,
+processedBytes:complete?100:20,totalBytes:100,sources:[${JSON.stringify(source("june",[row({date:"2026-06-15"})]))}]}));\n`, {mode:0o700});
+  const worker = createUsageHistoryWorker({historyDatabase:f.historyDatabase,cacheRoot:path.join(f.directory,"cache"),cli,nowMs});
+  t.after(()=>worker.close());
+  await worker.refresh();
+  const deadline=Date.now()+12000;
+  let value;
+  do {
+    value=await worker.query({days:90,timeZone:zones[0],accounts,nowMs});
+    if(value.sourceComplete)break;
+    await new Promise(resolve=>setTimeout(resolve,100));
+  } while(Date.now()<deadline);
+  assert.equal(value.sourceComplete,true);
+  assert.equal(value.accounts[0].days.find(day=>day.date==='2026-06-15').totalTokens,110);
+  const calls = path.join(f.directory,"cache","reports-v2","pacific","planner-history.json.calls");
+  assert.equal(Number(fs.readFileSync(calls)),1);
 });
 
 test("known zero, incomplete coverage, unassigned usage and unknown prices remain different", (t) => {

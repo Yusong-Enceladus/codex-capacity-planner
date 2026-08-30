@@ -16,18 +16,19 @@ struct UsageTargetsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text(self.language.text("用量与目标", "Usage & Targets")).font(.system(size: 16, weight: .semibold))
+                Text(self.language.text("用量与目标", "Usage & Targets")).font(PlannerTypography.title)
                 Spacer()
                 if self.store.isLoading { ProgressView().controlSize(.small) }
             }
             self.controls
+            self.indexingStatus
             ForEach(self.section.rows) { row in
                 VStack(alignment: .leading, spacing: 7) {
-                    Text(row.label).font(.system(size: 14, weight: .semibold))
-                    Text(row.value).font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
+                    Text(row.label).font(PlannerTypography.heading)
+                    Text(row.value).font(PlannerTypography.body).fixedSize(horizontal: false, vertical: true)
                     if let progress = row.progress { DetailDecisionProgress(progress: progress) }
                     if let secondary = row.secondaryValue {
-                        Text(secondary).font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text(secondary).font(PlannerTypography.detail).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if let id = row.accountId {
@@ -36,7 +37,7 @@ struct UsageTargetsView: View {
                                 .padding(.top, 4)
                         } else {
                             Label(self.emptyAccountText, systemImage: "info.circle")
-                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                                .font(PlannerTypography.detail).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true).padding(.top, 3)
                         }
                     }
@@ -46,11 +47,11 @@ struct UsageTargetsView: View {
             if let unassigned = self.store.snapshot?.unassigned, unassigned.totals.eventCount > 0 {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(self.language.text("未归属的本机用量", "Unassigned local usage"))
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(PlannerTypography.heading)
                     Text(self.language.text(
                         "这些记录没有可靠的账号标识，未计入上方任何账号。",
                         "These records lack a reliable account identity and are not assigned to any account above."))
-                        .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .font(PlannerTypography.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     DailyUsageHistoryView(account: unassigned, metric: self.store.metric,
                         maximum: max(1, unassigned.days.compactMap { self.store.metric.value($0.totals) }.max() ?? 1))
                 }
@@ -58,7 +59,7 @@ struct UsageTargetsView: View {
             }
             self.sourceNote
         }
-        .font(.system(size: 13))
+        .font(PlannerTypography.body)
         .task { await self.store.refreshWhileVisible() }
     }
 
@@ -110,7 +111,7 @@ struct UsageTargetsView: View {
                 }.frame(maxWidth: 260)
                 Spacer(minLength: 8)
                 Text(self.language.text("按 UTC+8 分日", "Days in Pacific Time"))
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .font(PlannerTypography.detail).foregroundStyle(.secondary)
             }
         }
     }
@@ -123,6 +124,32 @@ struct UsageTargetsView: View {
         self.showsCustomDays = false
     }
 
+    @ViewBuilder private var indexingStatus: some View {
+        if let snapshot = self.store.snapshot, !snapshot.sourceComplete {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(self.language.text("正在更新用量记录", "Updating usage records"))
+                        .font(PlannerTypography.body.weight(.medium))
+                    Spacer(minLength: 6)
+                    if let fraction = snapshot.indexingFraction {
+                        Text(self.language.text("已读取 ", "Read ") + String(format: "%.1f%%", fraction * 100))
+                            .monospacedDigit().font(PlannerTypography.detail)
+                    }
+                }
+                if let fraction = snapshot.indexingFraction {
+                    ProgressView(value: fraction).progressViewStyle(.linear)
+                }
+                Text(self.language.text(
+                    "读取过程中，空白日期不按零用量计算；图表会自动更新。",
+                    "While records are loading, gaps are not counted as zero usage. Charts update automatically."))
+                    .font(PlannerTypography.detail).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(10)
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
     private var sourceNote: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(self.language.text(
@@ -130,14 +157,6 @@ struct UsageTargetsView: View {
                 "Local logs, using CodexBar’s deduplication and pricing. Amounts are API-equivalent estimates, not a bill or quota percentage."))
             if let raw = self.store.snapshot?.updatedAt, let date = AlternatingDisplay.date(from: raw) {
                 Text(self.language.text("最近采样：", "Last sampled: ") + self.sampleTime(date))
-            }
-            if let snapshot = self.store.snapshot, !snapshot.sourceComplete {
-                if let completed = snapshot.completedFiles, let total = snapshot.totalFiles, total > 0 {
-                    Text(self.language.text("已整理 \(completed) / \(total) 个日志文件；仍在补齐历史，空白不代表零用量。",
-                                            "Indexed \(completed) of \(total) log files; history is still loading. Gaps do not mean zero usage."))
-                } else {
-                    Text(self.language.text("旧记录仍在补齐；图中的空白日期不代表零用量。", "History is still being indexed; gaps do not mean zero usage."))
-                }
             }
             if let snapshot = self.store.snapshot, snapshot.skippedEvents > 0 {
                 Text(self.language.text("部分旧记录没有逐笔时间，未混入按日统计。", "Some older records lack event timestamps and cannot be included in daily totals."))
@@ -184,13 +203,13 @@ struct DailyUsageHistoryView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(self.value(self.account.totals)).font(.system(size: 20, weight: .semibold)).monospacedDigit()
                 Text(self.language.text("\(self.account.days.count) 天合计", "\(self.account.days.count)-day total"))
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .font(PlannerTypography.detail).foregroundStyle(.secondary)
                 Spacer(minLength: 8)
                 if let peak {
                     Text((self.metric == .cost && self.account.totals.hasPartialCost
                         ? self.language.text("已知峰值", "Known peak") : self.language.text("单日最高", "Peak"))
                          + " " + self.value(peak.totals))
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                        .font(PlannerTypography.detail).foregroundStyle(.secondary)
                 }
             }
             self.chart
@@ -206,7 +225,7 @@ struct DailyUsageHistoryView: View {
             DisclosureGroup(isExpanded: self.$showsDetails) {
                 self.breakdowns.padding(.top, 8)
             } label: {
-                Text(self.language.text("模型与任务明细", "Model & task details")).font(.system(size: 12))
+                Text(self.language.text("模型与任务明细", "Model & task details")).font(PlannerTypography.detail)
             }
         }
         .onChange(of: self.account.days.count) { _, _ in self.hoveredIndex = nil }
@@ -327,7 +346,7 @@ struct DailyUsageHistoryView: View {
             }
             if self.detailKind != "models" {
                 Text(self.language.text("所选 \(self.account.days.count) 天的合计", "Totals for the selected \(self.account.days.count) days"))
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .font(PlannerTypography.detail).foregroundStyle(.secondary)
             }
             ForEach(Array(self.detailRows.prefix(self.detailLimit))) { row in
                 VStack(alignment: .leading, spacing: 3) {
@@ -340,8 +359,8 @@ struct DailyUsageHistoryView: View {
                         }
                         Spacer(minLength: 6)
                         Text(self.value(row.totals)).monospacedDigit().fixedSize()
-                    }.font(.system(size: 13))
-                    Text(self.tokenSummary(row.totals)).font(.system(size: 12)).foregroundStyle(.secondary)
+                    }.font(PlannerTypography.body)
+                    Text(self.tokenSummary(row.totals)).font(PlannerTypography.detail).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -355,7 +374,7 @@ struct DailyUsageHistoryView: View {
             }
             if self.account.totals.hasPartialCost {
                 Text(self.language.text("≥ 表示仅合计有价格的记录；未知模型仍计入 Token。", "≥ totals only priced records; unknown models still count toward tokens."))
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .font(PlannerTypography.detail).foregroundStyle(.secondary)
             }
         }.onChange(of: self.detailKind) { _, _ in self.detailLimit = 8 }
     }

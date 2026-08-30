@@ -63,7 +63,8 @@ private final class HistoryCanonicalProtocol: URLProtocol, @unchecked Sendable {
         let json = #"""
         {"version":2,"days":30,"timeZone":"America/Los_Angeles","startDay":"2026-08-01","endDay":"2026-08-30",
         "updatedAt":"2026-08-30T12:00:00Z","collectorStatus":"indexing","sourceComplete":false,
-        "skippedEvents":0,"pricingSource":"codexbar-report","completedFiles":8,"totalFiles":20,"accounts":[],
+        "skippedEvents":0,"pricingSource":"codexbar-report","completedFiles":8,"totalFiles":20,
+        "processedBytes":250,"totalBytes":1000,"accounts":[],
         "unassigned":{"id":"unassigned","days":[],"projects":[],"sessions":[],"coverage":"partial","recordedDays":0,
         "inputTokens":100,"cachedTokens":40,"outputTokens":10,"reasoningTokens":0,"totalTokens":110,
         "estimatedCostUSD":0.000456,"unpricedEvents":0,"eventCount":1}}
@@ -91,6 +92,7 @@ private final class HistoryCanonicalProtocol: URLProtocol, @unchecked Sendable {
     #expect(store.snapshot?.version == 2)
     #expect(store.snapshot?.completedFiles == 8)
     #expect(store.snapshot?.totalFiles == 20)
+    #expect(store.snapshot?.indexingFraction == 0.25)
     #expect(store.snapshot?.unassigned.totals.totalTokens == 110)
 }
 

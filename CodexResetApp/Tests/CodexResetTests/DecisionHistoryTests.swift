@@ -114,7 +114,7 @@ import Testing
         let height = ceil(measurement.sizeThatFits(in: CGSize(
             width: MenuContentSizing.documentWidth(viewportWidth: 480), height: .greatestFiniteMagnitude)).height)
         #expect(height > 350)
-        #expect(height < 620)
+        #expect(height < 760)
         let hosting = MenuContentSizing.scrollHostingView(root: root, width: 480, maximumHeight: 800)
         #expect(hosting.frame.height == height)
     }

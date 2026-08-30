@@ -8,32 +8,32 @@ struct DecisionExplanationView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(self.language.text("当前建议的依据", "Why this plan"))
-                .font(.headline)
+                .font(PlannerTypography.title)
             ForEach(self.context.accounts) { account in
                 VStack(alignment: .leading, spacing: 4) {
                     Label(account.label, systemImage: account.active ? "person.crop.circle.fill" : "person.crop.circle")
-                        .font(.caption.weight(.semibold))
-                    Text(self.usageContext(account)).font(.caption)
-                    Text(account.explanation(self.language)).font(.caption)
+                        .font(PlannerTypography.heading)
+                    Text(self.usageContext(account)).font(PlannerTypography.body)
+                    Text(account.explanation(self.language)).font(PlannerTypography.body)
                 }
             }
             Divider()
-            Text(self.workText).font(.caption.weight(.medium))
-            Text(HistoryPresentation.credit(self.context.actions, language: self.language)).font(.caption)
+            Text(self.workText).font(PlannerTypography.body.weight(.medium))
+            Text(HistoryPresentation.credit(self.context.actions, language: self.language)).font(PlannerTypography.body)
             if self.context.actions.account != "stay" {
                 Label(self.language.text("建议切换账户继续；不会自动切换。", "Consider continuing on the recommended account; no automatic switch."),
-                      systemImage: "arrow.left.arrow.right").font(.caption)
+                      systemImage: "arrow.left.arrow.right").font(PlannerTypography.body)
             }
             if let record = self.history?.latestPublicChange {
                 Divider()
                 DecisionEvidenceDetails(record: record, eventID: nil, showEvidence: false)
             } else {
                 Text(self.language.text("从首次观察开始记录消息影响；没有记录的过去不会补画。", "Message effects are recorded from the first observation; missing past decisions are not reconstructed."))
-                    .font(.caption2).foregroundStyle(.secondary)
+                    .font(PlannerTypography.detail).foregroundStyle(.secondary)
             }
             if self.history?.lastError != nil {
                 Label(self.language.text("最近一次判断未能写入历史，当前计划仍可用。", "The latest decision could not be recorded; the current plan remains available."),
-                      systemImage: "exclamationmark.triangle").font(.caption2)
+                      systemImage: "exclamationmark.triangle").font(PlannerTypography.detail)
             }
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -73,35 +73,35 @@ struct DecisionEvidenceDetails: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(self.language.text("系统如何处理", "How it was handled")).font(.caption.weight(.semibold))
+            Text(self.language.text("系统如何处理", "How it was handled")).font(PlannerTypography.heading)
             Text(self.language.text("本机观察 ", "Observed locally ") + HistoryPresentation.time(self.record.at, language: self.language))
-                .font(.caption2).foregroundStyle(.secondary)
+                .font(PlannerTypography.detail).foregroundStyle(.secondary)
             if self.record.source.status != "fresh" {
                 Label(self.language.text("来源未能提供新鲜数据；没有把它当作零风险。", "Fresh source data was unavailable; this was not treated as zero risk."),
-                      systemImage: "wifi.exclamationmark").font(.caption2)
+                      systemImage: "wifi.exclamationmark").font(PlannerTypography.detail)
             }
             if let impact = self.record.impact {
                 Text(impact.changed
                     ? self.language.text("按同一时刻、同一份账户用量比较，这次收到的消息改变了计划。", "At the same time and with the same account usage, this update changed the plan.")
                     : self.language.text("已收到并核对，这次消息没有进一步改变计划。", "Received and checked; this update did not change the plan further."))
-                    .font(.caption)
+                    .font(PlannerTypography.body)
             }
             if self.showEvidence {
                 ForEach(self.record.evidence.filter { self.eventID == nil || $0.id == self.eventID }.prefix(3)) { evidence in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(evidence.synopsis(self.language)).font(.caption)
-                        Text(self.disposition(evidence.disposition)).font(.caption2.weight(.medium))
+                        Text(evidence.synopsis(self.language)).font(PlannerTypography.body)
+                        Text(self.disposition(evidence.disposition)).font(PlannerTypography.detail.weight(.medium))
                         Text(self.language.text("发布 ", "Published ") + HistoryPresentation.time(evidence.publishedAt, language: self.language))
-                            .font(.caption2).foregroundStyle(.secondary)
+                            .font(PlannerTypography.detail).foregroundStyle(.secondary)
                         Text(self.language.text("首次收到 ", "First received ") + HistoryPresentation.time(evidence.firstReceivedAt, language: self.language))
-                            .font(.caption2).foregroundStyle(.secondary)
+                            .font(PlannerTypography.detail).foregroundStyle(.secondary)
                     }
                 }
             }
             ForEach(self.record.accounts) { account in
                 VStack(alignment: .leading, spacing: 3) {
                     Text(account.label + " · " + account.explanation(self.language))
-                        .font(.caption2).foregroundStyle(.secondary)
+                        .font(PlannerTypography.detail).foregroundStyle(.secondary)
                     if self.showEvidence,
                        let before = self.record.impact?.before.first(where: { $0.id == account.id }),
                        let after = self.record.impact?.after.first(where: { $0.id == account.id }) {
@@ -110,9 +110,9 @@ struct DecisionEvidenceDetails: View {
                         Text(self.language.text("消息后：", "After: ") + HistoryPresentation.percent(after.targetPercent)
                              + " · " + HistoryPresentation.time(after.targetAt, language: self.language))
                     }
-                }.font(.caption2.monospacedDigit())
+                }.font(PlannerTypography.detail.monospacedDigit())
             }
-            Text(HistoryPresentation.credit(self.record.actions, language: self.language)).font(.caption2)
+            Text(HistoryPresentation.credit(self.record.actions, language: self.language)).font(PlannerTypography.detail)
         }
         .fixedSize(horizontal: false, vertical: true)
         .padding(9)

@@ -46,15 +46,15 @@ struct CalculationHistoryView: View {
             default: self.rawData
             }
         }
-        .font(.system(size: 13))
+        .font(PlannerTypography.body)
         .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder private var results: some View {
         if let record = self.record, let account = self.selectedAccount {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text(self.language.text("重置概率", "Reset probability")).fontWeight(.semibold)
+                    Text(self.language.text("重置概率", "Reset probability")).font(PlannerTypography.heading)
                     Spacer(minLength: 4)
                     self.probabilityMetric("24h", value: record.source.p24, dashed: false)
                     self.probabilityMetric("48h", value: record.source.p48, dashed: true)
@@ -63,18 +63,18 @@ struct CalculationHistoryView: View {
                                     selectedID: self.$selectedID, showsTimeAxis: false)
                 Divider()
                 HStack(alignment: .firstTextBaseline) {
-                    Text(self.language.text("账户用量目标", "Account usage target")).fontWeight(.semibold)
+                    Text(self.language.text("账户用量目标", "Account usage target")).font(PlannerTypography.heading)
                     Spacer()
                     Text(HistoryPresentation.percent(account.targetPercent))
-                        .font(.system(size: 20, weight: .semibold, design: .rounded))
+                        .font(PlannerTypography.metric)
                         .monospacedDigit().foregroundStyle(.red)
                 }
                 RecordedHistoryPlot(records: self.records, accountID: account.id,
                                     selectedID: self.$selectedID, showsTimeAxis: true)
+                Text(self.language.text("横轴：保存判断的时间 · ", "Time of saved decision · ") + self.language.timeZoneLabel)
+                    .font(PlannerTypography.detail).foregroundStyle(.secondary)
             }
-            .padding(12)
-            .background(.background, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.08)))
+            .padding(.vertical, 4)
 
             HStack(alignment: .top, spacing: 18) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -90,15 +90,15 @@ struct CalculationHistoryView: View {
                         Text(self.language.text("尚无可靠预测", "Not yet reliable"))
                     }
                 }
-            }.font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+            }.font(PlannerTypography.detail).fixedSize(horizontal: false, vertical: true)
 
             if record.source.status != "fresh" {
                 Label(self.language.text("该次概率数据不可用；图中留空，不画成零。", "Probability data was unavailable; the chart leaves a gap, not zero."),
-                      systemImage: "wifi.exclamationmark").font(.system(size: 12))
+                      systemImage: "wifi.exclamationmark").font(PlannerTypography.detail)
             }
             if !account.fresh {
                 Label(self.language.text("该账户当时没有新鲜的用量读数。", "This account had no fresh usage reading at that time."),
-                      systemImage: "clock.badge.exclamationmark").font(.system(size: 12))
+                      systemImage: "clock.badge.exclamationmark").font(PlannerTypography.detail)
             }
             if let impact = record.impact {
                 self.comparison(impact, accountID: account.id)
@@ -109,7 +109,7 @@ struct CalculationHistoryView: View {
         }
         if self.history?.lastError != nil {
             Label(self.language.text("最近一次判断未能保存，当前计划仍可用。", "The latest decision could not be saved; the current plan remains available."),
-                  systemImage: "exclamationmark.triangle").font(.system(size: 12))
+                  systemImage: "exclamationmark.triangle").font(PlannerTypography.detail)
         }
         self.currentPlanDetails
     }
@@ -117,12 +117,12 @@ struct CalculationHistoryView: View {
     private func probabilityMetric(_ title: String, value: Double?, dashed: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             VStack(spacing: 2) {
-                Text(title).font(.system(size: 11))
+                Text(title).font(PlannerTypography.detail)
                 LineLegend().stroke(.cyan, style: StrokeStyle(lineWidth: 2, dash: dashed ? [3, 2] : []))
                     .frame(width: 22, height: 2)
             }.accessibilityHidden(true)
             Text(HistoryPresentation.percent(self.record?.source.status == "fresh" ? value : nil))
-                .font(.system(size: 17, weight: .semibold, design: .rounded)).monospacedDigit()
+                .font(PlannerTypography.metric).monospacedDigit()
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title + " " + HistoryPresentation.percent(self.record?.source.status == "fresh" ? value : nil))
@@ -135,21 +135,21 @@ struct CalculationHistoryView: View {
                 Image(systemName: "chevron.left")
             }.disabled(index == 0).accessibilityLabel(self.language.text("上一条判断", "Previous decision"))
             VStack(alignment: .leading, spacing: 2) {
-                Text(self.language.text("保存的判断", "Saved decision")).font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(self.language.text("保存的判断", "Saved decision")).font(PlannerTypography.detail).foregroundStyle(.secondary)
                 Text(HistoryPresentation.time(record.at, language: self.language)).monospacedDigit()
             }
             Spacer(minLength: 2)
-            Text("\(index + 1) / \(self.records.count)").font(.system(size: 12)).monospacedDigit().foregroundStyle(.secondary)
+            Text("\(index + 1) / \(self.records.count)").font(PlannerTypography.detail).monospacedDigit().foregroundStyle(.secondary)
             Button { self.selectedID = self.records[min(self.records.count - 1, index + 1)].id } label: {
                 Image(systemName: "chevron.right")
             }.disabled(index == self.records.count - 1).accessibilityLabel(self.language.text("下一条判断", "Next decision"))
-        }.buttonStyle(.bordered).controlSize(.small)
+        }.buttonStyle(.bordered).controlSize(.regular)
     }
 
     @ViewBuilder private var method: some View {
         if let account = self.selectedAccount {
             VStack(alignment: .leading, spacing: 10) {
-                Text(self.language.text("用量目标怎样算", "How the usage target is calculated")).font(.headline)
+                Text(self.language.text("用量目标怎样算", "How the usage target is calculated")).font(PlannerTypography.heading)
                 if let values = account.calculation {
                     Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
                         self.formulaRow(self.language.text("此刻目标", "Current trajectory"), value: values["targetNowUsed"])
@@ -169,13 +169,13 @@ struct CalculationHistoryView: View {
                         .foregroundStyle(.secondary)
                 }
                 Text(self.language.text("截止 ", "Deadline ") + HistoryPresentation.time(account.targetAt, language: self.language))
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .font(PlannerTypography.detail).foregroundStyle(.secondary)
                 if let weight = account.signalWeight {
                     Text(self.language.text("另列信号权重：", "Separate signal weight: ") + String(format: "%.0f/100", weight)
                          + self.language.text("。这是规划依据，不是重置概率。", ". This is a planning input, not a reset probability."))
-                        .font(.system(size: 12))
+                        .font(PlannerTypography.detail)
                 }
-            }.padding(12).background(.background, in: RoundedRectangle(cornerRadius: 10))
+            }.padding(12).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
         }
         DisclosureGroup(self.language.text("计算规则与边界", "Calculation rules and limits")) {
             VStack(alignment: .leading, spacing: 10) {
@@ -221,7 +221,7 @@ struct CalculationHistoryView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(self.language.text("本次消息的影响", "Effect of this update")).fontWeight(.medium)
                     Text(HistoryPresentation.impactSummary(before: before, after: after, language: self.language))
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                        .font(PlannerTypography.detail).foregroundStyle(.secondary)
                 }
             }
         }
@@ -230,7 +230,7 @@ struct CalculationHistoryView: View {
     @ViewBuilder private var rawData: some View {
         if let record = self.record {
             VStack(alignment: .leading, spacing: 9) {
-                Text(self.language.text("所选记录与来源", "Selected record and source")).font(.headline)
+                Text(self.language.text("所选记录与来源", "Selected record and source")).font(PlannerTypography.heading)
                 self.sourceRow(self.language.text("来源", "Source"), value: record.source.host)
                 self.sourceRow(self.language.text("模型", "Model"), value: record.source.modelVersion ?? self.language.text("未提供", "Not provided"))
                 self.sourceRow(self.language.text("来源更新时间", "Source updated"), value: HistoryPresentation.time(record.sourceUpdatedAt, language: self.language))
@@ -244,7 +244,7 @@ struct CalculationHistoryView: View {
                                                 "Showing \(history.records.count) retained records; \(history.discardedCount) older records are outside retention."))
                     }
                 }
-            }.padding(12).background(.background, in: RoundedRectangle(cornerRadius: 10))
+            }.padding(12).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
             if let json = self.json(record) {
                 DisclosureGroup(self.language.text("当时保存的完整 JSON", "Complete saved JSON")) {
                     Text(self.language.text("这是当时保存的判断，不是用今天的算法补算。", "This decision was saved at that time, not reconstructed with today's algorithm."))
@@ -297,7 +297,7 @@ struct CalculationHistoryView: View {
                     Text(row.label).fontWeight(.semibold)
                     Text(row.value)
                     if let secondary = row.secondaryValue {
-                        Text(secondary).font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text(secondary).font(PlannerTypography.detail).foregroundStyle(.secondary)
                     }
                     if let link = row.link, let url = URL(string: link.url) {
                         Link(self.language == .english ? link.labelEnglish ?? link.label : link.label, destination: url)
