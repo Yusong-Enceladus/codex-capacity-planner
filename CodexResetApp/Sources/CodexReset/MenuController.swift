@@ -79,7 +79,7 @@ enum DetailMenuLayout {
 final class MenuController: NSObject, NSMenuDelegate {
     private static let cardWidth: CGFloat = 310
     private static let detailsWidth: CGFloat = 380
-    private static let mainlineDetailsWidth: CGFloat = 460
+    private static let mainlineDetailsWidth: CGFloat = 480
     private static let calculationDetailsWidth: CGFloat = 480
 
     private let store: SnapshotStore

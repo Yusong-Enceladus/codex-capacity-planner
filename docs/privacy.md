@@ -80,12 +80,18 @@ Runtime state is stored under the user's local configuration directory with
 restrictive permissions. Removing that directory deletes Codex Capacity Planner's own
 history and predictions; it does not delete source Codex records.
 
-The standalone app stores daily-history backing events in `usage-history.sqlite`
+The standalone app stores canonical daily-history aggregates in `usage-history.sqlite`
 inside its CodexReset Application Support directory, with private permissions.
 Retention includes at most 367 days (365 display days plus time-zone boundary
 slack). Neither a quota reset nor source-cache pruning deletes retained usage.
 The bundled collector uses its own `usage-collector` cache in the same support
 directory. An existing CodexBar cache is a read-only seed, never overwritten.
+Version 2 imports native reconciled reports rather than summing raw event rows.
+Its private intermediate export contains only local source identifiers, labels,
+token counts, prices and progress, never transcript bodies. The earlier derived
+tables remain recoverable but are not displayed. Public price-catalog requests
+contain no account information or usage records. UTC+8 and Pacific caches are
+isolated so switching display language cannot invalidate the other calendar.
 Deleting this database and its SQLite sidecars clears the planner's imported
 usage history; original Codex logs and the collector's cache remain separate.
 

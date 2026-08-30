@@ -23,8 +23,7 @@ for source in \
   codex-reset-behavior.js \
   codex-reset-short-load.js \
   codex-reset-workload-eval.js \
-  codex-reset-usage-history.js \
-  codex-reset-usage-pricing.js
+  codex-reset-usage-history.js
 do
   cp "$project_root/$source" "$bundle/Contents/Resources/$source"
 done

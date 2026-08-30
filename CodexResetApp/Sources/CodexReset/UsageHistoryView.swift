@@ -59,10 +59,13 @@ struct UsageTargetsView: View {
             self.sourceNote
         }
         .font(.system(size: 13))
-        .task { await self.store.refresh() }
+        .task { await self.store.refreshWhileVisible() }
     }
 
     private var emptyAccountText: String {
+        if self.store.snapshot?.collectorStatus == "correcting" {
+            return self.language.text("正在按 CodexBar 口径校正历史记录…", "Reconciling history with CodexBar…")
+        }
         if self.store.isLoading && self.store.snapshot == nil {
             return self.language.text("正在读取本机历史记录…", "Reading local history…")
         }
@@ -101,11 +104,10 @@ struct UsageTargetsView: View {
                 }
             }
             HStack {
-                Picker(self.language.text("统计单位", "Metric"), selection: self.$store.metric) {
+                PlannerSegmentedPicker(title: self.language.text("统计单位", "Metric"), selection: self.$store.metric) {
                     Text(self.language.text("API 等价估算", "API equivalent")).tag(UsageHistoryMetric.cost)
                     Text(self.language.text("Token", "Tokens")).tag(UsageHistoryMetric.tokens)
-                }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 260)
-                    .tint(Color(red: 0.55, green: 0.39, blue: 0.96))
+                }.frame(maxWidth: 260)
                 Spacer(minLength: 8)
                 Text(self.language.text("按 UTC+8 分日", "Days in Pacific Time"))
                     .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -124,13 +126,18 @@ struct UsageTargetsView: View {
     private var sourceNote: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(self.language.text(
-                "仅统计本机日志。金额按内置 API 价格估算，不是账单，也不是额度百分比。",
-                "Local logs only. Amounts use bundled API price estimates, not a bill or a quota percentage."))
+                "仅统计本机日志，沿用 CodexBar 的去重与计价规则。金额是 API 等价估算，不是账单或额度百分比。",
+                "Local logs, using CodexBar’s deduplication and pricing. Amounts are API-equivalent estimates, not a bill or quota percentage."))
             if let raw = self.store.snapshot?.updatedAt, let date = AlternatingDisplay.date(from: raw) {
                 Text(self.language.text("最近采样：", "Last sampled: ") + self.sampleTime(date))
             }
             if let snapshot = self.store.snapshot, !snapshot.sourceComplete {
-                Text(self.language.text("旧记录仍在补齐；图中的空白日期不代表零用量。", "History is still being indexed; gaps do not mean zero usage."))
+                if let completed = snapshot.completedFiles, let total = snapshot.totalFiles, total > 0 {
+                    Text(self.language.text("已整理 \(completed) / \(total) 个日志文件；仍在补齐历史，空白不代表零用量。",
+                                            "Indexed \(completed) of \(total) log files; history is still loading. Gaps do not mean zero usage."))
+                } else {
+                    Text(self.language.text("旧记录仍在补齐；图中的空白日期不代表零用量。", "History is still being indexed; gaps do not mean zero usage."))
+                }
             }
             if let snapshot = self.store.snapshot, snapshot.skippedEvents > 0 {
                 Text(self.language.text("部分旧记录没有逐笔时间，未混入按日统计。", "Some older records lack event timestamps and cannot be included in daily totals."))
@@ -313,11 +320,11 @@ struct DailyUsageHistoryView: View {
 
     private var breakdowns: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Picker(self.language.text("明细类型", "Breakdown"), selection: self.$detailKind) {
+            PlannerSegmentedPicker(title: self.language.text("明细类型", "Breakdown"), selection: self.$detailKind) {
                 Text(self.language.text("当天模型", "Day’s models")).tag("models")
                 Text(self.language.text("工作区", "Projects")).tag("projects")
                 Text(self.language.text("任务", "Tasks")).tag("sessions")
-            }.pickerStyle(.segmented).labelsHidden()
+            }
             if self.detailKind != "models" {
                 Text(self.language.text("所选 \(self.account.days.count) 天的合计", "Totals for the selected \(self.account.days.count) days"))
                     .font(.system(size: 12)).foregroundStyle(.secondary)
@@ -328,6 +335,9 @@ struct DailyUsageHistoryView: View {
                         Text(row.model ?? (row.label?.isEmpty == false ? row.label! : self.language.text("未知工作区", "Unknown project")))
                             .fixedSize(horizontal: false, vertical: true)
                         if row.mode == "fast" { Text("Fast").foregroundStyle(.secondary) }
+                        if row.mode == "unknown" {
+                            Text(self.language.text("模式未知", "Mode unknown")).foregroundStyle(.secondary)
+                        }
                         Spacer(minLength: 6)
                         Text(self.value(row.totals)).monospacedDigit().fixedSize()
                     }.font(.system(size: 13))

@@ -55,7 +55,7 @@ enum UsageHistoryFixtures {
             coverage: "unavailable", recordedDays: 0, totals: UsageHistoryTotals())
         let unassigned = ProcessInfo.processInfo.environment["CODEX_RESET_DEMO_USAGE"] == "unassigned"
             ? account("unassigned", scale: 0.35) : emptyUnassigned
-        return UsageHistorySnapshot(version: 1, days: days, timeZone: language.timeZone.identifier,
+        return UsageHistorySnapshot(version: 2, days: days, timeZone: language.timeZone.identifier,
             startDay: formatter.string(from: dates.first!), endDay: formatter.string(from: dates.last!),
             updatedAt: ISO8601DateFormatter().string(from: now), collectorStatus: "ready", sourceComplete: true,
             skippedEvents: 0, pricingSource: "codexbar-bundled",

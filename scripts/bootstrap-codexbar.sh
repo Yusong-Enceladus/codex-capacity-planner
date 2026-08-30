@@ -8,11 +8,16 @@ upstream_tag="v0.49.3"
 upstream_commit="fc57a317cee4a8f84962c62c45e4502085f6fc79"
 patch_file="$project_root/patches/codexbar/0001-Add-Codex-Reset-provider-presentation.patch"
 history_patch="$project_root/patches/codexbar/0002-Isolate-planner-history-cache.patch"
+report_patch="$project_root/patches/codexbar/0003-Reconcile-planner-history-with-native-reports.patch"
 
 apply_history_patch() {
-  if git -C "$1" apply --reverse --check "$history_patch" 2>/dev/null; then return; fi
-  git -C "$1" apply --check "$history_patch"
-  git -C "$1" apply "$history_patch"
+  if git -C "$1" apply --reverse --check "$report_patch" 2>/dev/null; then return; fi
+  if ! git -C "$1" apply --reverse --check "$history_patch" 2>/dev/null; then
+    git -C "$1" apply --check "$history_patch"
+    git -C "$1" apply "$history_patch"
+  fi
+  git -C "$1" apply --check "$report_patch"
+  git -C "$1" apply "$report_patch"
 }
 
 if [ -d "$destination/.git" ]; then

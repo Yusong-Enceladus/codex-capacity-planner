@@ -5,6 +5,23 @@ versioning once the first public release is tagged.
 
 ## Unreleased
 
+## 0.1.11 - 2026-08-30
+
+- Correct historical usage using CodexBar's canonical reports. Copied fork
+  prefixes no longer inflate token totals; API equivalents use its read-time
+  price catalog, Fast/long-context rules and unknown-price safeguards, not a
+  separate JavaScript price table. Optional Pi/OMP usage follows the same report.
+- Replace v0.1.10 derived totals, not just new samples. Preserve accounts,
+  mainline preferences and reset/decision history. The old derived ledger is
+  retained for recovery but never shown as a fallback while correcting history.
+- Continue bounded background indexing until complete, with visible progress,
+  independent UTC+8/Pacific caches and a read-only online backup of an available
+  CodexBar cache. The standalone app still needs no CodexBar installation.
+- Use the same native segmented controls for Usage & Targets and Calculation
+  & Data, including the account selector. Enlarge mainline text and actions to
+  14/13/12-point typography while retaining one-line buttons, stable inline save
+  feedback and consecutive actions without closing the menu.
+
 ## 0.1.10 - 2026-08-30
 
 - Add daily history directly below each account's existing Usage & Targets

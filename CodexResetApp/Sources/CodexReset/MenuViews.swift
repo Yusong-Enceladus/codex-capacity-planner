@@ -1439,7 +1439,7 @@ struct ResetDetailsView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 5) {
                                 Text(row.label)
-                                    .font(.caption.weight(.semibold))
+                                    .font(self.onAction == nil ? .caption.weight(.semibold) : .system(size: 14, weight: .semibold))
                                     .foregroundStyle(.secondary)
                                 if row.link != nil {
                                     Image(systemName: "arrow.up.right.square")
@@ -1452,14 +1452,15 @@ struct ResetDetailsView: View {
                                 alternate: row.alternateValue,
                                 relativeTimeAt: row.relativeTimeAt,
                                 relativeTimePrefix: row.relativeTimePrefix)
-                                .font(.caption).fixedSize(horizontal: false, vertical: true)
+                                .font(self.onAction == nil ? .caption : .system(size: 13))
+                                .fixedSize(horizontal: false, vertical: true)
                             if let progress = row.progress {
                                 DetailDecisionProgress(progress: progress)
                                     .padding(.top, 3)
                             }
                             if let secondary = row.secondaryValue {
                                 Text(secondary)
-                                    .font(.caption2)
+                                    .font(self.onAction == nil ? .caption2 : .system(size: 12))
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }

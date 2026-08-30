@@ -7,234 +7,248 @@ const os = require("node:os");
 const path = require("node:path");
 const http = require("node:http");
 const { DatabaseSync } = require("node:sqlite");
-const { createUsageHistoryStore, createUsageHistoryWorker, historyRange, dayKey, ownerResolver, identityRefs } = require("./codex-reset-usage-history.js");
-const { estimateCost, normalizeModel } = require("./codex-reset-usage-pricing.js");
+const { createUsageHistoryStore, createUsageHistoryWorker, prepareCollectorRoot,
+  historyRange, dayKey, ownerResolver, identityRefs } = require("./codex-reset-usage-history.js");
 const { createServer } = require("./codex-reset-monitor.js");
 
 const nowMs = Date.parse("2026-08-30T18:00:00Z");
+const zones = ["Asia/Shanghai", "America/Los_Angeles"];
 const accounts = [
   { id: "account-a", historyAccountKey: "codex:v1:provider-account:tenant-a" },
   { id: "account-b", historyAccountKey: "codex:v1:provider-account:tenant-b" },
 ];
-const event = (index, at, account, extra = {}) => ({
-  eventIndex: index, timestampUnixMs: Date.parse(at), model: "gpt-5.6-sol", pricingMode: "standard",
-  input: 100, cached: 40, output: 10, reasoning: 5, ...(account ? { account_id: account } : {}), ...extra,
+const row = (extra = {}) => ({ date: "2026-08-29", model: "gpt-5.6-sol", mode: "standard",
+  inputTokens: 100, cachedTokens: 40, outputTokens: 10, totalTokens: 110,
+  estimatedCostUSD: 0.000456, eventCount: 1, ...extra });
+const source = (id, rows, account = "tenant-a", extra = {}) => ({
+  id, sessionID: id, complete: true, rows, account_id: account, ...extra,
+});
+const snapshot = (sources, extra = {}) => ({
+  version: 2, timeZone: zones[0], startDay: "2026-01-01", endDay: "2026-08-31",
+  scannedAt: new Date(nowMs).toISOString(), complete: true, completedFiles: 20, totalFiles: 20,
+  processedBytes: 1000, totalBytes: 1000, sources, ...extra,
 });
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-usage-history-test-"));
-  const costDatabase = path.join(directory, "source.sqlite");
   const historyDatabase = path.join(directory, "history.sqlite");
-  const source = new DatabaseSync(costDatabase);
-  source.exec(`CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, session_id TEXT,
-    updated_at_ms INTEGER, parsed_bytes INTEGER, size INTEGER, coverage_since_day TEXT);
-    CREATE TABLE usage_rows(file_id INTEGER, row_index INTEGER, payload BLOB);
-    CREATE TABLE scan_metadata(id INTEGER PRIMARY KEY,payload BLOB);`);
-  const metadata = (extra = {}) => source.prepare("INSERT OR REPLACE INTO scan_metadata VALUES (1,?)").run(JSON.stringify({
-    timeZoneIdentifier: "UTC", catchUpPending: false, scanSinceDay: "2026-01-01", scanUntilDay: "2026-08-30",
-    lastScanUnixMs: nowMs, completedFiles: 20, totalFiles: 20, ...extra,
-  }));
-  metadata();
-  const file = (id, rows, meta = {}, session = `session-${id}`) => {
-    const filePath = path.join(directory, `rollout-${id}.jsonl`);
-    fs.writeFileSync(filePath, JSON.stringify({ type: "session_meta", payload: {
-      id: session, cwd: path.join(directory, "ExampleProject"), base_instructions: "INSTRUCTION_NOT_EXPORTED", ...meta,
-    } }) + "\n");
-    source.prepare("INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?,?)")
-      .run(id, filePath, session, nowMs + id, 100 + rows.length, 100 + rows.length, "2026-01-01");
-    replaceRows(id, rows);
-  };
-  function replaceRows(id, rows) {
-    source.prepare("DELETE FROM usage_rows WHERE file_id=?").run(id);
-    rows.forEach((row, index) => source.prepare("INSERT INTO usage_rows VALUES (?,?,?)").run(id, index, Buffer.from(JSON.stringify(row))));
-    source.prepare("UPDATE files SET updated_at_ms=updated_at_ms+1 WHERE id=?").run(id);
-  }
-  const store = createUsageHistoryStore({ costDatabase, historyDatabase });
-  t.after(() => { store.close(); source.close(); fs.rmSync(directory, { recursive: true, force: true }); });
-  return { directory, source, store, file, replaceRows, metadata, costDatabase, historyDatabase,
-    read: (extra = {}) => store.query({ days: 7, timeZone: "Asia/Shanghai", accounts, nowMs, ...extra }) };
+  const store = createUsageHistoryStore({ historyDatabase });
+  t.after(() => { store.close(); fs.rmSync(directory, { recursive: true, force: true }); });
+  return { directory, historyDatabase, store,
+    ingest: (sources, extra) => store.ingest(snapshot(sources, extra), nowMs),
+    read: (extra = {}) => store.query({ days: 7, timeZone: zones[0], accounts, nowMs, ...extra }) };
 }
 
-test("calendar ranges include today, cross years, and use real UTC+8/PT day boundaries", () => {
-  assert.equal(historyRange(1, "Asia/Shanghai", nowMs).start, "2026-08-31");
-  const full = historyRange(365, "America/Los_Angeles", nowMs);
+test("calendar ranges include today and use real UTC+8 and Pacific DST boundaries", () => {
+  assert.equal(historyRange(1, zones[0], nowMs).start, "2026-08-31");
+  const full = historyRange(365, zones[1], nowMs);
   assert.equal(full.dates.length, 365);
   assert.equal(new Set(full.dates).size, 365);
   assert.equal(full.end, "2026-08-30");
-  assert.equal(dayKey(Date.parse("2026-08-30T06:59:00Z"), "Asia/Shanghai"), "2026-08-30");
-  assert.equal(dayKey(Date.parse("2026-08-30T06:59:00Z"), "America/Los_Angeles"), "2026-08-29");
-  assert.equal(dayKey(Date.parse("2026-11-01T08:30:00Z"), "America/Los_Angeles"), "2026-11-01");
-  assert.equal(dayKey(Date.parse("2026-11-01T09:30:00Z"), "America/Los_Angeles"), "2026-11-01");
-  assert.equal(dayKey(Date.parse("2026-01-01T07:59:00Z"), "America/Los_Angeles"), "2025-12-31");
-  for (const days of [0, -1, 366, 7.5, NaN]) assert.throws(() => historyRange(days, "Asia/Shanghai"));
+  assert.equal(dayKey(Date.parse("2026-08-30T06:59:00Z"), zones[0]), "2026-08-30");
+  assert.equal(dayKey(Date.parse("2026-08-30T06:59:00Z"), zones[1]), "2026-08-29");
+  for (const at of ["2026-11-01T08:30:00Z", "2026-11-01T09:30:00Z"]) {
+    assert.equal(dayKey(Date.parse(at), zones[1]), "2026-11-01");
+  }
+  assert.equal(dayKey(Date.parse("2026-01-01T07:59:00Z"), zones[1]), "2025-12-31");
+  for (const days of [0, -1, 366, 7.5, NaN]) assert.throws(() => historyRange(days, zones[0]));
   assert.throws(() => historyRange(30, "Etc/Unknown"));
 });
 
-test("pinned CodexBar pricing preserves cached subsets, Fast, long context, free preview and unknown prices", () => {
-  const base = { model: "gpt-5.6-sol", input: 100, cached: 40, output: 10 };
-  assert.ok(Math.abs(estimateCost(base) - 0.00062) < 1e-12);
-  assert.equal(estimateCost({ ...base, pricingMode: "priority" }), estimateCost(base) * 2);
-  const long = { ...base, input: 300000, output: 0, cached: 0 };
-  assert.equal(estimateCost(long), 3);
-  assert.equal(estimateCost({ ...long, pricingMode: "priority" }), 3);
-  assert.equal(estimateCost({ ...base, input: 10, cached: 999, output: 0 }), 0.000005);
-  assert.equal(estimateCost({ ...base, model: "not-priced" }), null);
-  assert.equal(estimateCost({ ...base, model: "gpt-5.3-codex-spark" }), 0);
-  assert.equal(estimateCost({ ...base, knownCostNanos: 1230000000 }), 1.23);
-  assert.equal(normalizeModel("openai/gpt-5.6"), "gpt-5.6-sol");
-  assert.equal(normalizeModel("gpt-5.5-2026-08-01"), "gpt-5.5");
-});
-
-test("explicit ownership is unique and never inferred from current account or mismatched identities", () => {
+test("ownership is unique and never inferred from the current account or email-only guesses", () => {
   const resolve = ownerResolver(accounts);
   assert.equal(resolve(identityRefs("tenant-a")), "account-a");
-  assert.equal(resolve(identityRefs("codex:workspace:tenant-b:email:demo@example.invalid")), "account-b");
-  assert.equal(resolve([]), null);
+  assert.equal(resolve(identityRefs("tenant-unknown")), null);
   assert.equal(resolve([...identityRefs("tenant-a"), ...identityRefs("tenant-b")]), null);
-  assert.equal(ownerResolver([...accounts, { id: "duplicate", historyAccountKey: accounts[0].historyAccountKey }])(identityRefs("tenant-a")), null);
+  assert.equal(resolve(identityRefs("codex:workspace:tenant-a:email:other@example.test")), "account-a");
+  const ambiguous = ownerResolver([accounts[0], { ...accounts[0], id: "another-ui-id" }]);
+  assert.equal(ambiguous(identityRefs("tenant-a")), null);
 });
 
-test("end-to-end ledger import isolates two accounts and unassigned rows, with correct localized totals", (t) => {
+test("canonical totals and native prices pass through without raw-prefix sums or repricing", (t) => {
   const f = fixture(t);
-  f.file(1, [event(1, "2026-08-30T06:59:00Z", "tenant-a"), event(2, "2026-08-30T07:01:00Z", "tenant-b")]);
-  f.file(2, [event(1, "2026-08-29T09:00:00Z", null, { model: "unpriced-model" })]);
-  f.store.ingest(nowMs);
-  const zh = f.read();
-  const en = f.read({ timeZone: "America/Los_Angeles" });
-  assert.deepEqual(zh.accounts.map((account) => account.totalTokens), [110, 110]);
-  assert.equal(zh.unassigned.totalTokens, 110);
-  assert.equal(zh.unassigned.estimatedCostUSD, null);
-  assert.equal(zh.unassigned.unpricedEvents, 1);
-  assert.equal(zh.accounts[0].days.find((day) => day.date === "2026-08-30").totalTokens, 110);
-  assert.equal(en.accounts[0].days.find((day) => day.date === "2026-08-29").totalTokens, 110);
-  assert.equal(en.accounts[1].days.find((day) => day.date === "2026-08-30").totalTokens, 110);
-  assert.equal(zh.accounts[0].days.find((day) => day.date === "2026-08-28").known, false);
-  assert.equal(zh.unassigned.days.find((day) => day.date === "2026-08-28").known, true);
-  const serialized = JSON.stringify(zh);
-  for (const forbidden of [f.directory, "INSTRUCTION_NOT_EXPORTED", "tenant-a", "session-1", "owner_refs", "base_instructions"]) {
-    assert.equal(serialized.includes(forbidden), false, forbidden);
+  f.ingest([source("parent", [row()]), source("child", [row({ mode: "fast", estimatedCostUSD: 0.000912 })]),
+    source("unowned", [row({ model: "unknown-model", mode: "unknown", estimatedCostUSD: null })], null)]);
+  const value = f.read();
+  assert.equal(value.version, 2);
+  assert.equal(value.pricingSource, "codexbar-report");
+  assert.equal(value.accounts[0].totalTokens, 220);
+  assert.equal(value.accounts[0].cachedTokens, 80);
+  assert.ok(Math.abs(value.accounts[0].estimatedCostUSD - 0.001368) < 1e-12);
+  assert.equal(value.unassigned.totalTokens, 110);
+  assert.equal(value.unassigned.estimatedCostUSD, null);
+  assert.equal(value.unassigned.unpricedEvents, 1);
+  const changedLogin = f.read({ accounts: accounts.map((account) => ({ ...account, active: account.id === "account-b" })) });
+  assert.deepEqual(changedLogin.accounts.map((account) => account.totalTokens), [220, 0]);
+  assert.equal(f.read({ accounts: [{ ...accounts[0], id: "new-ui-id" }] }).accounts[0].totalTokens, 220);
+});
+
+test("each time-zone report owns its day boundaries instead of rebucketing aggregate dates", (t) => {
+  const f = fixture(t);
+  f.ingest([source("cross-midnight", [row({ date: "2026-08-30" })])]);
+  f.ingest([source("cross-midnight", [row()])], { timeZone: zones[1], endDay: "2026-08-30" });
+  for (const [timeZone, date] of [[zones[0], "2026-08-30"], [zones[1], "2026-08-29"]]) {
+    const value = f.read({ timeZone });
+    assert.equal(value.accounts[0].totalTokens, 110);
+    assert.deepEqual(value.accounts[0].days.filter((day) => day.eventCount).map((day) => day.date), [date]);
   }
-  assert.equal(zh.accounts[0].projects[0].label, "ExampleProject");
-  assert.equal(zh.accounts[0].sessions.length, 1);
-  assert.equal(zh.accounts[0].days.find((day) => day.eventCount).models[0].cachedTokens, 40);
 });
 
-test("session metadata can establish explicit ownership but instructions and current-login guesses cannot", (t) => {
+test("only bounded session metadata supplies ownership; private content stays out of the API", (t) => {
   const f = fixture(t);
-  f.file(1, [event(1, "2026-08-29T09:00:00Z")], { account_id: "tenant-a" });
-  f.file(2, [event(1, "2026-08-29T10:00:00Z")], { base_instructions: "account_id: tenant-b" });
-  f.store.ingest(nowMs);
-  const first = f.read();
-  assert.equal(first.accounts[0].totalTokens, 110);
-  assert.equal(first.accounts[1].totalTokens, 0);
-  assert.equal(first.unassigned.totalTokens, 110);
-  const changedLogin = f.read({ accounts: accounts.map((account) => ({ ...account, active: account.id === "account-b", usedPercent: 0 })) });
-  assert.deepEqual(changedLogin.accounts.map((account) => account.totalTokens), [110, 0]);
-  assert.equal(changedLogin.unassigned.totalTokens, 110);
-  const newAlias = f.read({ accounts: [{ id: "new-ui-id", historyAccountKey: accounts[0].historyAccountKey }] });
-  assert.equal(newAlias.accounts[0].totalTokens, 110);
-  assert.equal(newAlias.unassigned.totalTokens, 110);
+  const file = path.join(f.directory, "session.jsonl");
+  fs.writeFileSync(file, JSON.stringify({ type: "session_meta", payload: {
+    account_id: "tenant-b", cwd: "/private/example/project", base_instructions: "INSTRUCTIONS_NOT_EXPORTED",
+  } }) + '\n{"message":"TRANSCRIPT_NOT_EXPORTED"}\n');
+  f.ingest([source("metadata-session", [row()], null, { path: file })]);
+  const value = f.read();
+  assert.equal(value.accounts[1].totalTokens, 110);
+  assert.equal(value.accounts[1].projects[0].label, "project");
+  for (const secret of ["tenant-b", file, "/private/example", "INSTRUCTIONS_NOT_EXPORTED", "TRANSCRIPT_NOT_EXPORTED"]) {
+    assert.equal(JSON.stringify(value).includes(secret), false);
+  }
 });
 
-test("idempotent imports, rewritten slices and moved session copies do not duplicate consumption", (t) => {
+test("imports replace corrected slices, deduplicate moved sessions and keep unknown modes", (t) => {
   const f = fixture(t);
-  const rows = [event(1, "2026-08-29T00:00:00Z", "tenant-a"), event(2, "2026-08-29T12:00:00Z", "tenant-a")];
-  f.file(1, rows);
-  f.store.ingest(nowMs);
-  f.store.ingest(nowMs);
+  const original = source("session", [row(), row({ mode: "fast" })]);
+  f.ingest([original]);
+  f.ingest([original]);
   assert.equal(f.read().accounts[0].totalTokens, 220);
-  f.replaceRows(1, [rows[1]]);
-  f.store.ingest(nowMs);
-  assert.equal(f.read().accounts[0].totalTokens, 110);
-  f.file(2, [rows[1]], {}, "session-1");
-  f.store.ingest(nowMs);
+  f.ingest([source("session", [row({ mode: "unknown", estimatedCostUSD: null })]), { ...original, complete: false }]);
+  const value = f.read().accounts[0];
+  assert.equal(value.totalTokens, 110);
+  assert.equal(value.days.find((day) => day.date === "2026-08-29").models[0].mode, "unknown");
+  assert.equal(value.estimatedCostUSD, null);
+});
+
+test("a partial re-index cannot replace a complete retained tail", (t) => {
+  const f = fixture(t);
+  f.ingest([source("session", [row(), row({ date: "2026-08-28" })])]);
+  f.ingest([source("session", [row()], "tenant-a", { complete: false })], { complete: false, completedFiles: 1 });
+  assert.equal(f.read().accounts[0].totalTokens, 220);
+  assert.equal(f.read().sourceComplete, false);
+  assert.equal(f.read().completedFiles, 1);
+  f.ingest([source("session", [row()])]);
   assert.equal(f.read().accounts[0].totalTokens, 110);
 });
 
-test("retention survives a narrower upstream window, source eviction, reopen and quota reset", (t) => {
+test("session shards stay distinct while moved and atomically replaced logs retain one history", (t) => {
   const f = fixture(t);
-  const old = event(1, "2026-07-15T12:00:00Z", "tenant-a");
-  const recent = event(2, "2026-08-29T12:00:00Z", "tenant-a");
-  f.file(1, [old, recent]);
-  f.store.ingest(nowMs);
-  f.replaceRows(1, [recent]);
-  f.source.prepare("UPDATE files SET coverage_since_day='2026-08-29'").run();
-  f.metadata({ scanSinceDay: "2026-08-29" });
-  f.store.ingest(nowMs);
+  const firstPath = path.join(f.directory, "first.jsonl");
+  const movedPath = path.join(f.directory, "archive", "first.jsonl");
+  const first = source("file-inode-1", [row({ date: "2026-07-15" }), row()], "tenant-a", { path: firstPath, sessionID: "shared" });
+  const second = source("file-inode-2", [row()], "tenant-a", { sessionID: "shared" });
+  f.ingest([first, second]);
+  assert.equal(f.read({ days: 90 }).accounts[0].totalTokens, 330);
+  f.ingest([{ ...first, path: movedPath }, second]);
+  assert.equal(f.read({ days: 90 }).accounts[0].totalTokens, 330);
+  f.ingest([{ ...first, id: "file-inode-3", path: movedPath, rows: [row()] }, second], { startDay: "2026-08-29" });
+  assert.equal(f.read({ days: 90 }).accounts[0].totalTokens, 330);
+});
+
+test("invalid snapshots roll back atomically without losing confirmed data", (t) => {
+  const f = fixture(t);
+  f.ingest([source("session", [row()])]);
+  for (const invalid of [row({ totalTokens: -1 }), row({ date: "2027-01-01" }), row({ mode: "invented" })]) {
+    assert.throws(() => f.ingest([source("session", [invalid])]), /invalid_history_row/);
+    assert.equal(f.read().accounts[0].totalTokens, 110);
+  }
+  assert.throws(() => f.ingest([source("session", [row()], "tenant-a", { complete: "yes" })]));
+  assert.throws(() => f.store.ingest(snapshot([], { version: 1 })), /invalid_history_snapshot/);
+});
+
+test("v1 raw-ledger overcounts are never a fallback and remain recoverable during correction", (t) => {
+  const f = fixture(t);
+  const old = new DatabaseSync(f.historyDatabase);
+  old.exec("CREATE TABLE events (total INTEGER); INSERT INTO events VALUES (2753332990)");
+  old.close();
+  assert.equal(f.read().collectorStatus, "correcting");
+  assert.equal(f.read().accounts[0].coverage, "unavailable");
+  assert.equal(f.read().accounts[0].totalTokens, 0);
+  f.ingest([source("corrected-history", [row({ inputTokens: 904944683, cachedTokens: 0, totalTokens: 904944693 })])]);
+  assert.equal(f.read().accounts[0].totalTokens, 904944693);
+  const preserved = new DatabaseSync(f.historyDatabase, { readOnly: true });
+  assert.equal(preserved.prepare("SELECT total FROM events").get().total, 2753332990);
+  preserved.close();
+});
+
+test("retention survives narrower reports, source eviction, reopening and quota reset", (t) => {
+  const f = fixture(t);
+  f.ingest([source("session", [row({ date: "2026-07-15" }), row()])]);
+  f.ingest([source("session", [row()])], { startDay: "2026-08-29" });
   assert.equal(f.read({ days: 90 }).accounts[0].totalTokens, 220);
-  f.source.exec("DELETE FROM usage_rows; DELETE FROM files");
-  f.store.ingest(nowMs);
-  const reopened = createUsageHistoryStore({ costDatabase: f.costDatabase, historyDatabase: f.historyDatabase });
+  f.ingest([]);
+  const reopened = createUsageHistoryStore({ historyDatabase: f.historyDatabase });
   try {
-    const value = reopened.query({ days: 90, timeZone: "Asia/Shanghai", nowMs,
+    const value = reopened.query({ days: 90, timeZone: zones[0], nowMs,
       accounts: accounts.map((account) => ({ ...account, usedPercent: 0, resetGeneration: 2 })) });
     assert.equal(value.accounts[0].totalTokens, 220);
   } finally { reopened.close(); }
 });
 
-test("known zero, unknown coverage, unpriced records and missing timestamps remain distinct", (t) => {
+test("known zero, incomplete coverage, unassigned usage and unknown prices remain different", (t) => {
   const f = fixture(t);
-  f.file(1, [event(1, "2026-08-29T12:00:00Z", "tenant-a", { input: 0, cached: 0, output: 0 })]);
-  f.store.ingest(nowMs);
-  let result = f.read();
-  const zero = result.accounts[0].days.find((day) => day.date === "2026-08-28");
-  assert.equal(zero.known, true);
-  assert.equal(zero.estimatedCostUSD, 0);
-  f.metadata({ catchUpPending: true, completedFiles: 1 });
-  f.replaceRows(1, [{ day: "2026-08-29", input: 100, output: 10 }]);
-  f.store.ingest(nowMs);
-  result = f.read();
-  assert.equal(result.accounts[0].days.find((day) => day.date === "2026-08-28").known, false);
-  assert.equal(result.accounts[0].coverage, "unavailable");
-  assert.equal(result.skippedEvents, 1);
-  assert.equal(result.sourceComplete, false);
+  f.ingest([]);
+  assert.equal(f.read().accounts[0].days.find((day) => day.date === "2026-08-28").estimatedCostUSD, 0);
+  f.ingest([], { complete: false });
+  assert.equal(f.read().accounts[0].coverage, "unavailable");
+  f.ingest([source("unowned", [row({ estimatedCostUSD: null })], null)]);
+  const missing = f.read().accounts[0].days.find((day) => day.date === "2026-08-28");
+  assert.equal(missing.known, false);
+  assert.equal(missing.estimatedCostUSD, null);
+  f.ingest([source("owned", [row(), row({ model: "unpriced", estimatedCostUSD: null })])]);
+  assert.equal(f.read().accounts[0].totalTokens, 220);
+  assert.equal(f.read().accounts[0].estimatedCostUSD, row().estimatedCostUSD);
+  assert.equal(f.read().accounts[0].unpricedEvents, 1);
 });
 
-test("unknown model cost is a visible subtotal, not zero, and reasoning/cache tokens are not double counted", (t) => {
+test("source backup includes WAL data, isolates calendars and never modifies CodexBar", async (t) => {
   const f = fixture(t);
-  f.file(1, [event(1, "2026-08-29T12:00:00Z", "tenant-a"),
-    event(2, "2026-08-29T13:00:00Z", "tenant-a", { model: "unknown-model", cached: 400, reasoning: 1000 })]);
-  f.store.ingest(nowMs);
-  const account = f.read().accounts[0];
-  assert.equal(account.totalTokens, 220);
-  assert.equal(account.cachedTokens, 140);
-  assert.equal(account.reasoningTokens, 15);
-  assert.equal(account.unpricedEvents, 1);
-  assert.equal(account.estimatedCostUSD, estimateCost(event(1, "2026-08-29T12:00:00Z", "tenant-a")));
-});
-
-test("read-only seed and isolated partial backfill preserve history without altering the live cost stream", (t) => {
-  const f = fixture(t);
-  f.file(1, [event(1, "2026-08-29T09:00:00Z", "tenant-a"), event(2, "2026-08-29T12:00:00Z", "tenant-a")]);
-  const primary = path.join(f.directory, "isolated-source.sqlite");
-  const store = createUsageHistoryStore({ costDatabase: primary, seedDatabase: f.costDatabase,
-    historyDatabase: path.join(f.directory, "isolated-history.sqlite") });
+  const referenceRoot = path.join(f.directory, "codexbar");
+  fs.mkdirSync(path.join(referenceRoot, "cost-usage"), { recursive: true });
+  fs.mkdirSync(path.join(referenceRoot, "model-pricing"));
+  fs.writeFileSync(path.join(referenceRoot, "model-pricing", "models-dev-v1.json"), '{"publicPricing":true}');
+  const seedDatabase = path.join(referenceRoot, "cost-usage", "cost-usage.sqlite");
+  const seed = new DatabaseSync(seedDatabase);
+  seed.exec("PRAGMA journal_mode=WAL; CREATE TABLE scan_metadata(id INTEGER PRIMARY KEY,payload TEXT); CREATE TABLE marker(value INTEGER)");
+  seed.prepare("INSERT INTO scan_metadata VALUES (1,?)").run(JSON.stringify({ timeZoneIdentifier: zones[1] }));
+  seed.exec("INSERT INTO marker VALUES (42)");
+  const options = { cacheRoot: path.join(f.directory, "collector"), seedDatabase };
   try {
-    store.ingest(nowMs);
-    assert.equal(store.query({ days: 7, timeZone: "Asia/Shanghai", accounts, nowMs }).accounts[0].totalTokens, 220);
-    f.source.prepare("VACUUM INTO ?").run(primary);
-    const partial = new DatabaseSync(primary);
-    try {
-      partial.exec("DELETE FROM usage_rows WHERE row_index=1; UPDATE files SET parsed_bytes=50,updated_at_ms=updated_at_ms+1");
-      store.ingest(nowMs);
-      assert.equal(store.query({ days: 7, timeZone: "Asia/Shanghai", accounts, nowMs }).accounts[0].totalTokens, 220);
-      assert.equal(f.source.prepare("SELECT COUNT(*) AS n FROM usage_rows").get().n, 2);
-      partial.exec("UPDATE files SET size=50,updated_at_ms=updated_at_ms+1");
-      store.ingest(nowMs);
-      assert.equal(store.query({ days: 7, timeZone: "Asia/Shanghai", accounts, nowMs }).accounts[0].totalTokens, 110);
-      assert.equal(f.source.prepare("SELECT COUNT(*) AS n FROM usage_rows").get().n, 2);
-    } finally { partial.close(); }
-  } finally { store.close(); }
+    const pt = await prepareCollectorRoot(options, zones[1]);
+    const copy = new DatabaseSync(path.join(pt, "cost-usage", "cost-usage.sqlite"));
+    assert.equal(copy.prepare("SELECT value FROM marker").get().value, 42);
+    copy.exec("UPDATE marker SET value=7");
+    copy.close();
+    assert.equal(seed.prepare("SELECT value FROM marker").get().value, 42);
+    assert.equal(fs.existsSync(path.join(pt, "model-pricing", "models-dev-v1.json")), true);
+    const cn = await prepareCollectorRoot(options, zones[0]);
+    assert.notEqual(cn, pt);
+    assert.equal(fs.existsSync(path.join(cn, "cost-usage", "cost-usage.sqlite")), false);
+    assert.equal((fs.statSync(pt).mode & 0o777), 0o700);
+  } finally { seed.close(); }
 });
 
-test("background worker and read-only API serve history, validate ranges, and keep errors generic", async (t) => {
+test("an incompatible optional seed does not block a standalone collector", async (t) => {
   const f = fixture(t);
-  f.file(1, [event(1, "2026-08-29T12:00:00Z", "tenant-a")]);
-  const worker = createUsageHistoryWorker({ costDatabase: f.costDatabase, historyDatabase: f.historyDatabase, nowMs });
+  const seedDatabase = path.join(f.directory, "incompatible.sqlite");
+  fs.writeFileSync(seedDatabase, "not a database");
+  const root = await prepareCollectorRoot({ cacheRoot: path.join(f.directory, "collector"), seedDatabase }, zones[0]);
+  assert.equal(fs.existsSync(path.join(root, "cost-usage", "cost-usage.sqlite")), false);
+});
+
+test("background worker and read-only API serve canonical history with bounded ranges and generic errors", async (t) => {
+  const f = fixture(t);
+  const reportFiles = Object.fromEntries(zones.map((timeZone, index) => {
+    const file = path.join(f.directory, `report-${index}.json`);
+    fs.writeFileSync(file, JSON.stringify(snapshot([source("session", [row()])], { timeZone })));
+    return [timeZone, file];
+  }));
+  const worker = createUsageHistoryWorker({ historyDatabase: f.historyDatabase, reportFiles, nowMs });
   t.after(() => worker.close());
   await worker.refresh();
-  const service = { usageHistory: (days, timeZone) => worker.query({ days, timeZone, accounts, nowMs }) };
-  const server = createServer(service);
+  const server = createServer({ usageHistory: (days, timeZone) => worker.query({ days, timeZone, accounts, nowMs }) });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const request = (url) => new Promise((resolve, reject) => {
@@ -247,7 +261,7 @@ test("background worker and read-only API serve history, validate ranges, and ke
   });
   const valid = await request("/api/usage-history?days=30&tz=America%2FLos_Angeles");
   assert.equal(valid.status, 200);
-  assert.equal(valid.body.timeZone, "America/Los_Angeles");
+  assert.equal(valid.body.timeZone, zones[1]);
   assert.equal(valid.body.accounts[0].totalTokens, 110);
   assert.equal((await request("/api/usage-history?days=999")).status, 400);
   assert.equal((await request("/api/usage-history?tz=arbitrary")).status, 400);

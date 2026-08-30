@@ -56,6 +56,44 @@ private final class HistoryUnavailableProtocol: URLProtocol, @unchecked Sendable
     override func stopLoading() {}
 }
 
+private final class HistoryCanonicalProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let json = #"""
+        {"version":2,"days":30,"timeZone":"America/Los_Angeles","startDay":"2026-08-01","endDay":"2026-08-30",
+        "updatedAt":"2026-08-30T12:00:00Z","collectorStatus":"indexing","sourceComplete":false,
+        "skippedEvents":0,"pricingSource":"codexbar-report","completedFiles":8,"totalFiles":20,"accounts":[],
+        "unassigned":{"id":"unassigned","days":[],"projects":[],"sessions":[],"coverage":"partial","recordedDays":0,
+        "inputTokens":100,"cachedTokens":40,"outputTokens":10,"reasoningTokens":0,"totalTokens":110,
+        "estimatedCostUSD":0.000456,"unpricedEvents":0,"eventCount":1}}
+        """#
+        if let url = self.request.url, let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil) {
+            self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            self.client?.urlProtocol(self, didLoad: Data(json.utf8))
+            self.client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+    override func stopLoading() {}
+}
+
+@MainActor @Test func `the native store accepts canonical v2 reports and keeps index progress`() async throws {
+    let name = "UsageHistoryV2Tests-\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: name))
+    defer { defaults.removePersistentDomain(forName: name) }
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [HistoryCanonicalProtocol.self]
+    let session = URLSession(configuration: config)
+    defer { session.invalidateAndCancel() }
+    let store = UsageHistoryStore(language: .english, defaults: defaults, session: session)
+    await store.refresh(force: true)
+    #expect(!store.failed)
+    #expect(store.snapshot?.version == 2)
+    #expect(store.snapshot?.completedFiles == 8)
+    #expect(store.snapshot?.totalFiles == 20)
+    #expect(store.snapshot?.unassigned.totals.totalTokens == 110)
+}
+
 @MainActor @Test func `history preferences persist valid ranges while demo never changes real preferences`() async throws {
     let name = "UsageHistoryTests-\(UUID().uuidString)"
     let defaults = try #require(UserDefaults(suiteName: name))

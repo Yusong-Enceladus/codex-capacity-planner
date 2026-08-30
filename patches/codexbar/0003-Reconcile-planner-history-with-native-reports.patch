@@ -1,0 +1,724 @@
+diff --git a/Sources/CodexBarCLI/CLICostCommand.swift b/Sources/CodexBarCLI/CLICostCommand.swift
+index af7e70e..9365ff9 100644
+--- a/Sources/CodexBarCLI/CLICostCommand.swift
++++ b/Sources/CodexBarCLI/CLICostCommand.swift
+@@ -60,6 +60,14 @@ extension CodexBarCLI {
+         }
+ 
+         let fetcher = CostUsageFetcher(cacheRoot: Self.costCacheRoot(from: values))
++        if let historyOutput = values.options["historyOutput"]?.last {
++            await Self.runPlannerHistory(
++                values: values,
++                providers: providers,
++                output: output,
++                historyDays: historyDays,
++                destination: historyOutput)
++        }
+         var sections: [String] = []
+         var payload: [CostPayload] = []
+         var exitCode: ExitCode = .success
+@@ -123,6 +131,36 @@ extension CodexBarCLI {
+         Self.exit(code: exitCode, output: output, kind: exitCode == .success ? .runtime : .provider)
+     }
+ 
++    private static func runPlannerHistory(
++        values: ParsedValues,
++        providers: [UsageProvider],
++        output: CLIOutputPreferences,
++        historyDays: Int,
++        destination: String) async -> Never
++    {
++        guard providers == [.codex], self.costCacheRoot(from: values) != nil,
++              let zoneName = values.options["historyTimeZone"]?.last,
++              ["Asia/Shanghai", "America/Los_Angeles"].contains(zoneName),
++              let zone = TimeZone(identifier: zoneName)
++        else {
++            exit(
++                code: .failure,
++                message: "History export requires Codex, --cache-root and a supported time zone.",
++                output: output,
++                kind: .args)
++        }
++        do {
++            try await CostUsageFetcher(cacheRoot: Self.costCacheRoot(from: values)).writePlannerHistory(
++                to: URL(fileURLWithPath: destination),
++                timeZone: zone,
++                historyDays: historyDays,
++                refresh: !values.flags.contains("historyCacheOnly"))
++            Self.exit(code: .success, output: output, kind: .runtime)
++        } catch {
++            Self.exit(code: .failure, message: "Local history export failed.", output: output, kind: .runtime)
++        }
++    }
++
+     enum CostGroupBy: String {
+         case none
+         case project
+@@ -484,6 +522,15 @@ struct CostOptions: CommanderParsable {
+     @Option(name: .long("cache-root"), help: "Use an isolated local cost cache directory")
+     var cacheRoot: String?
+ 
++    @Option(name: .long("history-output"), help: "Write canonical local planner history to a private JSON file")
++    var historyOutput: String?
++
++    @Option(name: .long("history-time-zone"), help: "History calendar: Asia/Shanghai or America/Los_Angeles")
++    var historyTimeZone: String?
++
++    @Flag(name: .long("history-cache-only"), help: "Export the existing local history cache without scanning")
++    var historyCacheOnly: Bool = false
++
+     @Option(name: .long("group-by"), help: "Group text output by: project")
+     var groupBy: String?
+ }
+diff --git a/Sources/CodexBarCore/CostUsageFetcher.swift b/Sources/CodexBarCore/CostUsageFetcher.swift
+index f459c14..51d01d8 100644
+--- a/Sources/CodexBarCore/CostUsageFetcher.swift
++++ b/Sources/CodexBarCore/CostUsageFetcher.swift
+@@ -70,6 +70,26 @@ public struct CostUsageFetcher: Sendable {
+         self.scannerOptions = cacheRoot.map { CostUsageScanner.Options(cacheRoot: $0) }
+     }
+ 
++    public func writePlannerHistory(
++        to destination: URL,
++        timeZone: TimeZone,
++        historyDays: Int = 365,
++        now: Date = Date(),
++        refresh: Bool = true) async throws
++    {
++        var options = Self.resolvedScannerOptions(self.scannerOptionsOverride(), provider: .codex, codexHomePath: nil)
++        options.calendar.timeZone = timeZone
++        options.forceRescan = false
++        options.refreshMinIntervalSeconds = 0
++        options.maxCodexScanDurationPerRefresh = Self.codexAutomaticScanDurationPerRefresh
++        try await PlannerUsageExport.write(
++            options: options,
++            destination: destination,
++            historyDays: max(1, min(365, historyDays)),
++            now: now,
++            refresh: refresh)
++    }
++
+     init(scannerOptions: CostUsageScanner.Options) {
+         self.scannerOptions = scannerOptions
+     }
+@@ -544,7 +564,9 @@ public struct CostUsageFetcher: Sendable {
+                         calendar: options.scanOptions.calendar),
+                     scopedTo: roots)
+                 let range = CostUsageScanner.CostUsageDayRange(
+-                    since: since, until: now, calendar: options.scanOptions.calendar)
++                    since: since,
++                    until: now,
++                    calendar: options.scanOptions.calendar)
+                 if let previous = CostUsageScanner.codexPreviousReport(
+                     cache: cache,
+                     range: range,
+diff --git a/Sources/CodexBarCore/PiSessionCostScanner.swift b/Sources/CodexBarCore/PiSessionCostScanner.swift
+index 3845ae5..7f4f533 100644
+--- a/Sources/CodexBarCore/PiSessionCostScanner.swift
++++ b/Sources/CodexBarCore/PiSessionCostScanner.swift
+@@ -200,6 +200,19 @@ enum PiSessionCostScanner {
+         let lastScanAt: Date?
+     }
+ 
++    static func plannerReport(
++        cache: PiSessionCostCache,
++        range: CostUsageScanner.CostUsageDayRange,
++        now: Date,
++        cacheRoot: URL?) -> CostUsageDailyReport
++    {
++        self.buildReport(
++            provider: .codex,
++            cache: cache,
++            range: range,
++            pricingContext: self.pricingContext(now: now, cacheRoot: cacheRoot))
++    }
++
+     static func loadCachedDailyReport(
+         provider: UsageProvider,
+         since: Date,
+diff --git a/Sources/CodexBarCore/PlannerUsageExport.swift b/Sources/CodexBarCore/PlannerUsageExport.swift
+new file mode 100644
+index 0000000..0ddaa10
+--- /dev/null
++++ b/Sources/CodexBarCore/PlannerUsageExport.swift
+@@ -0,0 +1,315 @@
++import Foundation
++
++/// Local-only export for the planner. Counts, fork reconciliation and prices
++/// come from the same report builder as CodexBar, never from raw ledger sums.
++enum PlannerUsageExport {
++    struct Row: Encodable {
++        let date: String
++        let model: String
++        let mode: String
++        let inputTokens: Int
++        let cachedTokens: Int
++        let outputTokens: Int
++        let totalTokens: Int
++        let estimatedCostUSD: Double?
++        let eventCount: Int
++    }
++
++    struct Source: Encodable {
++        let id: String
++        let path: String?
++        let sessionID: String?
++        let project: String?
++        let title: String?
++        let complete: Bool
++        let rows: [Row]
++    }
++
++    struct Snapshot: Encodable {
++        let version = 2
++        let timeZone: String
++        let startDay: String
++        let endDay: String
++        let scannedAt: String?
++        let complete: Bool
++        let completedFiles: Int
++        let totalFiles: Int
++        let processedBytes: Int64
++        let totalBytes: Int64
++        let sources: [Source]
++    }
++
++    static func write(
++        options: CostUsageScanner.Options,
++        destination: URL,
++        historyDays: Int,
++        now: Date,
++        refresh: Bool) async throws
++    {
++        if refresh {
++            await ModelsDevPricingPipeline.refreshIfNeeded(
++                now: now,
++                cacheRoot: options.cacheRoot,
++                client: ModelsDevClient())
++        }
++        try await CostUsageScanExecutor.run { checkCancellation in
++            let since = options.calendar.date(byAdding: .day, value: -(historyDays - 1), to: now) ?? now
++            if refresh {
++                // Publish every bounded pass. Rebuilding a large native report
++                // repeatedly can exhaust the process deadline before any progress
++                // reaches the UI; the worker resumes while catch-up is pending.
++                _ = try CostUsageScanner.loadDailyReportCancellable(
++                    provider: .codex,
++                    since: since,
++                    until: now,
++                    now: now,
++                    options: options,
++                    checkCancellation: checkCancellation)
++                var piOptions = PiSessionCostScanner.Options()
++                piOptions.cacheRoot = options.cacheRoot
++                piOptions.calendar = options.calendar
++                _ = try PiSessionCostScanner.loadDailyReportCancellable(
++                    provider: .codex,
++                    since: since,
++                    until: now,
++                    now: now,
++                    options: piOptions,
++                    checkCancellation: checkCancellation)
++            }
++            try checkCancellation()
++            let cache = CostUsageScanner.codexCache(
++                CostUsageStoreAccess.read(cacheRoot: options.cacheRoot, calendar: options.calendar),
++                scopedTo: CostUsageScanner.codexSessionsRoots(options: options))
++            let range = CostUsageScanner.CostUsageDayRange(since: since, until: now, calendar: options.calendar)
++            let turns = CostUsageScanner.codexPriorityTurns(
++                databaseURL: options.codexTraceDatabaseURL,
++                sinceDayKey: range.scanSinceKey,
++                untilDayKey: range.scanUntilKey)
++            let catalog = CostUsagePricing.modelsDevCatalog(now: now, cacheRoot: options.cacheRoot)
++            let snapshot = Self.snapshot(
++                cache: cache,
++                range: range,
++                catalog: catalog,
++                cacheRoot: options.cacheRoot,
++                priorityTurns: turns,
++                pi: PiSessionCostCacheIO.load(cacheRoot: options.cacheRoot),
++                now: now)
++            let data = try JSONEncoder().encode(snapshot)
++            try FileManager.default.createDirectory(
++                at: destination.deletingLastPathComponent(),
++                withIntermediateDirectories: true,
++                attributes: [.posixPermissions: 0o700])
++            try data.write(to: destination, options: .atomic)
++            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
++        }
++    }
++
++    static func snapshot(
++        cache rawCache: CostUsageCache,
++        range: CostUsageScanner.CostUsageDayRange,
++        catalog: ModelsDevCatalog?,
++        cacheRoot: URL?,
++        priorityTurns: [String: CostUsageScanner.CodexPriorityTurnMetadata] = [:],
++        pi: PiSessionCostCache = PiSessionCostCache(),
++        now: Date = Date()) -> Snapshot
++    {
++        var cache = rawCache
++        for (path, usage) in cache.files where CostUsageScanner.needsCodexPricingMetadata(usage, range: range) {
++            cache.files[path] = CostUsageScanner.codexFileUsageWithPricingMetadata(
++                usage,
++                range: range,
++                priorityTurns: priorityTurns)
++        }
++        let rowPriced = Self.rowPricedGroups(
++            cache: cache,
++            range: range,
++            catalog: catalog,
++            cacheRoot: cacheRoot,
++            priorityTurns: priorityTurns)
++        let report = CostUsageScanner.buildCodexReportFromCache(
++            cache: cache,
++            range: range,
++            modelsDevCatalog: catalog,
++            modelsDevCacheRoot: cacheRoot,
++            priorityTurns: priorityTurns)
++        let unpriced = Set(report.data.flatMap { entry in
++            (entry.modelBreakdowns ?? []).filter { $0.costUSD == nil }.map {
++                CostUsageScanner.CodexDayModelKey(day: entry.date, model: $0.modelName)
++            }
++        })
++        var sources: [Source] = []
++        for (path, usage) in cache.files.sorted(by: { $0.key < $1.key }) {
++            let canonical = CostUsageScanner.codexCanonicalPricingRows(usage)
++            let grouped = Dictionary(grouping: canonical.rows) {
++                CostUsageScanner.CodexDayModelKey(day: $0.day, model: $0.model)
++            }
++            let modeEvidence = CostUsageScanner.codexPricingModeEvidence(
++                usage: usage,
++                reconciledRows: canonical.rows,
++                range: range,
++                priorityTurns: priorityTurns)
++            var rows: [Row] = []
++            for day in usage.days.keys.sorted() where day >= range.sinceKey && day <= range.untilKey {
++                for model in (usage.days[day] ?? [:]).keys.sorted() {
++                    let key = CostUsageScanner.CodexDayModelKey(day: day, model: model)
++                    let packed = usage.days[day]?[model] ?? [0, 0, 0]
++                    let events = grouped[key] ?? []
++                    let canSplit = !events.isEmpty && !canonical.unresolvedGroups.contains(key)
++                        && !modeEvidence.mismatchGroups.contains(key)
++                        && (rowPriced.contains(key) || unpriced.contains(key))
++                    if canSplit {
++                        let byMode = Dictionary(grouping: events) { row in
++                            row.pricingMode == "priority" || row.turnID.flatMap { priorityTurns[$0] } != nil
++                                ? "fast" : "standard"
++                        }
++                        for mode in byMode.keys.sorted() {
++                            let values = byMode[mode] ?? []
++                            let costs = values.map {
++                                CostUsageScanner.codexResolvedCostUSD(
++                                    for: $0,
++                                    priorityTurns: priorityTurns,
++                                    modelsDevCatalog: catalog,
++                                    modelsDevCacheRoot: cacheRoot)
++                            }
++                            let input = values.reduce(0) { $0 + $1.input }
++                            let output = values.reduce(0) { $0 + $1.output }
++                            rows.append(Row(
++                                date: day,
++                                model: model,
++                                mode: mode,
++                                inputTokens: input,
++                                cachedTokens: values.reduce(0) { $0 + $1.cached },
++                                outputTokens: output,
++                                totalTokens: input + output,
++                                estimatedCostUSD: !unpriced.contains(key) && costs.allSatisfy { $0 != nil }
++                                    ? costs.compactMap(\.self).reduce(0, +) : nil,
++                                eventCount: values.count))
++                        }
++                    } else {
++                        // Canonical totals remain valid even when inherited prefixes cannot
++                        // be assigned to individual pricing rows. Keep the price/mode gap.
++                        let input = packed.first ?? 0
++                        let cached = packed.count > 1 ? packed[1] : 0
++                        let output = packed.count > 2 ? packed[2] : 0
++                        rows.append(Row(
++                            date: day,
++                            model: model,
++                            mode: "unknown",
++                            inputTokens: input,
++                            cachedTokens: cached,
++                            outputTokens: output,
++                            totalTokens: input + output,
++                            estimatedCostUSD: unpriced.contains(key) ? nil : CostUsagePricing.codexAggregateCostUSD(
++                                model: model,
++                                inputTokens: input,
++                                cachedInputTokens: cached,
++                                outputTokens: output,
++                                modelsDevCatalog: catalog,
++                                modelsDevCacheRoot: cacheRoot),
++                            eventCount: max(1, events.count)))
++                    }
++                }
++            }
++            sources.append(Source(
++                id: "codex-file:" + (usage.sessionId ?? "") + ":" + (usage.codexScanFileId ?? path),
++                path: path,
++                sessionID: usage.sessionId ?? usage.codexSession?.sessionId,
++                project: usage.projectPath ?? usage.codexSession?.cwd,
++                title: usage.codexSession?.title,
++                complete: usage.codexScanComplete != false,
++                rows: rows))
++        }
++        if let piSource = Self.piSource(cache: pi, range: range, now: now, cacheRoot: cacheRoot) {
++            sources.append(piSource)
++        }
++        return Snapshot(
++            timeZone: range.calendar.timeZone.identifier,
++            startDay: range.sinceKey,
++            endDay: range.untilKey,
++            scannedAt: cache.lastScanUnixMs > 0
++                ? ISO8601DateFormatter()
++                .string(from: Date(timeIntervalSince1970: Double(cache.lastScanUnixMs) / 1000)) : nil,
++            complete: cache.codexScanCatchUpPending == false,
++            completedFiles: cache.codexScanCompletedFiles ?? 0,
++            totalFiles: cache.codexScanTotalFiles ?? 0,
++            processedBytes: cache.codexScanProcessedBytes ?? 0,
++            totalBytes: cache.codexScanTotalBytes ?? 0,
++            sources: sources)
++    }
++
++    private static func piSource(
++        cache: PiSessionCostCache,
++        range: CostUsageScanner.CostUsageDayRange,
++        now: Date,
++        cacheRoot: URL?) -> Source?
++    {
++        guard cache.timeZoneIdentifier == range.calendar.timeZone.identifier else { return nil }
++        let report = PiSessionCostScanner.plannerReport(cache: cache, range: range, now: now, cacheRoot: cacheRoot)
++        var rows: [Row] = []
++        for day in report.data {
++            for model in day.modelBreakdowns ?? [] {
++                let usage = cache.daysByProvider[UsageProvider.codex.rawValue]?[day.date]?[model.modelName]
++                    ?? PiPackedUsage()
++                rows.append(Row(
++                    date: day.date,
++                    model: model.modelName,
++                    mode: "unknown",
++                    inputTokens: usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens,
++                    cachedTokens: usage.cacheReadTokens,
++                    outputTokens: usage.outputTokens,
++                    totalTokens: model.totalTokens ?? 0,
++                    estimatedCostUSD: model.costUSD,
++                    eventCount: max(1, usage.usageSampleCount ?? 1)))
++            }
++        }
++        guard !rows.isEmpty else { return nil }
++        return Source(
++            id: "pi-omp:codex",
++            path: nil,
++            sessionID: nil,
++            project: nil,
++            title: "Pi / OMP",
++            complete: true,
++            rows: rows)
++    }
++
++    /// Match the native report's global trust gate before distributing its
++    /// prices by source. A per-file price can be valid while the global group
++    /// has insufficient evidence and intentionally uses aggregate pricing.
++    private static func rowPricedGroups(
++        cache: CostUsageCache,
++        range: CostUsageScanner.CostUsageDayRange,
++        catalog: ModelsDevCatalog?,
++        cacheRoot: URL?,
++        priorityTurns: [String: CostUsageScanner.CodexPriorityTurnMetadata])
++        -> Set<CostUsageScanner.CodexDayModelKey>
++    {
++        var grouped: [CostUsageScanner.CodexDayModelKey: [CostUsageScanner.CodexUsageRow]] = [:]
++        var unresolved = Set<CostUsageScanner.CodexDayModelKey>()
++        var mismatches = Set<CostUsageScanner.CodexDayModelKey>()
++        for usage in cache.files.values {
++            let canonical = CostUsageScanner.codexCanonicalPricingRows(usage)
++            unresolved.formUnion(canonical.unresolvedGroups)
++            mismatches.formUnion(CostUsageScanner.codexPricingModeEvidence(
++                usage: usage,
++                reconciledRows: canonical.rows,
++                range: range,
++                priorityTurns: priorityTurns)
++                .mismatchGroups)
++            for row in canonical.rows {
++                grouped[.init(day: row.day, model: row.model), default: []].append(row)
++            }
++        }
++        return Set(grouped.compactMap { key, rows in
++            let packed = cache.days[key.day]?[key.model] ?? [0, 0, 0]
++            let total = (packed.first ?? 0) + (packed.count > 2 ? packed[2] : 0)
++            let cost = CostUsageScanner.codexRowCostBreakdown(
++                rows: rows,
++                priorityTurns: priorityTurns,
++                modelsDevCatalog: catalog,
++                modelsDevCacheRoot: cacheRoot)
++            return !unresolved.contains(key) && !mismatches.contains(key) && cost.isTrusted(canonicalTotalTokens: total)
++                ? key : nil
++        })
++    }
++}
+diff --git a/Tests/CodexBarTests/PlannerHistoryCommandTests.swift b/Tests/CodexBarTests/PlannerHistoryCommandTests.swift
+new file mode 100644
+index 0000000..5ef28f2
+--- /dev/null
++++ b/Tests/CodexBarTests/PlannerHistoryCommandTests.swift
+@@ -0,0 +1,19 @@
++import Commander
++import Testing
++@testable import CodexBarCLI
++
++struct PlannerHistoryCommandTests {
++    @Test func `planner export options do not change ordinary cost defaults`() throws {
++        let parser = CommandParser(signature: CodexBarCLI._costSignatureForTesting())
++        let defaults = try parser.parse(arguments: [])
++        #expect(defaults.options["historyOutput"] == nil)
++        #expect(!defaults.flags.contains("historyCacheOnly"))
++        let custom = try parser.parse(arguments: [
++            "--history-output", "/tmp/synthetic-history.json", "--history-time-zone", "Asia/Shanghai",
++            "--history-cache-only", "--cache-root", "/tmp/synthetic-cache",
++        ])
++        #expect(custom.options["historyOutput"]?.last == "/tmp/synthetic-history.json")
++        #expect(custom.options["historyTimeZone"]?.last == "Asia/Shanghai")
++        #expect(custom.flags.contains("historyCacheOnly"))
++    }
++}
+diff --git a/Tests/CodexBarTests/PlannerUsageExportTests.swift b/Tests/CodexBarTests/PlannerUsageExportTests.swift
+new file mode 100644
+index 0000000..5b00088
+--- /dev/null
++++ b/Tests/CodexBarTests/PlannerUsageExportTests.swift
+@@ -0,0 +1,234 @@
++import Foundation
++import Testing
++@testable import CodexBarCore
++
++struct PlannerUsageExportTests {
++    private let model = "gpt-5.6-sol"
++    private let day = "2026-08-29"
++
++    private func range() throws -> CostUsageScanner.CostUsageDayRange {
++        let date = try #require(ISO8601DateFormatter().date(from: "2026-08-29T12:00:00Z"))
++        var calendar = Calendar(identifier: .gregorian)
++        calendar.timeZone = try #require(TimeZone(identifier: "America/Los_Angeles"))
++        return CostUsageScanner.CostUsageDayRange(since: date, until: date, calendar: calendar)
++    }
++
++    private func row(
++        _ index: Int,
++        input: Int = 100,
++        cached: Int = 40,
++        mode: String = "standard",
++        cost: Int64? = nil) -> CostUsageScanner.CodexUsageRow
++    {
++        CostUsageScanner.CodexUsageRow(
++            day: self.day,
++            model: self.model,
++            turnID: "turn-\(index)",
++            eventIndex: index,
++            input: input,
++            cached: cached,
++            output: 10,
++            knownCostNanos: cost,
++            pricingMode: mode)
++    }
++
++    private func usage(
++        _ id: String,
++        rows: [CostUsageScanner.CodexUsageRow],
++        input: Int = 100,
++        cached: Int = 40,
++        output: Int = 10) -> CostUsageFileUsage
++    {
++        CostUsageScanner.makeFileUsage(
++            mtimeUnixMs: 1,
++            size: 1,
++            days: [self.day: [self.model: [input, cached, output]]],
++            parsedBytes: 1,
++            sessionId: id,
++            codexRows: rows,
++            codexScanComplete: true)
++    }
++
++    private func cache(_ usages: [CostUsageFileUsage]) -> CostUsageCache {
++        var cache = CostUsageCache()
++        cache.codexScanCatchUpPending = false
++        cache.codexScanCompletedFiles = usages.count
++        cache.codexScanTotalFiles = usages.count
++        for (index, usage) in usages.enumerated() {
++            cache.files["/synthetic-\(index).jsonl"] = usage
++            let totals = usage.days[self.day]?[self.model] ?? [0, 0, 0]
++            let previous = cache.days[self.day]?[self.model] ?? [0, 0, 0]
++            cache.days[self.day, default: [:]][self.model] = zip(previous, totals).map { $0.0 + $0.1 }
++        }
++        return cache
++    }
++
++    private func checkNativeEquality(_ cache: CostUsageCache, root: URL, catalog: ModelsDevCatalog? = nil) throws
++        -> PlannerUsageExport.Snapshot
++    {
++        let range = try self.range()
++        let native = CostUsageScanner.buildCodexReportFromCache(
++            cache: cache,
++            range: range,
++            modelsDevCatalog: catalog,
++            modelsDevCacheRoot: root)
++        let export = PlannerUsageExport.snapshot(cache: cache, range: range, catalog: catalog, cacheRoot: root)
++        let rows = export.sources.flatMap(\.rows)
++        #expect(rows.reduce(0) { $0 + $1.totalTokens } == native.summary?.totalTokens)
++        let prices = rows.compactMap(\.estimatedCostUSD)
++        if let expected = native.summary?.totalCostUSD {
++            #expect(abs(prices.reduce(0, +) - expected) < 1e-10)
++        } else {
++            #expect(prices.isEmpty)
++        }
++        return export
++    }
++
++    @Test func `fork prefixes are removed and request level pricing matches CodexBar`() throws {
++        let env = try CostUsageTestEnvironment()
++        defer { env.cleanup() }
++        let parent = self.row(0, input: 200_000)
++        let child = self.row(1, input: 200_000, mode: "priority")
++        let cache = self.cache([
++            self.usage("parent", rows: [parent], input: 200_000),
++            self.usage("child", rows: [parent, child], input: 200_000),
++        ])
++        let export = try self.checkNativeEquality(cache, root: env.cacheRoot)
++        #expect(export.sources.flatMap(\.rows).reduce(0) { $0 + $1.totalTokens } == 400_020)
++        #expect(Set(export.sources.flatMap(\.rows).map(\.mode)) == ["standard", "fast"])
++    }
++
++    @Test func `unresolved global prices are not replaced by plausible per file subtotals`() throws {
++        let env = try CostUsageTestEnvironment()
++        defer { env.cleanup() }
++        let prefix = self.row(0, input: 300_000, mode: "priority", cost: 5_000_000_000)
++        let cache = self.cache([
++            self.usage("unresolved", rows: [prefix, self.row(1)], input: 200_000),
++            self.usage("known", rows: [self.row(2)]),
++        ])
++        let export = try self.checkNativeEquality(cache, root: env.cacheRoot)
++        #expect(export.sources.flatMap(\.rows).allSatisfy { $0.estimatedCostUSD == nil })
++        #expect(export.sources.flatMap(\.rows).reduce(0) { $0 + $1.totalTokens } == 200_120)
++    }
++
++    @Test func `two legitimate files with one session ID are not collapsed`() throws {
++        let env = try CostUsageTestEnvironment()
++        defer { env.cleanup() }
++        var first = self.usage("shared-session", rows: [self.row(0)])
++        first.codexScanFileId = "synthetic:1"
++        var second = self.usage("shared-session", rows: [self.row(1)])
++        second.codexScanFileId = "synthetic:2"
++        let export = try self.checkNativeEquality(self.cache([first, second]), root: env.cacheRoot)
++        #expect(Set(export.sources.map(\.id)).count == 2)
++        #expect(Set(export.sources.compactMap(\.sessionID)).count == 1)
++    }
++
++    @Test func `aggregate fallback is global rather than independently chosen for each file`() throws {
++        let env = try CostUsageTestEnvironment()
++        defer { env.cleanup() }
++        let cache = self.cache([
++            self.usage("aggregate-only", rows: [], input: 100),
++            self.usage("has-price", rows: [self.row(1)]),
++        ])
++        let export = try self.checkNativeEquality(cache, root: env.cacheRoot)
++        #expect(export.sources.flatMap(\.rows).allSatisfy { $0.mode == "unknown" })
++    }
++
++    @Test func `read time catalog prices override a second hardcoded table`() throws {
++        let env = try CostUsageTestEnvironment()
++        defer { env.cleanup() }
++        let json = #"""
++        {"openai":{"id":"openai","models":{"gpt-5.6-sol":{
++          "id":"gpt-5.6-sol","cost":{"input":4,"output":20,"cache_read":0.4}
++        }}}}
++        """#
++        let catalog = try JSONDecoder().decode(ModelsDevCatalog.self, from: Data(json.utf8))
++        let cache = self.cache([self.usage("standard", rows: [self.row(0)])])
++        let export = try self.checkNativeEquality(cache, root: env.cacheRoot, catalog: catalog)
++        let cost = try #require(export.sources.first?.rows.first?.estimatedCostUSD)
++        #expect(abs(cost - 0.000456) < 1e-12)
++    }
++
++    @Test func `partial source progress does not claim completion`() throws {
++        let env = try CostUsageTestEnvironment()
++        defer { env.cleanup() }
++        var usage = self.usage("partial", rows: [self.row(0)])
++        usage.codexScanComplete = false
++        var cache = self.cache([usage])
++        cache.codexScanCatchUpPending = true
++        cache.codexScanProcessedBytes = 40
++        cache.codexScanTotalBytes = 100
++        let export = try self.checkNativeEquality(cache, root: env.cacheRoot)
++        #expect(!export.complete)
++        #expect(export.sources.first?.complete == false)
++        #expect(export.processedBytes == 40)
++        #expect(export.totalBytes == 100)
++    }
++
++    @Test func `Pi and OMP use native totals and complete cached costs`() throws {
++        let env = try CostUsageTestEnvironment()
++        defer { env.cleanup() }
++        let range = try self.range()
++        var pi = PiSessionCostCache()
++        pi.timeZoneIdentifier = range.calendar.timeZone.identifier
++        pi.daysByProvider["codex"] = [self.day: [self.model: PiPackedUsage(
++            inputTokens: 100,
++            cacheReadTokens: 40,
++            cacheWriteTokens: 10,
++            outputTokens: 5,
++            totalTokens: 0,
++            costNanos: 123_000_000,
++            costSampleCount: 2,
++            usageSampleCount: 2)]]
++        let report = PiSessionCostScanner.plannerReport(cache: pi, range: range, now: Date(), cacheRoot: env.cacheRoot)
++        let export = PlannerUsageExport.snapshot(
++            cache: CostUsageCache(),
++            range: range,
++            catalog: nil,
++            cacheRoot: env.cacheRoot,
++            pi: pi)
++        let row = try #require(export.sources.first?.rows.first)
++        #expect(row.totalTokens == report.summary?.totalTokens)
++        #expect(row.totalTokens == 155)
++        #expect(row.inputTokens == 150)
++        #expect(row.estimatedCostUSD == report.summary?.totalCostUSD)
++        #expect(row.estimatedCostUSD == 0.123)
++        #expect(export.sources.first?.path == nil)
++    }
++
++    @Test func `original event time chooses UTC8 or Pacific day using the native scanner`() throws {
++        for zone in ["Asia/Shanghai", "America/Los_Angeles"] {
++            let env = try CostUsageTestEnvironment()
++            defer { env.cleanup() }
++            let now = try #require(ISO8601DateFormatter().date(from: "2026-08-30T12:00:00Z"))
++            let at = "2026-08-30T06:59:00Z"
++            _ = try env.writeCodexSessionFile(day: now, filename: "boundary.jsonl", contents: env.jsonl([
++                ["type": "session_meta", "payload": ["id": "boundary"]],
++                ["type": "turn_context", "payload": ["model": self.model]],
++                ["type": "event_msg", "timestamp": at, "payload": ["type": "token_count", "info": [
++                    "total_token_usage": ["input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 10],
++                ]]],
++            ]))
++            var calendar = Calendar(identifier: .gregorian)
++            calendar.timeZone = try #require(TimeZone(identifier: zone))
++            var options = CostUsageScanner.Options(
++                codexSessionsRoot: env.codexSessionsRoot,
++                cacheRoot: env.cacheRoot,
++                calendar: calendar)
++            options.refreshMinIntervalSeconds = 0
++            let since = now.addingTimeInterval(-7 * 86400)
++            let native = CostUsageScanner.loadDailyReport(
++                provider: .codex,
++                since: since,
++                until: now,
++                now: now,
++                options: options)
++            let cache = CostUsageStoreAccess.read(cacheRoot: env.cacheRoot, calendar: calendar)
++            let range = CostUsageScanner.CostUsageDayRange(since: since, until: now, calendar: calendar)
++            let export = PlannerUsageExport.snapshot(cache: cache, range: range, catalog: nil, cacheRoot: env.cacheRoot)
++            #expect(export.sources.flatMap(\.rows).reduce(0) { $0 + $1.totalTokens } == native.summary?.totalTokens)
++            #expect(export.sources.flatMap(\.rows).first?
++                .date == (zone == "Asia/Shanghai" ? "2026-08-30" : "2026-08-29"))
++        }
++    }
++}

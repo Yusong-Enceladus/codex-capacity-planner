@@ -49,6 +49,8 @@
 
 Historical amounts estimate the API equivalent of local logs, not bills or quota percentages. Chinese groups events into UTC+8 days; English uses Pacific Time. Resets never erase consumed usage. Older logs without reliable account evidence appear under Unassigned local usage, never guessed from the current login or duplicated across accounts. Gaps are not zero usage, and selecting 365 days does not promise 365 days of reliable records.
 
+History directly reuses CodexBar's deduplication and pricing, including inherited fork prefixes, Fast and long contexts. Version 0.1.11 corrects earlier duplicate counts and price differences automatically; initial indexing shows progress and preserves account and reset records. Compare with CodexBar using the same date range, calendar time zone and sampling time.
+
 <p align="center">
   <img src="docs/assets/codex-capacity-planner-resets-en.png" width="900" alt="Codex Capacity Planner English reset timeline with message-handling status and inline decision inspection">
 </p>
@@ -64,6 +66,8 @@ Historical amounts estimate the API equivalent of local logs, not bills or quota
 Each historical point is a decision saved at that time; missing past predictions are never backfilled. These anonymous synthetic scenarios use the production native interface.
 
 Menus measure their actual content before opening, so short timelines and explanations leave no oversized blank panel. Expanded details scroll in place without closing the menu. Both historical plots share a time axis and selection; Chinese uses UTC+8 and English uses Pacific Time.
+
+Results, Method, Raw Data and the calculation account selector now use the same native segmented controls as Usage & Targets. Mainline text and buttons are larger; actions still share one row and saved feedback does not move neighbouring mainlines.
 
 </details>
 

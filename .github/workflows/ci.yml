@@ -24,7 +24,6 @@ jobs:
       - run: node --check codex-reset-short-load.js
       - run: node --check codex-reset-workload-eval.js
       - run: node --check codex-reset-usage-history.js
-      - run: node --check codex-reset-usage-pricing.js
       - run: zsh -n scripts/package-release.sh CodexResetApp/build-app.sh
       - run: node codex-reset.test.js
       - run: node --test codex-reset-usage-history.test.js

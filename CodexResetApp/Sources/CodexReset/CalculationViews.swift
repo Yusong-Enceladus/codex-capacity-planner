@@ -21,34 +21,22 @@ struct CalculationHistoryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 6) {
+            PlannerSegmentedPicker(title: self.language.text("计算与数据", "Calculation & Data"), selection: self.$page) {
                 ForEach(DetailMenuLayout.calculationGroups, id: \.self) { key in
-                    Button {
-                        self.page = key
-                    } label: {
-                        HStack(spacing: 4) {
-                            if self.page == key { Image(systemName: "checkmark") }
-                            Text(self.pageTitle(key))
-                        }.frame(maxWidth: .infinity)
-                    }.accessibilityLabel(self.pageTitle(key))
+                    Text(self.pageTitle(key)).tag(key)
                 }
-            }.buttonStyle(.bordered).controlSize(.small)
+            }
 
             if let record = self.record {
                 self.recordNavigation(record)
                 if let account = self.selectedAccount {
-                    HStack(spacing: 6) {
+                    PlannerSegmentedPicker(title: self.language.text("账户", "Account"), selection: Binding(
+                        get: { self.selectedAccount?.id ?? account.id },
+                        set: { self.accountID = $0 })) {
                         ForEach(record.accounts) { candidate in
-                            Button {
-                                self.accountID = candidate.id
-                            } label: {
-                                Label(candidate.label, systemImage: candidate.id == account.id
-                                      ? "checkmark.circle.fill" : "circle")
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
+                            Text(candidate.label).tag(candidate.id)
                         }
-                    }.buttonStyle(.bordered).controlSize(.small).font(.system(size: 12))
+                    }
                 }
             }
 

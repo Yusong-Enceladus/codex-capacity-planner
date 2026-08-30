@@ -114,6 +114,8 @@ struct UsageHistorySnapshot: Decodable, Equatable, Sendable {
     let pricingSource: String
     let accounts: [UsageHistoryAccount]
     let unassigned: UsageHistoryAccount
+    var completedFiles: Int? = nil
+    var totalFiles: Int? = nil
 }
 
 @MainActor
@@ -155,6 +157,16 @@ final class UsageHistoryStore: ObservableObject {
         return Task { await self.refresh(force: true) }
     }
 
+    func refreshWhileVisible() async {
+        while !Task.isCancelled {
+            await self.refresh(force: self.snapshot?.sourceComplete == false)
+            if self.isDemo { return }
+            do {
+                try await Task.sleep(for: .seconds(self.snapshot?.sourceComplete == false ? 5 : 30))
+            } catch { return }
+        }
+    }
+
     func refresh(force: Bool = false) async {
         if self.isDemo {
             self.snapshot = UsageHistoryFixtures.snapshot(days: self.days, language: self.language)
@@ -179,7 +191,7 @@ final class UsageHistoryStore: ObservableObject {
                 throw URLError(.badServerResponse)
             }
             let snapshot = try JSONDecoder().decode(UsageHistorySnapshot.self, from: data)
-            guard snapshot.version == 1, snapshot.days == days, snapshot.timeZone == self.language.timeZone.identifier else {
+            guard snapshot.version == 2, snapshot.days == days, snapshot.timeZone == self.language.timeZone.identifier else {
                 throw URLError(.cannotParseResponse)
             }
             self.cache[days] = snapshot

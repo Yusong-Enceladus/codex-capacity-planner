@@ -176,15 +176,28 @@ preference supports 1–365 days. Totals, peak and selected-day details remain
 visible, while model/project/task lists expand in place. Menus retain their
 measured outer frame during interaction and scroll only when necessary.
 
-The bundled CodexBar CLI normalizes local Codex cost events on a five-minute
-background cadence, in an isolated collector cache. The old machine-wide
-cache is read only as a seed: historical backfill must not enter the existing
-row-ID stream used for live capacity calibration. A private SQLite import retains events independently of
-quota resets and source-cache eviction, without copying the raw conversation.
-Re-parsed source slices replace rather than append; moved/archived copies of
-one session are deduplicated. Original event timestamps determine UTC+8 or
-Pacific calendar days, including daylight-saving boundaries. Known price
-subtotals and unknown-priced tokens remain distinguishable.
+The bundled CodexBar CLI exports canonical per-source/day/model/mode reports
+on a five-minute background cadence. It uses the native fork reconciliation
+and global pricing trust gate, not raw `usage_rows` sums. Prices use CodexBar's
+read-time catalog, authoritative cost evidence and Fast/long-context rules;
+the planner has no second price table. Optional Pi/OMP Codex usage uses its
+native report and remains unassigned when account evidence is absent.
+
+`usage-collector/reports-v2` contains separate UTC+8 and Pacific caches. Each
+uses the original event times and native calendar logic, including DST. An
+existing matching-calendar cache can seed the private collector via a read-only
+SQLite online backup (including WAL), never a bare copy of a live database.
+Historical backfill cannot enter the row-ID stream used by live calibration.
+Bounded scans continue until the native completion flag is true, with progress
+and no-progress backoff; successful process exit alone does not mean complete.
+
+Version 2 imports canonical reports transactionally into private SQLite tables,
+preserving history across quota resets and upstream cache eviction. Complete
+source slices replace earlier derived values; partial re-indexing cannot
+overwrite a complete retained tail. Moved sessions remain one source. v1 raw
+tables remain recoverable but are never queried as a display fallback. No
+conversation body is retained. Known price subtotals and unknown prices stay
+distinct, as do missing records and confirmed zero-use interior days.
 
 History ownership requires explicit account metadata matched against an
 unambiguous provider account key. A current login, quota delta, workspace, or
@@ -198,7 +211,9 @@ The history read path never changes reset probabilities or target policy.
 Percentages, probabilities, model outputs, formulas, and diagnostics that do
 not belong to an account row live under the independent first-level
 Calculation & Data entry, divided into in-page Results, Method, and Raw Data
-controls rather than deeper submenus. Why This
+controls rather than deeper submenus. The calculation page and Usage & Targets share native 13-point
+segmented controls, including account selection. Mainline actions stay in a
+stable 28-point horizontal row with 13-point labels and 14-point titles. Why This
 Plan therefore contains causal prose only. An unresolved explicit
 announcement, commitment, or candidate hint is the primary reset state ahead
 of natural refresh. Its concise source summary appears with the state, while

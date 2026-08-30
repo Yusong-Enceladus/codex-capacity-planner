@@ -70,13 +70,12 @@ struct MainlineActionBar: View {
                 }
             }
         }
-        .font(.caption2.weight(.medium))
+        .font(.system(size: 13, weight: .medium))
         .lineLimit(1)
-        .minimumScaleFactor(0.8)
         .buttonStyle(.bordered)
-        .controlSize(.mini)
+        .controlSize(.regular)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 22)
+        .frame(height: 28)
         .accessibilityElement(children: .contain)
     }
 
@@ -84,7 +83,7 @@ struct MainlineActionBar: View {
         Button {
             self.perform(action)
         } label: {
-            Label(action.title, systemImage: self.actionSymbol(action.operation))
+            Text(action.title)
         }
         .fixedSize(horizontal: true, vertical: false)
         .help(action.title)
@@ -105,13 +104,4 @@ struct MainlineActionBar: View {
         }
     }
 
-    private func actionSymbol(_ operation: String) -> String {
-        switch operation {
-        case "mark-mainline": "star"
-        case "complete": "checkmark.circle"
-        case "snooze": "moon.zzz"
-        case "restore": "arrow.uturn.backward"
-        default: "minus.circle"
-        }
-    }
 }

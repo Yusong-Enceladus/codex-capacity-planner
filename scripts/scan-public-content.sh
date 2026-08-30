@@ -7,7 +7,7 @@ cd "$project_root"
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   scan_paths=$(git ls-files)
 else
-  scan_paths="README.md CodexResetApp codex-reset.js codex-reset-monitor.js codex-reset-history.js codex-reset-behavior.js codex-reset-short-load.js codex-reset-workload-eval.js codex-reset-usage-history.js codex-reset-usage-pricing.js codex-reset-usage-history.test.js codex-reset.test.js receiver docs scripts patches"
+  scan_paths="README.md CodexResetApp codex-reset.js codex-reset-monitor.js codex-reset-history.js codex-reset-behavior.js codex-reset-short-load.js codex-reset-workload-eval.js codex-reset-usage-history.js codex-reset-usage-history.test.js codex-reset.test.js receiver docs scripts patches"
 fi
 
 if [ -z "$scan_paths" ]; then
