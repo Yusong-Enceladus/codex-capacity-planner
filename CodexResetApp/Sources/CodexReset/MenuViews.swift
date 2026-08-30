@@ -1474,11 +1474,45 @@ struct ResetDetailsView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, self.onAction == nil ? 12 : 9)
-        .frame(width: self.width, alignment: .leading)
+        .frame(maxWidth: self.width, alignment: .leading)
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
     }
 
+}
+
+enum MenuContentSizing {
+    @MainActor static func documentWidth(viewportWidth: CGFloat) -> CGFloat {
+        max(1, viewportWidth - NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy))
+    }
+
+    static func viewportHeight(contentHeight: CGFloat, maximumHeight: CGFloat) -> CGFloat {
+        min(max(1, ceil(contentHeight)), max(1, floor(maximumHeight)))
+    }
+
+    @MainActor static func scrollHostingView<Content: View>(
+        root: Content, width: CGFloat, maximumHeight: CGFloat
+    ) -> FixedHeightHostingView<AnyView> {
+        // Reserve a stable gutter even before overflow. Otherwise a legacy
+        // scroller can change wrapping and invalidate the measured height.
+        let documentWidth = self.documentWidth(viewportWidth: width)
+        // NSView.fittingSize does not make the current frame width a layout
+        // proposal. Ask SwiftUI for the height at the actual document width.
+        let measurement = NSHostingController(rootView: root)
+        let contentHeight = measurement.sizeThatFits(in: CGSize(
+            width: documentWidth, height: .greatestFiniteMagnitude)).height
+        let height = self.viewportHeight(contentHeight: contentHeight, maximumHeight: maximumHeight)
+        // Measure the initial content before adding a scroll viewport. Keep
+        // that outer frame stable during native menu tracking; disclosures
+        // grow inside it, and the next menu opening measures fresh content.
+        let content = ScrollView {
+            root.frame(width: documentWidth, alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+        }.frame(width: width, height: height, alignment: .top)
+        let hosting = FixedHeightHostingView(rootView: AnyView(content))
+        hosting.apply(width: width, height: height)
+        return hosting
+    }
 }
 
 final class FixedHeightHostingView<Content: View>: NSHostingView<Content> {

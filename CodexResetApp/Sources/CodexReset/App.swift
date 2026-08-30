@@ -30,7 +30,11 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
             return
         }
         if let demoLanguage = Self.readmeDemoLanguage() {
-            let store = SnapshotStore(snapshot: ResetDemoFixtures.primarySnapshot(demoLanguage))
+            var snapshot = ResetDemoFixtures.primarySnapshot(demoLanguage)
+            if ProcessInfo.processInfo.environment["CODEX_RESET_DEMO_HISTORY"] == "empty" {
+                snapshot.decisionHistory = nil
+            }
+            let store = SnapshotStore(snapshot: snapshot)
             self.store = store
             self.showDemoBackdropIfAvailable()
             self.menuController = MenuController(

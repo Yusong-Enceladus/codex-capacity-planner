@@ -76,6 +76,7 @@ final class MenuController: NSObject, NSMenuDelegate {
     private static let cardWidth: CGFloat = 310
     private static let detailsWidth: CGFloat = 380
     private static let mainlineDetailsWidth: CGFloat = 460
+    private static let calculationDetailsWidth: CGFloat = 480
 
     private let store: SnapshotStore
     private let presentationLanguage: ResetPresentationLanguage
@@ -251,13 +252,6 @@ final class MenuController: NSObject, NSMenuDelegate {
         let summaryVisualizations = visualizations.filter {
             ($0.group ?? "all") == rootVisualizationGroup
         }
-        if !rootRows.isEmpty || !summaryVisualizations.isEmpty {
-            submenu.addItem(self.makeDetailContentItem(DetailSection(
-                title: section.title,
-                rows: rootRows,
-                visualizations: summaryVisualizations.isEmpty ? nil : summaryVisualizations)))
-        }
-
         let groupOrder = DetailMenuLayout.childGroups(section.title)
         for key in groupOrder {
             let rows = DetailMenuLayout.rows(for: key, in: section)
@@ -277,6 +271,18 @@ final class MenuController: NSObject, NSMenuDelegate {
                 visualizations: groupVisualizations.isEmpty ? nil : groupVisualizations))
             item.isEnabled = true
             submenu.addItem(item)
+        }
+
+        if !rootRows.isEmpty || !summaryVisualizations.isEmpty {
+            if !submenu.items.isEmpty { submenu.insertItem(.separator(), at: 0) }
+            // Reserve the actual native navigation rows, not empty space in
+            // the SwiftUI content. Short timelines end directly above them.
+            let navigationHeight = submenu.size.height
+            submenu.insertItem(self.makeDetailContentItem(DetailSection(
+                title: section.title,
+                rows: rootRows,
+                visualizations: summaryVisualizations.isEmpty ? nil : summaryVisualizations),
+                reservedMenuHeight: navigationHeight), at: 0)
         }
 
         if submenu.items.isEmpty {
@@ -334,7 +340,7 @@ final class MenuController: NSObject, NSMenuDelegate {
         submenu.autoenablesItems = false
         submenu.minimumWidth = Self.detailsWidth
         // Results, Method and Raw Data are in-page controls, not a third menu.
-        submenu.addItem(self.makeDetailContentItem(section, width: Self.mainlineDetailsWidth))
+        submenu.addItem(self.makeDetailContentItem(section, width: Self.calculationDetailsWidth))
         return submenu
     }
 
@@ -351,7 +357,8 @@ final class MenuController: NSObject, NSMenuDelegate {
     private func makeDetailContentItem(
         _ section: DetailSection,
         width: CGFloat? = nil,
-        onAction: MainlineActionHandler? = nil) -> NSMenuItem
+        onAction: MainlineActionHandler? = nil,
+        reservedMenuHeight: CGFloat = 0) -> NSMenuItem
     {
         let contentWidth = width ?? Self.detailsWidth
         let root = ResetDetailsView(
@@ -368,14 +375,17 @@ final class MenuController: NSObject, NSMenuDelegate {
         let isTimeline = section.visualizations?.contains { $0.kind == "timeline" } == true
         let isExplanation = ["为什么这样建议", "Why This Plan"].contains(section.title) && self.store.snapshot?.decisionContext != nil
         let interactive = isCalculation || isCalendar || isTimeline || isExplanation
-        // A stable scroll viewport lets disclosures and calendar selection stay
-        // in the same tracking session without resizing the NSMenu under it.
-        let content = interactive
-            ? AnyView(ScrollView { root }.frame(width: contentWidth, height: isCalculation ? 540 : isCalendar ? 470 : 420))
-            : AnyView(root)
-        let hosting = FixedHeightHostingView(rootView: content)
-        let measuredHeight = hosting.measuredFittingHeight(width: contentWidth)
-        hosting.apply(width: contentWidth, height: measuredHeight)
+        let hosting: FixedHeightHostingView<AnyView>
+        if interactive {
+            let screen = self.statusItem.button?.window?.screen ?? NSScreen.main
+            let availableHeight = (screen?.visibleFrame.height ?? 700) - reservedMenuHeight - 24
+            hosting = MenuContentSizing.scrollHostingView(
+                root: root, width: contentWidth, maximumHeight: availableHeight)
+        } else {
+            hosting = FixedHeightHostingView(rootView: AnyView(root))
+            let measuredHeight = hosting.measuredFittingHeight(width: contentWidth)
+            hosting.apply(width: contentWidth, height: measuredHeight)
+        }
         let details = NSMenuItem()
         details.view = hosting
         details.isEnabled = onAction != nil || interactive
@@ -520,6 +530,8 @@ final class MenuController: NSObject, NSMenuDelegate {
             captureItem = self.menu.items.first { DetailMenuLayout.isMainlines($0.title) }
         case "calculation":
             captureItem = self.menu.items.first { DetailMenuLayout.isCalculation($0.title) }
+        case "explanation":
+            captureItem = self.menu.items.first { ["为什么这样建议", "Why This Plan"].contains($0.title) }
         case "resets":
             captureItem = self.menu.items.first { DetailMenuLayout.isReset($0.title) }
         case "history":

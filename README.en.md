@@ -33,7 +33,7 @@
 - **Recent-work suggestions**: puts up to 5/3/1 logical mainlines and correction actions directly in the main menu. Valid actions share one horizontal row; edits show inline feedback and keep the menu open for successive corrections or restoring automatic judgment. Explicit labels, Goals, and cross-day continuity determine intent; tokens describe load only, and temporary sessions never fill the list.
 - **Reset management**: puts natural resets, possible-reset windows, official resets, plan upgrades, and observed delivery on one past→now→future timeline.
 - **Multiple accounts**: “Usage & Targets” gives every visible account its own current, target, and forecast range while retaining API-equivalent capacity, expected loss, and local sampling provenance.
-- **Explainable calculations**: “Calculation & Data” is an independent first-level entry that separates results, method, and raw inputs instead of mixing account state, formulas, and diagnostics.
+- **Explainable calculations**: “Calculation & Data” is an independent first-level entry with in-page Results, Method, and Raw Data controls. Key values and aligned trends share one observation and account; formulas, complete records, and live diagnostics expand in clearly separate sections.
 - **Reset-credit planning**: shows every credit with its owning account and individual expiry on one shared axis from “Now,” so more remaining time always means a longer line. It also visualizes net capacity, API-equivalent value, the high-value window, and both “free reset happens” and “no free reset happens” outcomes.
 
 <p align="center">
@@ -59,6 +59,8 @@
 <p align="center"><img src="docs/assets/codex-capacity-planner-history-en.png" width="900" alt="Real macOS reset-history calendar with separate account receipts for one public event"></p>
 
 Each historical point is a decision saved at that time; missing past predictions are never backfilled. These anonymous synthetic scenarios use the production native interface.
+
+Menus measure their actual content before opening, so short timelines and explanations leave no oversized blank panel. Expanded details scroll in place without closing the menu. Both historical plots share a time axis and selection; Chinese uses UTC+8 and English uses Pacific Time.
 
 </details>
 

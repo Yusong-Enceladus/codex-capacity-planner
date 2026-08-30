@@ -76,6 +76,17 @@ which external forecast is better calibrated.
   gaps longer than the existing 90-minute forecast-freshness interval, and new
   account cycles break their respective lines. A missing value is not zero.
 - A promise's weight is printed separately, never plotted as a probability.
+- Results group both plots in one readable panel with a shared observation
+  cursor and one time axis. Body text is 13 points, chart labels 11 points,
+  and primary values 17–20 points. Formulas and source metadata belong to
+  Method and Raw Data. Live supplemental rows are explicitly separate from
+  historical selection; the full saved JSON remains inspectable in place.
+- Interactive menus are measured from their initial content before opening.
+  Short content does not reserve a fixed-height panel; long content is capped
+  by available display space after native navigation rows. During tracking,
+  expansion scrolls inside the stable viewport rather than resizing the
+  menu window. This follows AppKit's
+  [custom menu view constraints](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/MenuList/Articles/ViewsInMenuItems.html).
 - Public event IDs group related account receipts, but each account's actual
   receipt time remains visible. Grant and expiry remain individual to a credit.
 - Chinese uses Asia/Shanghai (UTC+8); English uses America/Los_Angeles (PT),

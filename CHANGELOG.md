@@ -5,6 +5,23 @@ versioning once the first public release is tagged.
 
 ## Unreleased
 
+## 0.1.9 - 2026-08-30
+
+- Measure interactive menu content before opening, instead of reserving fixed
+  420/470/540-point viewports. Short reset timelines and explanations no longer
+  leave blank panels above navigation or below their last paragraph.
+- Keep the measured outer frame stable during menu tracking; expanded details
+  scroll inside it, and long content respects the display and native footer.
+  Reserve scrollbar width during measurement so it cannot rewrap and clip text.
+  Include the calendar's initially selected records before measuring its height.
+- Reorganize Calculation & Data around a shared observation and account, two
+  aligned plots, one time axis, readable 11-point chart labels and 13-point
+  body text, and prominent values. Keep signal weight separate from probability.
+- Put formulas, source details, full saved JSON and current-plan supplemental
+  data in clearly labeled in-page sections. No information is removed and no
+  new submenu depth is introduced. A changed deadline is never reduced to an
+  ambiguous before/after percentage.
+
 ## 0.1.8 - 2026-08-30
 
 - Record the local evidence → interpretation → account plan → delivery chain.

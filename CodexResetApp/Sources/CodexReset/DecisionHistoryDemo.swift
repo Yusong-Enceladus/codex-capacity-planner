@@ -26,6 +26,8 @@ extension ResetDemoFixtures {
                 reasonEnglish: hint ? "The message is a possible-reset hint: a bounded adjustment, not a certain reset." : "No new reset signal; plan from local trends and the cadence forecast.",
                 deliveredEventId: step >= 1 ? "demo-reset-a" : nil,
                 deliveredAt: step >= 1 ? at(-6 * 3600 + Double(index * 1200)) : nil,
+                calculation: ["targetUsed": target, "targetNowUsed": target - 16 - (hint ? 4 : 0),
+                              "normalUse": 10, "predictionUse": 6, "candidateUse": hint ? 4 : 0],
                 cyclePhase: "below-target", trend: index == 0 ? "behind" : "uncertain")
         }
         let evidence = DecisionEvidence(id: "demo-hint", url: "https://example.invalid/status/hint", source: "example.invalid",

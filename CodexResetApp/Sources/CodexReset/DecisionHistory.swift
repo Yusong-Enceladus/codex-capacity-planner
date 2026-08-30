@@ -144,6 +144,33 @@ enum HistoryPresentation {
         return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
     }
 
+    static func recordID(atFraction fraction: Double, in records: [DecisionRecord]) -> String? {
+        guard fraction.isFinite else { return nil }
+        let samples = records.compactMap { record in
+            self.date(record.at).map { (id: record.id, date: $0) }
+        }
+        guard let first = samples.first, let last = samples.last else { return nil }
+        let target = first.date.addingTimeInterval(
+            max(0, last.date.timeIntervalSince(first.date)) * min(1, max(0, fraction)))
+        return samples.min {
+            abs($0.date.timeIntervalSince(target)) < abs($1.date.timeIntervalSince(target))
+        }?.id
+    }
+
+    static func impactSummary(
+        before: DecisionAccount, after: DecisionAccount, language: ResetPresentationLanguage
+    ) -> String {
+        guard let beforeTime = self.date(before.targetAt),
+              let afterTime = self.date(after.targetAt) else {
+            return language.text("展开核对目标与截止时间", "Expand to inspect targets and deadlines")
+        }
+        guard beforeTime == afterTime else {
+            return language.text("截止时间有变化，展开对照", "Deadline changed; expand to compare")
+        }
+        return language.text("同截止点目标 ", "Target at the same deadline ")
+            + self.percent(before.targetPercent) + " → " + self.percent(after.targetPercent)
+    }
+
     static func time(_ value: String?, language: ResetPresentationLanguage) -> String {
         guard let date = self.date(value) else { return language.text("时间未知", "Time unknown") }
         return self.time(date, language: language)

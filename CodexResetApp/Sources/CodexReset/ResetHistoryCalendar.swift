@@ -3,11 +3,20 @@ import SwiftUI
 struct ResetHistoryCalendar: View {
     @Environment(\.resetPresentationLanguage) private var language
     let events: [ResetHistoryEvent]
-    @State private var month = Date()
-    @State private var selectedDay: Date?
+    @State private var month: Date
+    @State private var selectedDay: Date
+
+    init(events: [ResetHistoryEvent]) {
+        self.events = events
+        // Include the initially selected day's records in pre-opening sizing.
+        // Waiting for onAppear would measure an empty day, then overflow it.
+        let initialDay = events.last.flatMap { HistoryPresentation.date($0.at) } ?? Date()
+        self._month = State(initialValue: initialDay)
+        self._selectedDay = State(initialValue: initialDay)
+    }
 
     private var calendar: Calendar { HistoryPresentation.calendar(self.language) }
-    private var selected: Date { self.selectedDay ?? Date() }
+    private var selected: Date { self.selectedDay }
     private var selectedEvents: [ResetHistoryEvent] {
         HistoryPresentation.events(self.events, on: self.selected, language: self.language)
     }
@@ -24,14 +33,24 @@ struct ResetHistoryCalendar: View {
                     .accessibilityLabel(self.language.text("下个月", "Next month"))
                 Button(self.language.text("今天", "Today")) { self.month = Date(); self.selectedDay = Date() }
             }.buttonStyle(.bordered).controlSize(.mini)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: 7), spacing: 3) {
-                ForEach(0..<7, id: \.self) { index in
-                    Text(self.calendar.veryShortStandaloneWeekdaySymbols[(self.calendar.firstWeekday - 1 + index) % 7])
-                        .font(.caption2).foregroundStyle(.secondary)
+            // A month has at most 42 cells. Lay them out eagerly so menu
+            // measurement uses final row heights rather than lazy estimates.
+            let days = HistoryPresentation.monthDays(containing: self.month, language: self.language)
+            Grid(horizontalSpacing: 3, verticalSpacing: 3) {
+                GridRow {
+                    ForEach(0..<7, id: \.self) { index in
+                        Text(self.calendar.veryShortStandaloneWeekdaySymbols[(self.calendar.firstWeekday - 1 + index) % 7])
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                    }
                 }
-                ForEach(Array(HistoryPresentation.monthDays(containing: self.month, language: self.language).enumerated()), id: \.offset) { _, day in
-                    if let day { self.dayButton(day) }
-                    else { Color.clear.frame(height: 33) }
+                ForEach(0..<(days.count / 7), id: \.self) { week in
+                    GridRow {
+                        ForEach(0..<7, id: \.self) { weekday in
+                            if let day = days[week * 7 + weekday] { self.dayButton(day) }
+                            else { Color.clear.frame(height: 33) }
+                        }
+                    }
                 }
             }
             Text(self.language.text("带圆点的日期有记录；选择日期查看完整条目。", "A dot marks recorded events; select a day for full details."))
@@ -77,11 +96,6 @@ struct ResetHistoryCalendar: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
                 }
-            }
-        }
-        .onAppear {
-            if self.selectedDay == nil, let date = self.events.last.flatMap({ HistoryPresentation.date($0.at) }) {
-                self.month = date; self.selectedDay = date
             }
         }
         .fixedSize(horizontal: false, vertical: true)
