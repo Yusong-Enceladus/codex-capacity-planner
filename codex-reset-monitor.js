@@ -1919,6 +1919,7 @@ function eventTemporalPhase(value) {
   const announcedAtMs = eventAnnouncedAtMs(event);
   const window = object(event.official_window) || object(event.window) || {};
   const futureBoundaryMs =
+    millis(window.target_at) ??
     millis(event.deadlineAt || event.deadline_at) ??
     millis(window.end_at) ??
     millis(event.windowStartAt || window.start_at || event.effective_at);
@@ -1977,6 +1978,8 @@ function consolidatedResetTemporalPhase(feedValue, eventValue, forecastValue) {
   const event = object(eventValue) || {};
   const eventID = explicitEventID(event);
   const records = [event, ...feedRecordsForEvent(feedValue, eventID)];
+  const hosted = object(object(forecastValue) && forecastValue.official_signal);
+  if (hosted && explicitEventID(hosted) === eventID) records.push(hosted);
   const verificationStates = records
     .map((record) =>
       text(record.reset_verification_status || record.verificationStatus).toLowerCase(),
@@ -2019,27 +2022,19 @@ function clearActiveEpisode(state, reason, nowMs, preserveOrdering = true) {
   return { cleared: true, reason, event: active };
 }
 
-function eventStartsAfterSettlement(eventValue, settlementAtMs) {
-  const event = object(eventValue);
-  if (!event || settlementAtMs === null) return false;
-  const window = object(event.official_window) || object(event.window) || {};
-  const startAtMs =
-    millis(event.windowStartAt) ||
-    millis(window.start_at) ||
-    millis(event.effectiveAt) ||
-    millis(event.effective_at) ||
-    millis(event.start_at);
-  return startAtMs !== null && startAtMs > settlementAtMs;
-}
-
 function eventSettledByState(stateValue, eventValue) {
-  const settlement = globalSettlementFromState(stateValue);
-  const eventAtMs = eventAnnouncedAtMs(eventValue);
-  return Boolean(
-    settlement.atMs !== null &&
-      eventAtMs !== null &&
-      eventAtMs <= settlement.atMs &&
-      !eventStartsAfterSettlement(eventValue, settlement.atMs),
+  const state = object(stateValue) || {};
+  const id = explicitEventID(eventValue) || eventID(eventValue && eventValue.id);
+  if (!id) return false;
+  if ((object(state.events) && state.events.closedIds || []).includes(id)) return true;
+  if (globalSettlementFromState(state).eventId === id) return true;
+  const accounts = Object.values(object(state.accountStates) || {}).filter(
+    (account) => account.present !== false,
+  );
+  return accounts.length > 0 && accounts.every((account) =>
+    normalizedPersonalResets(account.personalResets).some(
+      (reset) => reset.cause === "global-manual" && reset.eventId === id,
+    ),
   );
 }
 
@@ -3069,6 +3064,8 @@ function safePublicState(state, runtime) {
                 label: activeEpisode.windowLabel || "",
                 start_at: activeEpisode.windowStartAt || null,
                 end_at: activeEpisode.deadlineAt || null,
+                target_kind: activeEpisode.timingKind || null,
+                target_at: activeEpisode.targetAt || null,
               }
             : null,
         summary: activeEpisode.summary,
@@ -3521,13 +3518,15 @@ function normalizeFeedEvent(value) {
     announcedAt: iso(announcedAtMs),
     windowStartAt: text(window.start_at) || text(event.effective_at) || null,
     deadlineAt:
-      text(window.end_at) ||
+      text(window.target_at) || text(window.end_at) ||
       text(event.deadline_at) ||
       (inferredDeadline ? iso(inferredDeadline) : null),
     windowLabel:
       text(window.localized_label) ||
       text(window.label) ||
       (inferredDeadline ? inferredDeadlineLabel(`${originalSummary} ${localizedSummary}`) : ""),
+    timingKind: text(window.target_kind) || null,
+    targetAt: text(window.target_at) || null,
     summary: text(event.summary) || summary,
     localizedSummary: text(event.localized_summary) || "",
     url: /^https:\/\//.test(text(event.url)) ? text(event.url) : "",
@@ -3561,6 +3560,14 @@ function latestExplicitFeedEvent(feed, forecastValue) {
   const candidates = [];
   for (const event of events) {
     const item = object(event) || {};
+    const hosted = object(object(forecastValue) && forecastValue.official_signal);
+    if (hosted && explicitEventID(hosted) === explicitEventID(item) &&
+        (text(hosted.kind) === "signal" ||
+         ["dated_commitment", "plain_promise", "promise"].includes(text(hosted.signal_type)))) {
+      // Forecast owns the current Watch semantics. Raw reset-group entries
+      // must not promote a future promise to a 100%-immediate announcement.
+      continue;
+    }
     const effects = resetEventEffects(item);
     const isBankedLifecycle =
       effects.bankedGrantEffect === "announced" &&
@@ -3815,8 +3822,10 @@ function notificationCopy(model, reason) {
         : "";
     return {
       subtitle: "Tibo 给出重置承诺",
-      body: decision
-        ? `到 ${utc8(decision.deadlineMs)}，按 ${whole(decision.probability)}% 概率计算，建议再用约 ${whole(
+      body: !Number.isFinite(forecast.signal && forecast.signal.deadlineMs)
+        ? "官方承诺还会重置，但具体时间未定；先继续有价值工作，重置券结合各自到期时间重新评估。"
+        : decision
+        ? `到 ${utc8(decision.deadlineMs)}，按源站承诺权重与基础预测安排，建议再用约 ${whole(
             decision.additionalTotal,
           )}% 周额度。${behaviorSuffix}`
         : "Tibo 给出了有期限的重置承诺；打开 CodexBar 查看最新计划。",
@@ -5211,10 +5220,14 @@ function createRuntime(logic, initialState) {
     const model = currentModel(Date.now());
     const signal = model && model.forecast && model.forecast.signal;
     if (!signal || signal.level !== "commitment" || !signal.id) return null;
-    if (runtime.state.events.notifiedSignalIds.includes(signal.id)) return null;
+    // Alert identity deduplicates public notifications only. It is not an
+    // account's quota-cycle or delivery identity. Keep legacy receipts valid.
+    const notificationID = signal.alertEventId || signal.id;
+    if (runtime.state.events.notifiedSignalIds.includes(notificationID) ||
+        runtime.state.events.notifiedSignalIds.includes(signal.id)) return null;
     runtime.state.events.notifiedSignalIds = [
       ...runtime.state.events.notifiedSignalIds,
-      signal.id,
+      notificationID,
     ].slice(-32);
     save();
     if (!startup) {

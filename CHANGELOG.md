@@ -5,6 +5,28 @@ versioning once the first public release is tagged.
 
 ## Unreleased
 
+## 0.1.7 - 2026-08-30
+
+- Keep a future public commitment active when it was published during staggered
+  account delivery of an earlier reset. Settlement is event- and account-scoped;
+  an older global timestamp cannot erase a different promise.
+- Consume codex-reset.com Alert-v3 tiers, nested scores, alert IDs, and target
+  semantics. Raw feed classifications no longer upgrade the same Watch to an
+  immediate announcement. Keep public signal weights separate from cadence
+  probabilities, and apply dated commitments to reset-credit risk scenarios.
+- Show a source deadline as “by/before” in Chinese UTC+8 and English Pacific
+  Time, without inventing an earliest reset time or an exact-arrival countdown.
+  Untimed promises do not manufacture deadlines or 24-hour probabilities.
+- Keep Suggested Mainlines open while applying corrections. The same compact
+  action row shows saving, success, or retry feedback; other rows remain
+  usable without moving, and saved corrections can restore automatic judgment
+  in place. Closing and reopening the menu applies the newly ranked list.
+- Queue a fresh snapshot after an acknowledged correction even when a previous
+  refresh is still running. A temporary snapshot failure never misreports a
+  durable correction as a failed save.
+- Show consecutive corrections in the bilingual README gallery, captured from
+  the real native macOS menu with anonymous data and the desktop backdrop.
+
 ## 0.1.6 - 2026-08-29
 
 - Put each mainline's valid correction actions into one compact horizontal

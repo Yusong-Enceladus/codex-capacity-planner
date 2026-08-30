@@ -3,6 +3,26 @@ import SwiftUI
 import Testing
 @testable import CodexReset
 
+@Test func `hosted deadline remains a deadline in both languages`() throws {
+    let item = try JSONDecoder().decode(DetailTimelineItem.self, from: Data(#"""
+    {"id":"promise","kind":"commitment","state":"pending","title":"Promise",
+     "badge":"Pending","at":"2026-08-31T06:59:59.999Z","endAt":null,
+     "publishedAt":"2026-08-29T21:23:38Z","timingKind":"deadline"}
+    """#.utf8))
+    let chinese = ResetTimelinePresentation.timeText(for: item, language: .simplifiedChinese)
+    let english = ResetTimelinePresentation.timeText(for: item, language: .english)
+    #expect(chinese?.contains("8月31日 15:00 UTC+8 前") == true)
+    #expect(english?.contains("By Aug 31, 12:00 AM PT") == true)
+    #expect(english?.contains("exact reset time unknown") == true)
+    let now = try #require(AlternatingDisplay.date(from: "2026-08-30T05:00:00Z"))
+    #expect(ResetTimelineLayout.activeItems([item], at: now).isEmpty)
+    #expect(ResetTimelineLayout.futureItems([item], at: now).map(\.id) == ["promise"])
+    let untimed = DetailTimelineItem(
+        id: "untimed", kind: "commitment", state: "pending", title: "Promise", badge: "Pending")
+    #expect(ResetTimelinePresentation.title(for: untimed, language: .english).contains("Timing unknown"))
+    #expect(ResetTimelineLayout.undatedItems([untimed]).count == 1)
+}
+
 @Test func `decodes complete snapshot`() throws {
     let data = Data(#"""
     {

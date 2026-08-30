@@ -71,6 +71,21 @@ account can create an immediate 100% policy for that account. A landed account
 returns to its normal cycle even while another tracked account remains pending.
 Local quota facts outrank inconsistent public lifecycle fields.
 
+The hosted forecast owns public Watch interpretation; local logic does not
+re-score its wording. Alert-v3 tier, score, alert identity, and target-kind
+metadata are retained. Raw feed records cannot promote the same current Watch
+into an immediate announcement. Notification identity is separate from quota
+delivery identity. Global settlement timestamps never consume a different
+future promise, including one published during staggered account delivery of
+an earlier reset. Only exact event receipts/tombstones close it locally.
+
+A source deadline stays a deadline point, not an inferred start/end range.
+Its score is a planning weight kept separate from cadence probabilities. Dated
+commitments also enter the credit planner's reset/no-reset boundary scenarios;
+deferral is checked against each credit's own expiry. Undated commitments do
+not fabricate a deadline or turn 83 into a 24h probability, and cannot impose
+an unbounded automatic credit deferral without timing evidence.
+
 ## Reset-credit planning
 
 A reset credit is a finite-lived capacity option, not an isolated countdown.
@@ -137,7 +152,12 @@ that order immediately above Refresh, Settings, and Quit; the title card is a
 summary rather than a navigation gateway. Suggested Mainlines stays on this
 primary interaction path so its reversible corrections remain low-cost. Every
 mainline keeps its valid corrections in one horizontal button strip inside the
-same content item; actions do not become separate vertical menu entries. Each
+same content item; actions do not become separate vertical menu entries.
+Corrections keep native menu tracking active. Saving, saved, and retry feedback
+replace that strip at a fixed height while neighbouring rows stay usable and
+stationary. Restoring automatic judgment uses the same local correction path.
+Structural reranking waits until the next menu opening; an acknowledged edit
+queues a fresh snapshot even if an older read is already in flight. Each
 Usage & Targets account row carries its own current usage,
 target, optional natural forecast range, API-equivalent capacity, expected
 reset loss, and sampling provenance. Account forecasts are never shared.

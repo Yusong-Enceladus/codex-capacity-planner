@@ -114,6 +114,7 @@ struct DetailTimelineItem: Codable, Equatable, Identifiable, Sendable {
     let endAt: String?
     let publishedAt: String?
     let link: DetailLink?
+    let timingKind: String?
 
     init(
         id: String,
@@ -126,7 +127,8 @@ struct DetailTimelineItem: Codable, Equatable, Identifiable, Sendable {
         at: String? = nil,
         endAt: String? = nil,
         publishedAt: String? = nil,
-        link: DetailLink? = nil)
+        link: DetailLink? = nil,
+        timingKind: String? = nil)
     {
         self.id = id
         self.kind = kind
@@ -139,6 +141,7 @@ struct DetailTimelineItem: Codable, Equatable, Identifiable, Sendable {
         self.endAt = endAt
         self.publishedAt = publishedAt
         self.link = link
+        self.timingKind = timingKind
     }
 }
 

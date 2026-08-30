@@ -20,6 +20,8 @@ final class SnapshotStore: ObservableObject {
 
     private var timer: AnyCancellable?
     private let session: URLSession
+    private var refreshAgain = false
+    private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(session: URLSession = .shared, snapshot: ResetSnapshot? = nil) {
         self.session = session
@@ -48,30 +50,45 @@ final class SnapshotStore: ObservableObject {
             }
     }
 
-    func refresh() async {
-        guard !self.isRefreshing else { return }
+    func refresh(afterAction: Bool = false) async {
+        if self.isRefreshing {
+            // A pre-edit snapshot request cannot satisfy an acknowledged edit.
+            // Queue one fresh read, and let overlapping actions share that read.
+            self.refreshAgain = self.refreshAgain || afterAction
+            await withCheckedContinuation { self.refreshWaiters.append($0) }
+            return
+        }
         self.isRefreshing = true
-        defer { isRefreshing = false }
-        do {
-            var request = URLRequest(url: LocalMonitorEndpoint.snapshotURL)
-            request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-            request.timeoutInterval = 10
-            request.setValue("application/json", forHTTPHeaderField: "Accept")
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                throw SnapshotError.serviceUnavailable
+        repeat {
+            self.refreshAgain = false
+            do {
+                var request = URLRequest(url: LocalMonitorEndpoint.snapshotURL)
+                request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+                request.timeoutInterval = 10
+                request.setValue("application/json", forHTTPHeaderField: "Accept")
+                let (data, response) = try await session.data(for: request)
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                    throw SnapshotError.serviceUnavailable
+                }
+                self.snapshot = try JSONDecoder().decode(ResetSnapshot.self, from: data)
+                self.fetchedAt = Date()
+                self.errorMessage = nil
+            } catch {
+                self.errorMessage = self.snapshot == nil
+                    ? "本机组件暂时不可用，Codex Capacity Planner 会自动重试。"
+                    : "本机组件暂时不可用，当前保留上一次可靠结果。"
             }
-            self.snapshot = try JSONDecoder().decode(ResetSnapshot.self, from: data)
-            self.fetchedAt = Date()
-            self.errorMessage = nil
-        } catch {
-            self.errorMessage = self.snapshot == nil
-                ? "本机组件暂时不可用，Codex Capacity Planner 会自动重试。"
-                : "本机组件暂时不可用，当前保留上一次可靠结果。"
+        } while self.refreshAgain
+        self.isRefreshing = false
+        let waiters = self.refreshWaiters
+        self.refreshWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
         }
     }
 
-    func perform(_ action: DetailAction) async {
+    @discardableResult
+    func perform(_ action: DetailAction) async -> Bool {
         do {
             var configRequest = URLRequest(url: LocalMonitorEndpoint.configURL)
             configRequest.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
@@ -99,9 +116,13 @@ final class SnapshotStore: ObservableObject {
                 throw SnapshotError.actionRejected
             }
             self.errorMessage = nil
-            await self.refresh()
+            await self.refresh(afterAction: true)
+            // The edit is durable even if the follow-up snapshot is temporarily
+            // unavailable. Do not invite the user to repeat a successful write.
+            return true
         } catch {
             self.errorMessage = "主线纠偏未能保存；本机组件恢复后可重试。"
+            return false
         }
     }
 }

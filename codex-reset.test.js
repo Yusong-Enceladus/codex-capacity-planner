@@ -724,6 +724,135 @@ const commitmentSignal = pickSignal(
 equal(commitmentSignal.level, "commitment");
 equal(commitmentSignal.commitmentFloor, 65);
 
+// Synthetic Alert-v3 regression: promise B is published between the two
+// accounts' deliveries of reset A. No live requests or real account data.
+const watchResetID = "2998000000000000001";
+const watchPromiseID = "2998000000000000002";
+const watchPublishedAt = new Date(now - 37 * minute).toISOString();
+const watchSettledAt = new Date(now - 36 * minute).toISOString();
+const watchDeadline = new Date(now + 26 * hour).toISOString();
+const watchForecast = {
+  ...forecastFixture(),
+  updated_at: new Date(now - minute).toISOString(),
+  last_reset_at: new Date(now - 77 * minute).toISOString(),
+  probabilities: { raw_24h: 0.25, raw_48h: 0.44, rounded_24h: 25, rounded_48h: 45,
+    commitment_floor_percent: 93, signal_percent: 93 },
+  signal_tier: "likely",
+  alert_event_id: `signal:${watchPromiseID}:likely`,
+  signal_score: { band: "dated_commitment", value: 93 },
+  official_signal: {
+    tweet_id: watchPromiseID,
+    kind: "signal",
+    signal_type: "dated_commitment",
+    signal_tier: "likely",
+    alert_event_id: `signal:${watchPromiseID}:likely`,
+    at: watchPublishedAt,
+    summary: "Synthetic: the next celebration is postponed; today's reset is separate.",
+    url: `https://x.com/thsottiaux/status/${watchPromiseID}`,
+    score: { band: "dated_commitment", value: 93 },
+    window: { start_at: watchPublishedAt, end_at: watchDeadline,
+      target_at: watchDeadline, target_kind: "deadline", time_zone: "America/Los_Angeles",
+      label: "stated deadline" },
+  },
+};
+const watchUsage = ["watch-a", "watch-b"].map((id, index) => ({
+  provider: "codex", cacheAccountKey: id, account: `${id}@example.test`, accountLive: index === 0,
+  usage: { updatedAt: new Date(now).toISOString(), dataConfidence: "exact",
+    identity: { loginMethod: "pro" },
+    secondary: { usedPercent: 8, windowMinutes: 10080, resetsAt: new Date(now + 6 * day).toISOString() } },
+}));
+const watchReceiver = {
+  activeAccountId: "watch-a",
+  signalSettlement: { throughAt: watchSettledAt, eventId: watchResetID },
+  closedEventIds: [watchResetID],
+  accounts: watchUsage.map((usage, index) => ({
+    id: usage.cacheAccountKey, label: usage.account, live: index === 0,
+    lastPersonalReset: { at: new Date(now - (index ? 36 : 38) * minute).toISOString(),
+      cause: "global-manual", eventId: watchResetID },
+    personalResets: [{ at: watchSettledAt, cause: "global-manual", eventId: watchResetID }],
+    resetCredits: { reliable: true, updatedAt: new Date(now).toISOString(), credits: [
+      { id: `credit-${index}`, status: "available", resetType: "full",
+        grantedAt: new Date(now - day).toISOString(), expiresAt: new Date(now + 14 * day).toISOString() },
+    ] },
+  })),
+};
+const watchSignal = pickSignal(watchForecast, { events: [] }, watchReceiver, now);
+equal(watchSignal.id, watchPromiseID, "settling A must not consume B published just before A's last delivery");
+equal(watchSignal.level, "commitment");
+equal(watchSignal.signalScore, 93);
+equal(watchSignal.signalTier, "likely");
+equal(watchSignal.alertEventId, `signal:${watchPromiseID}:likely`);
+equal(watchSignal.commitmentFloor, 93);
+equal(watchSignal.windowStartMs, null, "a deadline's publication/start is not an earliest delivery time");
+equal(watchSignal.sourceWindowStartMs, Date.parse(watchPublishedAt));
+equal(watchSignal.deadlineMs, Date.parse(watchDeadline));
+equal(watchSignal.timingKind, "deadline");
+const watchModel = build(watchUsage, watchForecast, null, now, watchReceiver);
+equal(watchModel.forecast.p24, 25);
+equal(watchModel.forecast.p48, 44);
+equal(watchModel.forecast.displayP48, 45);
+equal(watchModel.decision.mode, "commitment");
+equal(watchModel.decision.horizonHours, 26);
+close(watchModel.decision.targetUsed, 100 - (118 / 168 * 100) * 0.07);
+check(watchModel.accounts.every((account) => account.forecast.signal.id === watchPromiseID));
+check(watchModel.accounts.every((account) => account.decision.probability === 93));
+equal(watchModel.actions.creditAction, "hold");
+check(watchModel.bankedPlan.possibleResetFirst, "credits outliving a dated promise must wait through its window");
+equal(suggestionLimit(watchModel.decision, { endpointLower: 20, endpointUpper: 45 }), 5);
+
+const watchRaw = { ...tiboEvent, id: watchPromiseID, announced_at: watchPublishedAt,
+  url: watchForecast.official_signal.url, official_window: null };
+equal(pickSignal(watchForecast, { events: [watchRaw] }, watchReceiver, now).level, "commitment",
+  "a raw reset-group entry cannot upgrade the current structured Watch to immediate 100%");
+equal(latestExplicitFeedEvent({ events: [watchRaw] }, watchForecast), null);
+equal(pickSignal(watchForecast, { tweets: [{ ...watchRaw, reset_verification_status: "expired" }] },
+  watchReceiver, now).id, watchPromiseID, "raw corpus expiry must not overwrite the current hosted interpretation");
+equal(pickSignal(watchForecast, { events: [{ ...watchRaw, reset_verification_status: "rejected" }] },
+  watchReceiver, now).level, "none", "an explicit same-ID rejection must still win");
+equal(pickSignal({ ...watchForecast, official_signal: { ...watchForecast.official_signal,
+  alert_event_id: `signal:${watchResetID}:likely` } }, null, watchReceiver, now).level, "none");
+equal(pickSignal({ ...watchForecast, last_reset_at: watchSettledAt }, null, watchReceiver, now).id,
+  watchPromiseID, "a public last-reset timestamp cannot consume a different future promise either");
+equal(pickSignal(watchForecast, null, { ...watchReceiver, closedEventIds: [watchResetID, watchPromiseID] }, now).level,
+  "none", "identity-matched closed history must never reopen");
+equal(pickSignal(watchForecast, null, watchReceiver, Date.parse(watchDeadline) + 1).level, "none",
+  "an expired promise must not mint another 24-hour deadline");
+
+const partialWatchReceiver = {
+  ...watchReceiver, closedEventIds: [], signalSettlement: null,
+  accounts: watchReceiver.accounts.map((account, index) => index ? {
+    ...account, lastPersonalReset: null, personalResets: [],
+  } : account),
+  activeEpisode: { ...tiboEvent, id: watchResetID, announced_at: new Date(now - hour).toISOString(),
+    url: `https://x.com/thsottiaux/status/${watchResetID}`, source: "site-api",
+    official_window: null, status: "awaiting-personal",
+    account_delivery: { "watch-a": "landed", "watch-b": "pending" } },
+};
+const partialWatchModel = build(watchUsage, watchForecast, null, now, partialWatchReceiver);
+equal(partialWatchModel.accounts[0].forecast.signal.id, watchPromiseID);
+equal(partialWatchModel.accounts[1].forecast.signal.id, watchResetID);
+equal(partialWatchModel.accounts[1].decision.immediate, true,
+  "account A's receipt must not settle account B's still-pending delivery");
+
+const untimedForecast = { ...watchForecast, probabilities: { ...watchForecast.probabilities,
+  commitment_floor_percent: 83 }, official_signal: { ...watchForecast.official_signal,
+  signal_type: "plain_promise", score: { band: "plain_promise", value: 83 }, window: null } };
+const untimedModel = build(watchUsage, untimedForecast, null, now, watchReceiver);
+equal(untimedModel.forecast.signal.level, "commitment");
+equal(untimedModel.forecast.signal.deadlineMs, null);
+equal(untimedModel.decision.mode, "commitment-untimed");
+equal(untimedModel.decision.probability, 25, "83 is not an unstated 24-hour probability");
+check(untimedModel.decision.candidateUse > 0 && untimedModel.decision.targetUsed < 100);
+const elevatedForecast = { ...untimedForecast, official_signal: { ...untimedForecast.official_signal,
+  signal_tier: "elevated", alert_event_id: `signal:${watchPromiseID}:elevated` } };
+equal(pickSignal(elevatedForecast, null, watchReceiver, now).level, "hint",
+  "an elevated score cannot silently become a strong Watch");
+const centeredForecast = { ...watchForecast, official_signal: { ...watchForecast.official_signal,
+  window: { ...watchForecast.official_signal.window, target_kind: "center",
+    target_at: new Date(now + 25 * hour).toISOString() } } };
+equal(pickSignal(centeredForecast, null, watchReceiver, now).deadlineMs, now + 25 * hour,
+  "structured target_at wins without parsing the label");
+
 const retrospectiveReply = {
   id: "2092316228497063958",
   type: "reset",
@@ -3328,8 +3457,12 @@ equal(
     id: previousHint.id,
     announcedAt: previousHint.announced_at,
   }),
-  true,
+  false,
+  "a timestamp alone cannot settle a different event",
 );
+equal(eventSettledByState(settlementState, { id: tiboEvent.id }), true);
+equal(eventSettledByState({ events: { globalSettledThroughAt: watchSettledAt,
+  globalSettlementEventId: watchResetID } }, watchForecast.official_signal), false);
 equal(
   eventSettledByState(settlementState, {
     id: futureWindowHint.id,
@@ -3722,6 +3855,32 @@ const ctx = {
     3,
     "a session database failure must not erase the latest reliable candidate list",
   );
+
+  const watchSnapshot = await provider.fetchUsage({
+    ...ctx,
+    http: { async getJSON(url) {
+      if (url.endsWith("/api/state")) return { json: { ...watchReceiver,
+        cache: { forecast: watchForecast, feed: { events: [] } } } };
+      if (url.includes("/usage?")) return { json: watchUsage };
+      throw new Error(`Unexpected synthetic Watch URL: ${url}`);
+    } },
+  });
+  const watchRootRow = watchSnapshot.details[0].rows.find((row) => row.label === "重置");
+  check(watchRootRow.value.includes("最晚") && watchRootRow.value.endsWith("前"));
+  equal(watchRootRow.relativeTimeAt, null, "a deadline must not alternate into 'reset in N hours'");
+  const watchTimeline = watchSnapshot.submenuDetails.find((section) => section.title === "重置")
+    .visualizations.find((item) => item.kind === "timeline").items
+    .find((item) => item.kind === "commitment");
+  equal(watchTimeline.at, watchDeadline);
+  equal(watchTimeline.endAt, null);
+  equal(watchTimeline.timingKind, "deadline");
+  check(!/未来 24 小时/.test(watchSnapshot.decisionProgress.title),
+    "a 26-hour commitment target must not masquerade as the 24-hour target");
+  const watchAccountBars = watchSnapshot.submenuDetails.find((section) => section.title === "用量与目标")
+    .rows.filter((row) => row.progress);
+  check(watchAccountBars.length === 2 && watchAccountBars.every((row) => row.progress.targetPercent > 90));
+  check(watchSnapshot.submenuDetails.find((section) => section.title === "计算与数据").rows
+    .some((row) => row.label === "源站时间语义" && row.value.startsWith("deadline")));
 
   const snapshot = await provider.fetchUsage(ctx);
   equal(snapshot.details.length, 1);

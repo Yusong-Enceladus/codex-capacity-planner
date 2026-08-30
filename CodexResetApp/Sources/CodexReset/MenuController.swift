@@ -124,9 +124,13 @@ final class MenuController: NSObject, NSMenuDelegate {
         if ProcessInfo.processInfo.environment["CODEX_RESET_ACTUAL_MENU"] == "1" {
             let rawDelay = ProcessInfo.processInfo.environment["CODEX_RESET_ACTUAL_MENU_DELAY"]
             let delay = rawDelay.flatMap(Double.init) ?? 2
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.showActualMenuForCapture()
+            // A modal NSMenu opened inside a main-dispatch block prevents that
+            // queue from serving async actions and accessibility requests. A
+            // run-loop timer matches normal AppKit event-driven menu opening.
+            let captureTimer = Timer(timeInterval: max(0, delay), repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.showActualMenuForCapture() }
             }
+            RunLoop.main.add(captureTimer, forMode: .common)
         }
     }
 
@@ -138,7 +142,8 @@ final class MenuController: NSObject, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        self.rebuildMenu()
+        if self.menuOpen { self.rebuildPending = true }
+        else { self.rebuildMenu() }
     }
 
     func menuDidClose(_ menu: NSMenu) {
@@ -348,7 +353,7 @@ final class MenuController: NSObject, NSMenuDelegate {
     private func makeDetailContentItem(
         _ section: DetailSection,
         width: CGFloat? = nil,
-        onAction: ((DetailAction) -> Void)? = nil) -> NSMenuItem
+        onAction: MainlineActionHandler? = nil) -> NSMenuItem
     {
         let contentWidth = width ?? Self.detailsWidth
         let root = ResetDetailsView(
@@ -370,12 +375,14 @@ final class MenuController: NSObject, NSMenuDelegate {
         return details
     }
 
-    private var inlineActionHandler: (DetailAction) -> Void {
+    private var inlineActionHandler: MainlineActionHandler {
         { [weak self] action in
-            guard let self else { return }
-            self.menu.cancelTracking()
-            guard self.allowsRefresh else { return }
-            Task { await self.store.perform(action) }
+            guard let self else { return false }
+            // NSMenuItem custom views can handle edits without ending tracking.
+            // The row owns its feedback; defer structural menu changes until
+            // tracking ends so successive edits keep their focus and position.
+            guard self.allowsRefresh else { return true }
+            return await self.store.perform(action)
         }
     }
 

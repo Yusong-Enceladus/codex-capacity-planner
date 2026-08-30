@@ -339,6 +339,12 @@ function codexResetUsagePayloadFromReceiver(receiverValue) {
 function codexResetSignalLevel(signal) {
   const kind = codexResetText(signal && signal.kind).toLowerCase();
   const signalType = codexResetText(signal && signal.signal_type).toLowerCase();
+  const tier = codexResetText(signal && signal.signal_tier).toLowerCase();
+  // Alert v3 separates strength from lifecycle. A scored Watch is not an
+  // already-announced reset, and a context score alone cannot promote it.
+  if (tier === "elevated") return "hint";
+  if (tier && tier !== "likely") return "none";
+  if (tier === "likely" && kind === "signal") return "commitment";
   const announcement = codexResetText(signal && signal.announcement_state).toLowerCase();
   const verification = codexResetText(signal && signal.reset_verification_status).toLowerCase();
   const type = codexResetText(signal && signal.type).toLowerCase();
@@ -350,7 +356,8 @@ function codexResetSignalLevel(signal) {
     return "explicit";
   }
   if (["explicit", "confirmed", "reset"].includes(kind)) return "explicit";
-  if (signalType === "dated_commitment" || ["promise", "commitment"].includes(kind)) {
+  if (["dated_commitment", "plain_promise", "promise"].includes(signalType) ||
+      ["promise", "commitment"].includes(kind)) {
     return "commitment";
   }
   if (
@@ -493,6 +500,37 @@ function codexResetSignalID(signalValue) {
   return urlMatch ? urlMatch[1] : direct.replace(/^.*\//, "");
 }
 
+// Consume the hosted interpretation once. Feed entries remain source/history
+// material; they must not replace this interpretation with a second classifier.
+function codexResetHostedSignal(forecastValue) {
+  const forecast = codexResetObject(forecastValue) || {};
+  const signal = codexResetObject(forecast.official_signal);
+  if (!signal) return null;
+  const tier = codexResetText(signal.signal_tier || forecast.signal_tier).toLowerCase();
+  const alertID = codexResetText(signal.alert_event_id || forecast.alert_event_id);
+  const id = codexResetSignalID(signal);
+  if (tier || alertID) {
+    const sourceID = codexResetText(signal.url).match(
+      /^https:\/\/(?:www\.|mobile\.)?(?:x\.com|twitter\.com)\/[^/]+\/status\/(\d{15,22})(?:[/?#]|$)/i,
+    );
+    if (!sourceID || sourceID[1] !== id || !["likely", "elevated"].includes(tier)) return null;
+    if (alertID && alertID !== `signal:${id}:${tier}`) return null;
+  }
+  const probabilities = codexResetObject(forecast.probabilities) || {};
+  const score = codexResetObject(signal.signal_score) || codexResetObject(signal.score) ||
+    codexResetObject(forecast.signal_score) || {};
+  const commitment = codexResetObject(probabilities.commitment) || {};
+  return {
+    ...signal,
+    signal_tier: tier,
+    alert_event_id: alertID,
+    signal_score: score,
+    commitment_floor_percent: codexResetFinite(signal.commitment_floor_percent) ??
+      codexResetFinite(probabilities.commitment_floor_percent) ??
+      codexResetFinite(commitment.floor_percent),
+  };
+}
+
 function codexResetTrustedReceiverExplicit(signalValue) {
   const signal = codexResetObject(signalValue) || {};
   const id = codexResetSignalID(signal);
@@ -541,6 +579,7 @@ function codexResetSignalSettlement(receiverValue) {
 
   add(settlement.throughAt, settlement.eventId, "settlement");
   if (
+    !(Array.isArray(receiver.accounts) && receiver.accounts.length) &&
     lastPersonalReset &&
     codexResetText(lastPersonalReset.cause).toLowerCase() === "global-manual"
   ) {
@@ -570,6 +609,19 @@ function codexResetSignalTiming(signal, window) {
   const exactMs =
     codexResetMillis(signal && signal.effective_at) ||
     codexResetMillis(signal && signal.deadline_at);
+  const targetKind = codexResetText(window && window.target_kind).toLowerCase();
+  const targetMs = codexResetMillis(window && window.target_at);
+  if (["deadline", "center", "exact"].includes(targetKind)) {
+    return {
+      // For a deadline, start_at is the source's observation start, not an
+      // assertion that delivery cannot happen before a calendar-day boundary.
+      startMs: targetKind === "deadline" ? null : startMs,
+      endMs,
+      sourceStartMs: startMs,
+      canonicalMs: targetMs ?? exactMs ?? endMs,
+      kind: targetKind,
+    };
+  }
   const label = codexResetLocalized(window, "label").toLowerCase();
   const approximatePoint = /\baround\b|\babout\b|approximately|大约|约/.test(label);
   const canonicalMs =
@@ -580,7 +632,7 @@ function codexResetSignalTiming(signal, window) {
         : endMs !== null
           ? endMs
           : startMs;
-  return { startMs, endMs, canonicalMs };
+  return { startMs, endMs, canonicalMs, sourceStartMs: startMs, kind: "" };
 }
 
 function codexResetEventEffects(value) {
@@ -614,11 +666,19 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
   const forecast = codexResetObject(forecastValue) || {};
   const feed = codexResetObject(feedValue) || {};
   const receiver = codexResetObject(receiverValue) || {};
+  const hostedSignal = codexResetHostedSignal(forecast);
+  const hostedID = hostedSignal && codexResetSignalID(hostedSignal);
+  const hostedUpdatedAtMs = codexResetMillis(forecast.updated_at);
+  const hostedFresh = hostedUpdatedAtMs !== null && hostedUpdatedAtMs <= nowMs + 2 * 60_000 &&
+    nowMs - hostedUpdatedAtMs <= 90 * 60_000;
+  const activeAccountID = codexResetText(receiver.activeAccountId);
+  const receiverAccounts = Array.isArray(receiver.accounts) ? receiver.accounts : [];
+  const personalAccount = receiverAccounts.find((account) => account.id === activeAccountID);
   const activeEpisode =
     codexResetObject(receiver.activeEpisode) || codexResetObject(receiver.currentEvent);
   const legacyLanded =
     activeEpisode && activeEpisode.status === "personal-landed" ? codexResetText(activeEpisode.id) : "";
-  const lastPersonalReset = codexResetObject(receiver.lastPersonalReset);
+  const lastPersonalReset = codexResetObject(personalAccount ? personalAccount.lastPersonalReset : receiver.lastPersonalReset);
   const closedEventIDs = new Set(
     (Array.isArray(receiver.closedEventIds) ? receiver.closedEventIds : [])
       .map(codexResetText)
@@ -628,7 +688,10 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
   if (lastPersonalReset && codexResetText(lastPersonalReset.eventId)) {
     closedEventIDs.add(codexResetText(lastPersonalReset.eventId));
   }
-  const activeAccountID = codexResetText(receiver.activeAccountId);
+  for (const reset of (personalAccount && Array.isArray(personalAccount.personalResets)
+    ? personalAccount.personalResets : [])) {
+    if (reset.cause === "global-manual" && reset.eventId) closedEventIDs.add(reset.eventId);
+  }
   const activeDelivery = codexResetObject(activeEpisode && activeEpisode.account_delivery) || {};
   if (
     activeEpisode &&
@@ -648,7 +711,16 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
       ...(Array.isArray(feed.events) ? feed.events : []),
       ...(Array.isArray(feed.tweets) ? feed.tweets : []),
     ]
-      .filter((entry) => entry && codexResetSignalIsNegativeTerminal(entry))
+      .filter((entry) => {
+        if (!entry || !codexResetSignalIsNegativeTerminal(entry)) return false;
+        // A raw corpus expiry is not a cancellation of the source's current
+        // structured interpretation. Explicit rejection/failure still wins.
+        const states = [entry.kind, entry.announcement_state, entry.reset_verification_status]
+          .map((value) => codexResetText(value).toLowerCase());
+        return !(hostedFresh && hostedID === codexResetSignalID(entry) &&
+          !codexResetSignalIsTerminal(hostedSignal) && states.includes("expired") &&
+          !states.some((value) => ["rejected", "failed"].includes(value)));
+      })
       .map(codexResetSignalID)
       .filter(Boolean),
   );
@@ -673,7 +745,18 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
     const id = codexResetSignalID(signal) || signal.at || signal.announced_at;
     if (closedEventIDs.has(id)) return;
     if (negativeTerminalIDs.has(id)) return;
+    if (hostedFresh && hostedID === id && settings.source !== "forecast" &&
+        settings.source !== "receiver" && !codexResetSignalIsTerminal(hostedSignal)) return;
+    const level = codexResetSignalLevel(signal);
+    if (level === "none") return;
+    // Only unstructured legacy context is retired by an intervening reset.
+    // Future commitments/announcements require an identity-matched settlement;
+    // publication order or a source observation start cannot settle them.
+    const legacyContext = level === "hint" && settings.source !== "forecast" &&
+      settings.source !== "forecast-tease" &&
+      codexResetMillis(window.end_at) === null;
     if (
+      legacyContext &&
       settlement.atMs !== null &&
       atMs <= settlement.atMs &&
       !codexResetSignalStartsAfterSettlement(signal, window, settlement.atMs)
@@ -681,6 +764,7 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
       return;
     }
     if (
+      legacyContext &&
       publicResetAtMs !== null &&
       atMs < publicResetAtMs &&
       !codexResetSignalStartsAfterSettlement(signal, window, publicResetAtMs)
@@ -688,8 +772,6 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
       return;
     }
 
-    const level = codexResetSignalLevel(signal);
-    if (level === "none") return;
     if (
       level === "explicit" &&
       settings.source === "receiver" &&
@@ -722,6 +804,9 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
       deadlineMs,
       windowStartMs: timing.startMs,
       windowEndMs: timing.endMs,
+      sourceWindowStartMs: timing.sourceStartMs,
+      timingKind: timing.kind,
+      sourceTimeZone: codexResetText(window.time_zone),
       summary: originalSummary || "Tibo 发布了新的重置信号",
       localizedSummary: codexResetText(signal.localized_summary),
       url: codexResetHTTPSURL(signal.url),
@@ -729,13 +814,15 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
       windowProvenance: codexResetText(signal.window_provenance),
       signalScore: codexResetFinite(signalScore.value),
       signalBand: codexResetText(signalScore.band).toLowerCase(),
+      signalTier: codexResetText(signal.signal_tier),
+      alertEventId: codexResetText(signal.alert_event_id),
       source: codexResetText(settings.source),
       commitmentFloor: codexResetFinite(signal.commitment_floor_percent),
     });
   }
 
   addChoice(codexResetCandidateFromForecastTease(forecast), { source: "forecast-tease" });
-  addChoice(forecast.official_signal, { source: "forecast" });
+  addChoice(hostedSignal, { source: "forecast" });
   addChoice(codexResetReconciledFeedSignal(feed), { requiresActive: true, source: "feed" });
   const events = Array.isArray(feed.events) ? feed.events : [];
   for (const event of events.slice(0, 16)) {
@@ -789,6 +876,9 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
     deadlineMs: null,
     windowStartMs: null,
     windowEndMs: null,
+    sourceWindowStartMs: null,
+    timingKind: "",
+    sourceTimeZone: "",
     summary: "暂无未兑现的 Tibo 重置预告",
     localizedSummary: "",
     url: "",
@@ -796,6 +886,8 @@ function codexResetPickSignal(forecastValue, feedValue, receiverValue, nowMs) {
     windowProvenance: "",
     signalScore: null,
     signalBand: "",
+    signalTier: "",
+    alertEventId: "",
     source: "",
     commitmentFloor: null,
   };
@@ -825,13 +917,11 @@ function codexResetForecastModel(forecastValue, feedValue, receiverValue, nowMs)
   );
   const timeWindow = codexResetObject(forecast.time_window);
   const model = codexResetObject(forecast.model);
-  const commitment = codexResetObject(probabilities.commitment);
   const baseDailyRate = codexResetFinite(model && model.base_daily_rate);
   const signal = codexResetPickSignal(forecast, feed, receiver, nowMs);
-  const commitmentFloor =
-    codexResetFinite(probabilities.commitment_floor_percent) ||
-    codexResetFinite(commitment && commitment.floor_percent) ||
-    signal.commitmentFloor;
+  // A floor belongs to its particular public promise, not to whichever older
+  // event happened to win the local selection.
+  const commitmentFloor = signal.level === "commitment" ? signal.commitmentFloor : null;
 
   return {
     p24,
@@ -937,7 +1027,10 @@ function codexResetComputeDecision(input) {
   const explicit = signal.level === "explicit";
   const commitment = signal.level === "commitment";
   const hint = signal.level === "hint";
-  const candidateReserveFraction = hint ? CODEX_RESET_CANDIDATE_RESERVE_FRACTION : 0;
+  const untimedCommitment = commitment && !Number.isFinite(signal.deadlineMs);
+  const datedCommitment = commitment && Number.isFinite(signal.deadlineMs) && signal.deadlineMs > nowMs;
+  const candidateReserveFraction = hint || untimedCommitment
+    ? CODEX_RESET_CANDIDATE_RESERVE_FRACTION : 0;
   const p24 = codexResetClamp(codexResetFinite(input.p24) || 0, 0, 100);
   const p48 = codexResetClamp(codexResetFinite(input.p48) || p24, p24, 100);
   const commitmentFloor = codexResetClamp(
@@ -946,7 +1039,7 @@ function codexResetComputeDecision(input) {
     100,
   );
 
-  let mode = hint ? "hint" : input.forecastUsable ? "forecast" : "baseline";
+  let mode = untimedCommitment ? "commitment-untimed" : hint ? "hint" : input.forecastUsable ? "forecast" : "baseline";
   let deadlineMs = Math.min(nowMs + dayMs, naturalResetAtMs);
   let probability = 0;
   let waitsForNaturalReset = false;
@@ -954,7 +1047,7 @@ function codexResetComputeDecision(input) {
   const forecastRiskFraction = input.forecastUsable ? Math.min(p24, 99.999999) / 100 : 0;
   const combinedRiskFraction =
     1 - (1 - forecastRiskFraction) * (1 - candidateReserveFraction);
-  let trajectoryPolicyKind = input.forecastUsable || hint ? "hazard" : "baseline";
+  let trajectoryPolicyKind = input.forecastUsable || hint || untimedCommitment ? "hazard" : "baseline";
   let trajectoryHazardPerHour =
     combinedRiskFraction > 0 ? -Math.log1p(-combinedRiskFraction) / 24 : 0;
   let trajectoryDeadlineMs = null;
@@ -983,11 +1076,8 @@ function codexResetComputeDecision(input) {
       trajectoryPolicyKind = "deadline";
       trajectoryDeadlineMs = signal.deadlineMs;
     }
-  } else if (commitment) {
-    const signalDeadline =
-      Number.isFinite(signal.deadlineMs) && signal.deadlineMs > nowMs
-        ? signal.deadlineMs
-        : nowMs + dayMs;
+  } else if (datedCommitment) {
+    const signalDeadline = signal.deadlineMs;
     if (naturalResetAtMs <= signalDeadline) {
       mode = "commitment-after-natural";
       deadlineMs = naturalResetAtMs;
@@ -1723,7 +1813,7 @@ function codexResetChainDemandRateUSD(account, behavior, nowMs) {
 // deferred so "wait" remains a real option rather than a fake probability.
 function codexResetPossibleResetDecision(forecast, nowMs) {
   const signal = codexResetObject(forecast && forecast.signal) || {};
-  if (signal.level !== "hint") return null;
+  if (!["hint", "commitment"].includes(signal.level)) return null;
   const rawStartMs = codexResetFinite(signal.windowStartMs);
   const rawEndMs =
     codexResetFinite(signal.windowEndMs) ?? codexResetFinite(signal.deadlineMs);
@@ -1760,7 +1850,12 @@ function codexResetCapacityChainScenarios(forecast, nowMs, horizonMs) {
     signal.deadlineMs < horizonMs
   ) {
     const probability = codexResetClamp(
-      (codexResetFinite(signal.commitmentFloor) ?? codexResetFinite(forecast && forecast.p24) ?? 0) /
+      Math.max(
+        codexResetFinite(signal.commitmentFloor) ?? 0,
+        forecast && forecast.fresh !== false
+          ? codexResetCumulativeProbability(forecast.p24, forecast.p48, (signal.deadlineMs - nowMs) / 3_600_000)
+          : 0,
+      ) /
         100,
       0,
       1,
@@ -2020,9 +2115,9 @@ function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs, f
   const possibleReset = codexResetPossibleResetDecision(forecast, nowMs);
   const possibleResetFirst = Boolean(
     possibleReset &&
-      (!possibleReset.timingKnown ||
-        earliestKnownExpiryMs === null ||
-        possibleReset.endMs < earliestKnownExpiryMs),
+      (possibleReset.timingKnown
+        ? earliestKnownExpiryMs === null || possibleReset.endMs < earliestKnownExpiryMs
+        : forecast.signal.level === "hint"),
   );
 
   const accountUsable = (candidate) =>
@@ -2073,6 +2168,9 @@ function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs, f
     const candidateAccount = entry.account;
     const expiryMs = entry.credit.expiresAtMs;
     if (expiryMs === null) continue;
+    const deferThisCredit = possibleReset && (possibleReset.timingKnown
+      ? possibleReset.endMs < expiryMs
+      : forecast.signal.level === "hint");
     const pace = candidateAccount.pace || {};
     const measuredRate =
       codexResetFinite(pace.long && pace.long.ratePerHour) ??
@@ -2138,7 +2236,7 @@ function codexResetBankedPlan(account, allAccounts, receiver, behavior, nowMs, f
         continue;
       }
       if (
-        possibleResetFirst &&
+        deferThisCredit &&
         (!possibleReset.timingKnown || atMs <= possibleReset.endMs)
       ) {
         continue;
@@ -2404,7 +2502,11 @@ function codexResetBuildModel(usagePayload, forecastPayload, feedPayload, nowMs,
       ? codexResetForecastModel(
           forecastPayload,
           feedPayload,
-          { ...receiver, activeAccountId: accountUsage.accountId },
+          {
+            ...receiver,
+            activeAccountId: accountReceiver ? accountReceiver.id : accountUsage.accountId,
+            lastPersonalReset: accountReceiver ? accountReceiver.lastPersonalReset : null,
+          },
           nowMs,
         ) || forecast
       : forecast;
@@ -2983,12 +3085,16 @@ defineProvider({
       forecast.signal.level === "explicit"
         ? `明确重置公告${deliveryValues.length ? ` · ${deliveredAccounts}/${deliveryValues.length} 账号到账` : ""}`
         : forecast.signal.level === "commitment"
-          ? "有期限承诺"
+          ? forecast.signal.deadlineMs ? "有期限承诺" : "重置承诺 · 时间未定"
           : forecast.signal.level === "hint"
             ? "可能重置的暗示"
             : "无强制重置预告";
     const signalWindowIsInferred =
       forecast.signal.level === "hint" && forecast.signal.windowProvenance === "inferred";
+    const signalHasDeadline = forecast.signal.timingKind === "deadline";
+    const displayedSignalDeadlineMs = signalHasDeadline && Number.isFinite(forecast.signal.deadlineMs)
+      ? Math.ceil(forecast.signal.deadlineMs / 60_000) * 60_000
+      : forecast.signal.deadlineMs;
     const commonHours =
       forecast.commonStartHour !== null && forecast.commonEndHour !== null
         ? `${twoDigits(forecast.commonStartHour)}:00–${twoDigits(forecast.commonEndHour)}:00 UTC+8`
@@ -3177,7 +3283,9 @@ defineProvider({
         forecast.signal.level === "explicit"
           ? "同时存在尚未兑现的明确重置公告，剩余容量可能提前清零。"
           : forecast.signal.level === "commitment"
-            ? "同时存在带期限的重置承诺，提前刷新的风险高于平时。"
+            ? forecast.signal.deadlineMs
+              ? "同时存在带期限的重置承诺，提前刷新的风险高于平时。"
+              : "官方承诺还会重置，但时间未定；先提前安排少量有价值工作，不把信号分数当作全天概率。"
             : forecast.signal.level === "hint"
               ? "目前只有一条可能重置的暗示，系统会提前安排少量额外用量，但不会把它当成确定刷新。"
               : forecast.p24 >= 60
@@ -3353,12 +3461,14 @@ defineProvider({
         value: signalWindowIsInferred
           ? `可能重置 · ${compactCandidateTime}`
           : resetDeadlineMs
-            ? `${resetLabel} · 约 ${utc8(resetDeadlineMs)}`
+            ? signalHasDeadline
+              ? `${resetLabel} · 最晚 ${utc8(displayedSignalDeadlineMs)} 前`
+              : `${resetLabel} · 约 ${utc8(resetDeadlineMs)}`
             : resetLabel,
-        relativeTimeAt: resetDeadlineMs && !signalWindowIsInferred
+        relativeTimeAt: resetDeadlineMs && !signalWindowIsInferred && !signalHasDeadline
           ? new Date(resetDeadlineMs).toISOString()
           : null,
-        relativeTimePrefix: resetDeadlineMs && !signalWindowIsInferred
+        relativeTimePrefix: resetDeadlineMs && !signalWindowIsInferred && !signalHasDeadline
           ? `${resetLabel} · 约 `
           : null,
         secondaryValue: signalWindowIsInferred
@@ -3441,17 +3551,19 @@ defineProvider({
     if (forecast.signal.level !== "none" || receiverEvent) {
       submenuEventRows.push({
         label: "当前状态",
-        value: receiverEventLabel || signalLabel,
+        value: forecast.signal.level !== "none" ? signalLabel : receiverEventLabel,
         group: "official",
         secondaryValue:
-          receiverEvent
+          receiverEvent && codexResetSignalID(receiverEvent) === forecast.signal.id
             ? deliveredAccounts > 0
               ? "已到账账号恢复普通周期计划；只有尚未到账账号继续等待本机额度重建"
               : "全局事件仍在等待个人到账；本机额度周期推进后关闭"
             : forecast.signal.level === "explicit"
               ? "确认公告按 100% 处理；个人到账由本机额度另行确认"
             : forecast.signal.level === "commitment"
-              ? "承诺概率下限与历史模型取较高值，不当作已经到账"
+              ? forecast.signal.deadlineMs
+                ? "沿用源站承诺权重，与同期限基础预测取较高值；信号分数不是已校准的实际命中率，也不表示已经到账"
+                : "源站承诺仍有效，具体时间未知；保留基础预测，只采用已有的有界提前量，不假造官方截止时间"
               : `这条可能重置的暗示不改服务端概率；证据强度${
                   forecast.signal.signalScore === null
                     ? "只用于分级"
@@ -3486,28 +3598,30 @@ defineProvider({
       }
       if (forecast.signal.level !== "none" && forecast.signal.deadlineMs) {
         submenuEventRows.push({
-          label: signalWindowIsInferred ? "可能重置的时间范围" : "官方预计时间",
+          label: signalWindowIsInferred ? "可能重置的时间范围" : signalHasDeadline ? "官方承诺截止" : "官方预计时间",
           value: signalWindowIsInferred
             ? candidateWindowUTC8(
                 forecast.signal.windowStartMs,
                 forecast.signal.windowEndMs || forecast.signal.deadlineMs,
               )
-            : `约 ${utc8(forecast.signal.deadlineMs)}`,
-          relativeTimeAt: signalWindowIsInferred
+            : signalHasDeadline ? `${utc8(displayedSignalDeadlineMs)} 前` : `约 ${utc8(forecast.signal.deadlineMs)}`,
+          relativeTimeAt: signalWindowIsInferred || signalHasDeadline
             ? null
             : new Date(forecast.signal.deadlineMs).toISOString(),
-          relativeTimePrefix: signalWindowIsInferred ? null : "约 ",
+          relativeTimePrefix: signalWindowIsInferred || signalHasDeadline ? null : "约 ",
           group: "official",
           secondaryValue: signalWindowIsInferred
             ? `根据原文与上下文推测，目前没有正式时间；原始表述：${
                 forecast.signal.windowLabel || "未提供"
               }`
+            : signalHasDeadline
+              ? `源站表述：${forecast.signal.windowLabel || "未提供"}；这是最晚边界，不是准确到账时刻，未提供最早时间`
             : forecast.signal.windowLabel
               ? `官方原始表述：${forecast.signal.windowLabel}；保留近似含义，不伪造分钟精度`
               : "由官方消息中的日期、时间和时区换算；保留近似含义",
         });
       }
-      if (deliveryValues.length) {
+      if (deliveryValues.length && (!forecast.signal.id || codexResetSignalID(receiverEvent) === forecast.signal.id)) {
         submenuEventRows.push({
           label: "个人到账",
           value: `${deliveredAccounts}/${deliveryValues.length} 个账号已确认`,
@@ -3524,7 +3638,11 @@ defineProvider({
         receiverEvent && (receiverEvent.official_window || receiverEvent.window),
       );
       const timelineAtMs = forecast.signal.level !== "none"
-        ? forecast.signal.level === "hint"
+        ? signalHasDeadline
+          ? forecast.signal.deadlineMs
+          : forecast.signal.level === "commitment" && !forecast.signal.deadlineMs
+            ? null
+          : forecast.signal.level === "hint"
           ? forecast.signal.windowStartMs
           : forecast.signal.windowStartMs || forecast.signal.deadlineMs || forecast.signal.atMs
         : stateTime(
@@ -3534,7 +3652,7 @@ defineProvider({
               (receiverEvent && (receiverEvent.announced_at || receiverEvent.announcedAt)),
           );
       const timelineEndAtMs = forecast.signal.level !== "none"
-        ? forecast.signal.level === "hint" && !forecast.signal.windowStartMs
+        ? signalHasDeadline || (forecast.signal.level === "hint" && !forecast.signal.windowStartMs)
           ? null
           : forecast.signal.windowEndMs || forecast.signal.deadlineMs
         : stateTime(
@@ -3542,7 +3660,8 @@ defineProvider({
               (timelineReceiverWindow.end_at || timelineReceiverWindow.endAt)) ||
               (receiverEvent && (receiverEvent.deadline_at || receiverEvent.deadlineAt)),
           );
-      const currentAccountDelivery = currentAccount
+      const currentAccountDelivery = currentAccount &&
+        (!forecast.signal.id || codexResetSignalID(receiverEvent) === forecast.signal.id)
         ? codexResetText(accountDelivery[currentAccount.id]).toLowerCase()
         : "";
       const timelineState = forecast.signal.level === "hint"
@@ -3561,6 +3680,7 @@ defineProvider({
             ? "commitment"
             : "announcement",
         state: timelineState,
+        timingKind: forecast.signal.timingKind || null,
         title: forecast.signal.level === "hint"
           ? "可能重置的时间范围"
           : forecast.signal.level === "commitment"
@@ -3606,7 +3726,9 @@ defineProvider({
                   forecast.signal.windowStartMs,
                   forecast.signal.windowEndMs || forecast.signal.deadlineMs,
                 )
-              : `官方预计时间 ${utc8(forecast.signal.deadlineMs)}`
+              : signalHasDeadline
+                ? `官方承诺截止 ${utc8(displayedSignalDeadlineMs)} 前`
+                : `官方预计时间 ${utc8(forecast.signal.deadlineMs)}`
             : null,
           forecast.signal.windowLabel || null,
         ]
@@ -4199,7 +4321,7 @@ defineProvider({
               )}；预测加速 = ${percent(
                 model.decision.probability,
                 1,
-              )} 重置概率 × 届时否则会浪费的额度`,
+              )} ${forecast.signal.level === "commitment" ? "规划系数（基础预测与源站承诺权重取较高值）" : "重置概率"} × 届时否则会浪费的额度`,
         },
         {
           label: "若没刷新",
@@ -4298,6 +4420,24 @@ defineProvider({
           : "只记录投递状态和原因，不保存通知正文或账号信息",
       },
     ];
+    if (forecast.signal.level !== "none") {
+      submenuDataRows.push({
+        label: "公开信号来源",
+        value: `${forecast.signal.source || "unknown"} · ${forecast.signal.signalTier || forecast.signal.level}${
+          forecast.signal.signalScore === null ? "" : ` · 信号分数 ${forecast.signal.signalScore}/100`
+        }`,
+        secondaryValue: `原帖 ${forecast.signal.id || "未提供"}${
+          forecast.signal.alertEventId ? ` · 提醒 ID ${forecast.signal.alertEventId}` : ""
+        }；提醒身份只用于去重，不代表个人到账`,
+      });
+      if (forecast.signal.timingKind) {
+        submenuDataRows.push({
+          label: "源站时间语义",
+          value: `${forecast.signal.timingKind} · ${forecast.signal.sourceTimeZone || "时区未提供"}`,
+          secondaryValue: `规划节点 ${forecast.signal.deadlineMs ? new Date(forecast.signal.deadlineMs).toISOString() : "未指定"}；保留源站语义，不从发帖时间补造最早到账时间`,
+        });
+      }
+    }
     if (behavior) {
       submenuDataRows.push({
         label: "本机行为历史",

@@ -329,7 +329,10 @@ enum ResetTimelinePresentation {
         switch item.kind {
         case "candidate": language.text("可能重置的时间范围", "Possible reset window")
         case "announcement": language.text("明确重置公告", "Confirmed reset announcement")
-        case "commitment": language.text("有期限重置承诺", "Dated reset commitment")
+        case "commitment":
+            item.at == nil
+                ? language.text("重置承诺 · 时间未定", "Reset promised · Timing unknown")
+                : language.text("有期限重置承诺", "Dated reset commitment")
         case "natural":
             item.state == "confirmed"
                 ? language.text("自然刷新", "Natural reset")
@@ -350,7 +353,10 @@ enum ResetTimelinePresentation {
     {
         switch item.state {
         case "inferred": language.text("未确认", "Unconfirmed")
-        case "pending": language.text("等待到账", "Pending")
+        case "pending":
+            item.kind == "commitment"
+                ? language.text("承诺待兑现", "Awaiting reset")
+                : language.text("等待到账", "Pending")
         case "confirmed": language.text("已确认", "Confirmed")
         case "scheduled": language.text("计划", "Scheduled")
         default: item.badge
@@ -368,6 +374,19 @@ enum ResetTimelinePresentation {
         for item: DetailTimelineItem,
         language: ResetPresentationLanguage) -> String?
     {
+        if item.timingKind == "deadline", let deadline = self.date(item.at) {
+            // Some sources encode the day's inclusive end as xx:59:59.999.
+            // Render its exclusive minute boundary, not a made-up exact time.
+            let boundary = Date(timeIntervalSince1970:
+                ceil(deadline.timeIntervalSince1970 / 60) * 60)
+            let point = "\(self.pointText(boundary, language: language)) \(language.timeZoneLabel)"
+            return language.text(
+                "最晚 \(point) 前；不是准确到账时刻",
+                "By \(point); exact reset time unknown")
+        }
+        if item.kind == "commitment", item.at == nil {
+            return language.text("尚未给出重置时间", "No reset time has been stated")
+        }
         if item.kind == "candidate" {
             guard let start = self.date(item.at) else {
                 return language.text(
@@ -1335,12 +1354,12 @@ private struct CreditAccountGroup: Identifiable {
 struct ResetDetailsView: View {
     let sections: [DetailSection]
     let width: CGFloat
-    var onAction: ((DetailAction) -> Void)?
+    var onAction: MainlineActionHandler?
 
     init(
         sections: [DetailSection],
         width: CGFloat,
-        onAction: ((DetailAction) -> Void)? = nil)
+        onAction: MainlineActionHandler? = nil)
     {
         self.sections = sections
         self.width = width
@@ -1403,27 +1422,8 @@ struct ResetDetailsView: View {
                                !actions.isEmpty,
                                let onAction = self.onAction
                             {
-                                HStack(spacing: 5) {
-                                    ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
-                                        Button {
-                                            onAction(action)
-                                        } label: {
-                                            Label(
-                                                action.title,
-                                                systemImage: self.actionSymbol(action.operation))
-                                                .font(.caption2.weight(.medium))
-                                                .lineLimit(1)
-                                                .minimumScaleFactor(0.8)
-                                        }
-                                        .buttonStyle(.bordered)
-                                        .controlSize(.mini)
-                                        .fixedSize(horizontal: true, vertical: false)
-                                        .help(action.title)
-                                        .accessibilityLabel(action.title)
-                                    }
-                                }
-                                .padding(.top, 5)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                MainlineActionBar(actions: actions, onAction: onAction)
+                                    .padding(.top, 5)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1438,14 +1438,6 @@ struct ResetDetailsView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    private func actionSymbol(_ operation: String) -> String {
-        switch operation {
-        case "mark-mainline": "star"
-        case "complete": "checkmark.circle"
-        case "snooze": "moon.zzz"
-        default: "minus.circle"
-        }
-    }
 }
 
 final class FixedHeightHostingView<Content: View>: NSHostingView<Content> {

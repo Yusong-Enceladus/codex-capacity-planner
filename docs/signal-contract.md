@@ -41,6 +41,42 @@ data when the service is unavailable.
 Probabilities are cumulative. A client must not invent confidence, extend the
 48-hour curve, or turn a text hint into a numeric probability.
 
+### Hosted Watch interpretation (Alert v3)
+
+The default service's `official_signal` is the current public interpretation;
+raw `/api/feed` records supply evidence and history, not a second competing
+classifier. Preserve `signal_type`, `signal_tier`, nested `score` (or
+`signal_score`), `alert_event_id`, original post ID and URL. A v3 alert identity
+must agree with the post and tier (`signal:<post-id>:<tier>`). Alert IDs
+deduplicate notifications only; they never prove a personal quota delivery.
+Legacy responses without v3 metadata remain supported.
+
+A `likely` Watch with concrete timing currently carries the service's 93
+weight; a plain future promise carries 83. Read the actual returned weight,
+not a client-side hard-coded score. `elevated` context is not a strong Watch
+even if its numeric score is high. A fresh structured interpretation takes
+precedence over a raw same-post classification/expiry; explicit same-post
+rejection or failure still closes the signal. Invalid identities fail closed.
+
+The 24h/48h cadence probabilities remain separate from these public signal
+scores. For a dated commitment the planner uses the higher of the source's
+commitment floor and the cumulative cadence prediction at the stated deadline.
+This is a planning coefficient, not a calibrated observed hit rate. An undated
+promise supplies no deadline or 24h probability: it keeps the ordinary forecast
+and the existing bounded 10% early-work reserve. No expired promise rolls
+forward into a newly invented 24-hour deadline.
+
+`window.target_kind` and `window.target_at` are authoritative timing semantics.
+For `deadline`, the target is the latest stated boundary, not an exact arrival
+time. Its `start_at` may be the publication/observation start and is not an
+earliest possible delivery time. Render a deadline point labelled “by/before,”
+not a fabricated calendar-day interval or a countdown implying exact arrival.
+For `center`/`exact`, use the stated target without reparsing the localized
+label. Source timestamps remain available in Calculation & Data.
+
+Reference: [live forecast](https://codex-reset.com/api/forecast) and
+[forecast method](https://codex-reset.com/forecast-method).
+
 A structured candidate may still change the work plan without changing that
 probability. The reference client reserves 10% of the quota that would remain
 after the ordinary forecast adjustment and schedules that bounded amount
@@ -115,6 +151,14 @@ pending delivery state for that account. Accounts already marked landed use
 their ordinary natural/forecast trajectory even if peers are still pending.
 Once every tracked account is landed, the public event becomes immutable
 history and the same ID cannot re-enter through another feed representation.
+
+A global settlement watermark is not a semantic cutoff for other event IDs.
+If promise B was published between account A and account B receiving an earlier
+reset A, closing reset A must leave promise B active. Per-account reset records
+and exact closed event IDs close only their matching event. Unstructured legacy
+hint context may be retired after an intervening reset, but that suppression
+must neither mark another event fulfilled nor override a current structured
+Watch. No fixed look-back duration is introduced.
 
 If the public text contains an approximate time with an explicit timezone, the
 client preserves the original phrase and converts its stated center to one
