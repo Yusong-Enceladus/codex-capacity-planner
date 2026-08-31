@@ -163,6 +163,9 @@ struct DetailRow: Codable, Equatable, Identifiable, Sendable {
     let progress: DecisionProgress?
     let actions: [DetailAction]?
     let accountId: String?
+    let labelEnglish: String?
+    let valueEnglish: String?
+    let secondaryValueEnglish: String?
 
     var id: String {
         "\(self.label)\u{1f}\(self.value)"
@@ -179,7 +182,10 @@ struct DetailRow: Codable, Equatable, Identifiable, Sendable {
         group: String? = nil,
         progress: DecisionProgress? = nil,
         actions: [DetailAction]? = nil,
-        accountId: String? = nil)
+        accountId: String? = nil,
+        labelEnglish: String? = nil,
+        valueEnglish: String? = nil,
+        secondaryValueEnglish: String? = nil)
     {
         self.label = label
         self.value = value
@@ -192,6 +198,21 @@ struct DetailRow: Codable, Equatable, Identifiable, Sendable {
         self.progress = progress
         self.actions = actions
         self.accountId = accountId
+        self.labelEnglish = labelEnglish
+        self.valueEnglish = valueEnglish
+        self.secondaryValueEnglish = secondaryValueEnglish
+    }
+
+    func localizedLabel(_ language: ResetPresentationLanguage) -> String {
+        language == .english ? self.labelEnglish ?? self.label : self.label
+    }
+
+    func localizedValue(_ language: ResetPresentationLanguage) -> String {
+        language == .english ? self.valueEnglish ?? self.value : self.value
+    }
+
+    func localizedSecondaryValue(_ language: ResetPresentationLanguage) -> String? {
+        language == .english ? self.secondaryValueEnglish ?? self.secondaryValue : self.secondaryValue
     }
 }
 

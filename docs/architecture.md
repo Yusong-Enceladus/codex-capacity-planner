@@ -73,13 +73,35 @@ account can create an immediate 100% policy for that account. A landed account
 returns to its normal cycle even while another tracked account remains pending.
 Local quota facts outrank inconsistent public lifecycle fields.
 
-The hosted forecast owns public Watch interpretation; local logic does not
-re-score its wording. Alert-v3 tier, score, alert identity, and target-kind
+Message identity is not reset identity. A persisted message-to-episode alias
+keeps the original promise, its announcement promotion, and a causally matched
+completion notice on one quota episode. Announcements can reconcile receipts
+that predate local `firstSeenAt`, but a future announcement cannot consume a
+receipt before its publication or stated start. Separate accounts may confirm
+at different times. A completion notice may establish public execution while
+an account remains `unconfirmed`; this never invents a personal cycle or keeps
+that completed event active as a future 100% policy. A 0%-to-0% observation
+without a proven window rebuild is not a receipt.
+
+The hosted forecast owns public Watch strength; local logic does not
+re-score its wording. Unambiguous completed-action language is a temporal
+consistency guard, not a new probability model: a stale future classification
+cannot turn “have now reset” into another promise. An actual additional future
+reset in the same message, or a distinct later promise, remains future-facing.
+Alert-v3 tier, score, alert identity, and target-kind
 metadata are retained. Raw feed records cannot promote the same current Watch
 into an immediate announcement. Notification identity is separate from quota
 delivery identity. Global settlement timestamps never consume a different
 future promise, including one published during staggered account delivery of
 an earlier reset. Only exact event receipts/tombstones close it locally.
+
+Closing or completing an episode invalidates every trajectory and notification
+baseline tied to its message aliases. If a freshly fetched forecast still uses
+the pre-reset `last_reset_at`, its cadence probabilities remain inspectable as
+cached inputs but do not accelerate the new cycle or affect credit scenarios.
+Matching canonical last-reset evidence re-enables cadence planning without
+mistaking staggered local receipt times for another stale clock. The planner
+does not fabricate replacement probabilities or rewrite past decision records.
 
 A source deadline stays a deadline point, not an inferred start/end range.
 Its score is a planning weight kept separate from cadence probabilities. Dated
