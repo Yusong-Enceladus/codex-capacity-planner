@@ -75,6 +75,8 @@ Results, Method, Raw Data and the calculation account selector use the same nati
 
 Current quota, usage, recent work, reset information, and reset credits form one plan. When any input changes, work, account, and reset-credit recommendations update together.
 
+After a locally confirmed reset, late announcements reconcile with existing receipts instead of demanding immediate use of the fresh quota. Public completion and personal confirmation are separate: an account without evidence remains unconfirmed, never a fabricated 2/2. Completion posts do not become another future reset. If the public forecast still uses the previous reset clock, raw values remain inspectable but do not accelerate the plan. A genuinely separate future reset promise remains actionable.
+
 ## Standalone app and CodexBar
 
 The macOS app works independently. When using the CodexBar integration included in the source tree, both interfaces read the same local plan and recommendations.

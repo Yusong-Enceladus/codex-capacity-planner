@@ -31,6 +31,18 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
         }
         if let demoLanguage = Self.readmeDemoLanguage() {
             var snapshot = ResetDemoFixtures.primarySnapshot(demoLanguage)
+            // A generated, anonymous engine snapshot can exercise the actual
+            // production menus without starting collectors or changing state.
+            if let path = ProcessInfo.processInfo.environment["CODEX_RESET_DEMO_SNAPSHOT"] {
+                guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+                      let fixture = try? JSONDecoder().decode(ResetSnapshot.self, from: data)
+                else {
+                    NSLog("Could not decode the supplied demo snapshot")
+                    NSApplication.shared.terminate(nil)
+                    return
+                }
+                snapshot = fixture
+            }
             if ProcessInfo.processInfo.environment["CODEX_RESET_DEMO_HISTORY"] == "empty" {
                 snapshot.decisionHistory = nil
             }

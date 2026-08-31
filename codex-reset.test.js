@@ -43,6 +43,7 @@ const {
   usagePaceFromSamples,
 } = require("./codex-reset-monitor.js");
 const { forecastUsageBehavior } = require("./codex-reset-behavior.js");
+const { resetDeliveryFixture } = require("./scripts/fixtures/reset-delivery.js");
 
 const source = fs.readFileSync(`${__dirname}/codex-reset.js`, "utf8");
 let provider = null;
@@ -905,6 +906,10 @@ const corpusCandidate = pickSignal(
 equal(corpusCandidate.level, "hint");
 equal(corpusCandidate.id, rawTopLevelCandidate.id);
 equal(corpusCandidate.localizedSummary, "", "an unverified reversed translation must be omitted");
+equal(pickSignal(forecastFixture("2026-08-27T06:30:00Z"), {
+  tweets: [{ ...rawTopLevelCandidate, text: "Pro 20X describes the weekly usage multiplier, not a 5-hour limit." }],
+}, null, Date.parse("2026-08-27T07:00:00Z")).level, "none",
+"a broad reset-related corpus lane cannot turn an ordinary plan explanation into a reset hint");
 equal(
   pickSignal(
     forecastFixture("2026-08-27T06:30:00Z"),
@@ -2947,7 +2952,7 @@ const staleEpisodeRuntime = createRuntime(
   },
 );
 const staleEpisodeState = staleEpisodeRuntime.publicReceiverState();
-equal(staleEpisodeState.version, 21);
+equal(staleEpisodeState.version, 22);
 equal(staleEpisodeState.activeEpisode, null, "migration must clear an already-settled episode");
 equal(staleEpisodeState.signalSettlement.throughAt, landedAt);
 check(
@@ -3175,13 +3180,155 @@ const partialCompletedRuntime = createRuntime(
 );
 const partialCompletedState = partialCompletedRuntime.publicReceiverState();
 equal(partialCompletedState.activeEpisode.account_delivery["account-a"], "landed");
-equal(partialCompletedState.activeEpisode.account_delivery["account-b"], "pending");
+equal(partialCompletedState.activeEpisode.account_delivery["account-b"], "unconfirmed");
 equal(
   partialCompletedState.activeEpisode.temporal_phase,
-  "in-progress",
-  "a completed public event becomes in-progress delivery only for accounts whose generation has not advanced",
+  "completed",
+  "an unconfirmed personal receipt must not turn a completed public execution back into a future risk",
 );
 equal(partialCompletedState.activeEpisode.public_temporal_phase, "completed");
+
+// A late promotion must reconcile a real receipt, not snapshot a new baseline
+// after it and then demand that the fresh quota be spent immediately again.
+const deliveryFixture = resetDeliveryFixture();
+const deliveryLogic = { buildModel: build, pickUsage: parseUsage, pickUsages: parseUsages, provider };
+const deliveryClock = Date.now;
+let reconciledDeliveryRuntime;
+try {
+  Date.now = () => deliveryFixture.now;
+  reconciledDeliveryRuntime = createRuntime(deliveryLogic, deliveryFixture.state);
+  const receiver = reconciledDeliveryRuntime.publicReceiverState();
+  equal(receiver.activeEpisode.id, deliveryFixture.noticeID);
+  equal(receiver.activeEpisode.account_delivery["demo-primary"], "landed");
+  equal(receiver.activeEpisode.account_delivery["demo-backup"], "unconfirmed");
+  equal(receiver.activeEpisode.temporal_phase, "completed");
+  equal(receiver.activeEpisode.completion_notice.id, deliveryFixture.completionID);
+  check(receiver.completedResetEventIds.includes(deliveryFixture.noticeID));
+  check(receiver.completedResetEventIds.includes(deliveryFixture.completionID));
+  const accounts = reconciledDeliveryRuntime.runtime.state.accountStates;
+  equal(accounts["demo-primary"].cycleGeneration, 3, "matching an announcement must not advance the real cycle twice");
+  equal(accounts["demo-primary"].personalResets.at(-1).eventId, deliveryFixture.noticeID);
+  equal(accounts["demo-primary"].personalResets.at(-1).at, new Date(deliveryFixture.receiptAt).toISOString());
+  equal(accounts["demo-backup"].cycleGeneration, 2, "a 0%-to-0% account has no newly proven cycle");
+  equal(accounts["demo-backup"].personalResets.length, 1, "public completion is not a fabricated personal receipt");
+  check(Object.values(accounts).every((account) => !account.targetTrajectory ||
+    (account.targetTrajectory.policyKind !== "immediate" && account.targetTrajectory.signalId !== deliveryFixture.noticeID)),
+    "completion replaces the old immediate trajectories for both accounts");
+  equal(receiver.forecastResetMismatch, true, "a fresh fetch does not make a pre-reset cadence clock current");
+  const model = reconciledDeliveryRuntime.currentModel(deliveryFixture.now);
+  check(model.accounts.length === 2 && model.accounts.every((account) => account.forecast.signal.level === "none"));
+  check(model.accounts.every((account) => account.decision.targetUsed > 0 && account.decision.targetUsed < 25),
+    "both accounts use bounded cycle targets, not the obsolete 100% notice or false 93%-weight promise");
+  check(model.accounts.every((account) => !account.decision.immediate && account.decision.predictionUse === 0));
+  equal(model.forecast.p24, 25, "raw source probability remains inspectable, never rewritten as a fabricated new estimate");
+  check(planAccounts(model).every((account) => account.reason === "cadence-awaiting-reset"));
+  check(!model.bankedPlan.possibleResetWindowEndMs, "the completed post cannot defer credits behind a fictional next reset");
+
+  const beforeReplay = JSON.stringify(Object.values(accounts).map((account) => account.personalResets));
+  const normalizedCompletion = latestExplicitFeedEvent(deliveryFixture.feed, deliveryFixture.forecast);
+  equal(normalizedCompletion.id, deliveryFixture.completionID);
+  equal(normalizedCompletion.temporalPhase, "completed");
+  const completedNotifications = [];
+  const completedNotificationRuntime = createRuntime({ ...deliveryLogic,
+    sendNativeNotification(subtitle, body) { completedNotifications.push({ subtitle, body }); },
+  }, resetDeliveryFixture().state);
+  completedNotificationRuntime.processEvent(normalizedCompletion, { notify: true });
+  equal(completedNotificationRuntime.recoverMissedExplicitNotification(), false,
+    "a completed execution must not generate a catch-up warning to spend the fresh quota");
+  equal(completedNotifications.length, 0, "completion cannot emit a new pending-reset alarm");
+  reconciledDeliveryRuntime.processEvent(normalizedCompletion, { notify: false });
+  reconciledDeliveryRuntime.processEvent({
+    id: deliveryFixture.noticeID, announcedAt: deliveryFixture.notice.announced_at,
+    summary: deliveryFixture.notice.summary, source: "site-api", url: deliveryFixture.notice.url,
+  }, { notify: false });
+  equal(JSON.stringify(Object.values(accounts).map((account) => account.personalResets)), beforeReplay,
+    "repeated and downgraded messages do not invent receipts or cycles");
+  equal(reconciledDeliveryRuntime.publicReceiverState().activeEpisode.temporal_phase, "completed");
+  const restarted = createRuntime(deliveryLogic, JSON.parse(JSON.stringify(reconciledDeliveryRuntime.runtime.state)));
+  equal(restarted.publicReceiverState().activeEpisode.account_delivery["demo-primary"], "landed");
+  equal(restarted.publicReceiverState().activeEpisode.account_delivery["demo-backup"], "unconfirmed");
+  check(restarted.currentModel(deliveryFixture.now).accounts.every((account) => account.decision.targetUsed < 25));
+
+  const lateNotice = resetDeliveryFixture();
+  lateNotice.state.cache.feed = { events: [lateNotice.notice] };
+  lateNotice.state.cache.forecast.official_signal = null;
+  const lateRuntime = createRuntime(deliveryLogic, lateNotice.state);
+  equal(lateRuntime.publicReceiverState().activeEpisode.account_delivery["demo-primary"], "landed",
+    "the original notice reconciles a receipt that predates local firstSeen even without a completion post");
+  equal(lateRuntime.publicReceiverState().activeEpisode.account_delivery["demo-backup"], "pending");
+
+  for (const receiptAt of [Date.parse(lateNotice.notice.announced_at) - hour, Date.parse("2026-08-31T01:50:00Z")]) {
+    const early = resetDeliveryFixture();
+    early.state.cache.feed = { events: [early.notice] };
+    early.state.cache.forecast.official_signal = null;
+    early.state.localResetEpisodes = [];
+    early.state.accountStates["demo-primary"].personalResets.at(-1).at = new Date(receiptAt).toISOString();
+    const earlyRuntime = createRuntime(deliveryLogic, early.state);
+    equal(earlyRuntime.publicReceiverState().activeEpisode.account_delivery["demo-primary"], "pending",
+      "a receipt before publication or the stated start cannot fulfill that future notice");
+  }
+  for (const cause of ["natural", "banked-redeem", "plan-upgrade"]) {
+    const unrelated = resetDeliveryFixture();
+    unrelated.state.localResetEpisodes = [];
+    unrelated.state.accountStates["demo-primary"].personalResets.at(-1).cause = cause;
+    const unrelatedRuntime = createRuntime(deliveryLogic, unrelated.state);
+    check(unrelatedRuntime.publicReceiverState().activeEpisode.account_delivery["demo-primary"] !== "landed",
+      `${cause} must not be repurposed as evidence of a global forced reset`);
+  }
+
+  const allDelivered = resetDeliveryFixture();
+  allDelivered.state.localResetEpisodes = [];
+  allDelivered.state.accountStates["demo-backup"].cycleGeneration = 3;
+  allDelivered.state.accountStates["demo-backup"].personalResets.push({
+    ...allDelivered.state.accountStates["demo-primary"].personalResets.at(-1),
+    at: "2026-08-31T02:55:00.000Z",
+  });
+  const allRuntime = createRuntime(deliveryLogic, allDelivered.state);
+  equal(allRuntime.publicReceiverState().activeEpisode, null, "all proven accounts settle the whole episode");
+  check(allRuntime.publicReceiverState().closedEventIds.includes(allDelivered.noticeID));
+  check(allRuntime.publicReceiverState().closedEventIds.includes(allDelivered.completionID));
+
+  const nextPromise = resetDeliveryFixture();
+  const nextID = "2999999999999910003";
+  const nextPost = {
+    ...nextPromise.completion, id: nextID, announced_at: "2026-08-31T03:00:00.000Z",
+    summary: "We will reset usage again tomorrow.", localized_summary: "明天还会再重置一次用量。",
+    url: `https://x.com/thsottiaux/status/${nextID}`,
+  };
+  nextPromise.state.cache.feed.events.unshift(nextPost);
+  nextPromise.state.cache.forecast.official_signal = {
+    ...nextPromise.forecast.official_signal, tweet_id: nextID, at: nextPost.announced_at,
+    summary: nextPost.summary, localized_summary: nextPost.localized_summary, url: nextPost.url,
+  };
+  const nextRuntime = createRuntime(deliveryLogic, nextPromise.state);
+  const nextModel = nextRuntime.currentModel(nextPromise.now);
+  check(nextModel.accounts.every((account) => account.forecast.signal.id === nextID),
+    "a genuinely separate next reset remains active for both accounts after this completion");
+  check(nextModel.accounts.every((account) => account.decision.targetUsed > model.accounts[0].decision.targetUsed));
+  check(!nextRuntime.publicReceiverState().completedResetEventIds.includes(nextID));
+
+  const correctedSource = resetDeliveryFixture();
+  correctedSource.state.cache.forecast.evidence = [{ code: "last_reset", href: correctedSource.completion.url }];
+  const caughtUp = createRuntime(deliveryLogic, correctedSource.state);
+  equal(caughtUp.publicReceiverState().forecastResetMismatch, false,
+    "matching canonical event evidence accepts the updated clock despite per-account rollout delays");
+  check(caughtUp.currentModel(correctedSource.now).accounts.every((account) => account.decision.predictionUse > 0));
+} finally { Date.now = deliveryClock; }
+
+equal(eventTemporalPhase({ ...deliveryFixture.completion, temporalPhase: "future",
+  official_window: deliveryFixture.forecast.official_signal.window }), "completed",
+  "have now reset is completed even if hosted classification and deadline are stale");
+equal(eventTemporalPhase({ summary: "We have now reset usage. More news soon." }), "completed");
+equal(eventTemporalPhase({ summary: "We have now reset usage at 6pm PST." }), "completed");
+equal(eventTemporalPhase({ summary: "We have now reset usage, and will reset it again tomorrow." }), "future",
+  "a real additional future reset in the same message is not discarded");
+check(eventTemporalPhase({ summary: "We might have reset usage, but cannot confirm." }) !== "completed");
+equal(inferDeadline("The reset will land at 6pm PST.", Date.parse("2026-08-30T19:24:37Z")), Date.parse("2026-08-31T02:00:00Z"));
+equal(inferDeadline("The reset will land at 6pm PDT.", Date.parse("2026-08-30T19:24:37Z")), Date.parse("2026-08-31T01:00:00Z"));
+equal(inferDeadline("The reset will land at 6pm PT.", Date.parse("2026-08-30T19:24:37Z")), Date.parse("2026-08-31T01:00:00Z"));
+equal(inferDeadline("The reset will land at 6pm PT.", Date.parse("2026-01-30T19:24:37Z")), Date.parse("2026-01-31T02:00:00Z"));
+equal(inferDeadline("Reset tomorrow at 6pm PT.", Date.parse("2026-08-30T03:00:00Z")), Date.parse("2026-08-31T01:00:00Z"),
+  "tomorrow is relative to the stated Pacific calendar, not UTC or this Mac");
 
 const staleReplay = staleEpisodeRuntime.processEvent(
   {
@@ -4778,7 +4925,7 @@ const ctx = {
     (row) => row.label === "重置",
   );
   check(
-    /明确重置公告 · 1\/2 账号到账/.test(partialResetRow.value) &&
+    /1\/2 个账号已确认/.test(partialResetRow.value) &&
       !/下次自然刷新/.test(partialResetRow.value) &&
       /Enjoy|重置/.test(partialResetRow.secondaryValue),
     "an unresolved public event must stay ahead of natural refresh even after the current account has landed",
@@ -4929,6 +5076,42 @@ const ctx = {
   const independentSnapshot = await snapshotRuntime.uiSnapshot();
   equal(independentSnapshot.details[0].title, "现在");
   equal(independentSnapshot.submenuDetails[0].title, "模型诊断");
+
+  const snapshotClock = Date.now;
+  try {
+    Date.now = () => deliveryFixture.now;
+    const snapshot = await reconciledDeliveryRuntime.uiSnapshot();
+    const homeReset = snapshot.details.flatMap((section) => section.rows).find((row) => row.label === "重置");
+    check(homeReset.value.includes("本账号已刷新") && homeReset.value.includes("1/2"));
+    check(homeReset.valueEnglish.includes("This account has reset") && homeReset.valueEnglish.includes("1/2"));
+    check(homeReset.secondaryValueEnglish.includes("PT"));
+    check(!homeReset.relativeTimeAt, "a completion must not keep an obsolete reset countdown");
+    check(snapshot.decisionProgress.targetPercent < 25);
+    check(!snapshot.decisionProgress.title.includes("Tibo 已明确"));
+    const timeline = snapshot.submenuDetails.flatMap((section) => section.visualizations || [])
+      .flatMap((visualization) => visualization.items || []);
+    const completion = timeline.find((item) => item.kind === "confirmation");
+    equal(completion.state, "confirmed");
+    equal(completion.at, deliveryFixture.completion.announced_at);
+    check(!completion.endAt && completion.timingKind !== "deadline",
+      "a completed reset is a historical point, never the stale future window");
+    check(timeline.some((item) => item.kind === "reset" && item.state === "confirmed"));
+    check(!timeline.some((item) => item.kind === "announcement" && item.state === "pending"));
+    const matchedHistory = snapshot.resetHistoryEvents.filter((row) => row.eventId === deliveryFixture.noticeID);
+    equal(matchedHistory.length, 1, "a completion follow-up and its personal receipt count as one reset episode");
+    equal(matchedHistory[0].publishedAt, deliveryFixture.completion.announced_at);
+    check(matchedHistory[0].summaryEnglish.includes("have now reset"), "the completion's source content survives grouping");
+    reconciledDeliveryRuntime.recordHistory("usage");
+    const first = reconciledDeliveryRuntime.runtime.state.decisionHistory.records.at(-1);
+    equal(first.source.status, "stale");
+    equal(first.source.p24, null);
+    equal(first.source.cachedP24, 25);
+    const firstJSON = JSON.stringify(first);
+    Date.now = () => deliveryFixture.now + hour;
+    reconciledDeliveryRuntime.recordHistory("usage");
+    equal(JSON.stringify(reconciledDeliveryRuntime.runtime.state.decisionHistory.records.find((row) => row.id === first.id)), firstJSON,
+      "correcting present state does not rewrite historical decisions");
+  } finally { Date.now = snapshotClock; }
 
   // One end-to-end chain: receipt A, future promise B, immutable observation,
   // same-time comparison, repeated delivery, outage, restart and UI payload.

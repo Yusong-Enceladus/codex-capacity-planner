@@ -37,6 +37,7 @@ function accountReason(account, receiver) {
   if (signal.level === "explicit") return "explicit-pending";
   if (signal.level === "commitment") return finite(signal.deadlineMs) === null ? "promise-untimed" : "promise-dated";
   if (signal.level === "hint") return "hint-reserve";
+  if (obj(account.forecast).resetReconciliationPending) return "cadence-awaiting-reset";
   const local = (receiver.accounts || []).find((item) => item.id === account.id) || {};
   if (obj(local.lastPersonalReset).eventId) return "ordinary-after-delivery";
   return obj(account.forecast).fresh && obj(account.forecast).mode !== "local-only"
@@ -189,7 +190,8 @@ function recordDecisionHistory(historyValue, modelValue, options = {}) {
   const model = obj(modelValue);
   const forecast = obj(model.forecast);
   const inputs = obj(options.inputs);
-  const sourceStatus = options.sourceStatus || (forecast.mode === "local-only" ? "unavailable" : forecast.fresh ? "fresh" : "stale");
+  const sourceStatus = options.sourceStatus || (forecast.mode === "local-only" ? "unavailable" :
+    forecast.resetReconciliationPending ? "stale" : forecast.fresh ? "fresh" : "stale");
   const sourceUsable = sourceStatus === "fresh" && forecast.mode !== "local-only";
   const record = {
     id: `decision-${history.sequence + 1}`, at: iso(nowMs), trigger: options.trigger || "clock",
@@ -230,7 +232,8 @@ function reasonText(code, english = false) {
   const copy = {
     "account-unavailable": ["本账户用量尚不可靠，暂不据此要求加速或用券。", "This account lacks reliable usage data; do not accelerate or redeem on that basis."],
     "natural-first": ["本账户自然刷新更早，这条消息没有进一步提前计划。", "This account's natural reset comes first, so the message does not bring its plan forward."],
-    "explicit-pending": ["明确刷新尚未在本账户到账，按公告时间优先安排现有工作。", "The announced reset has not landed for this account; prioritize existing work before its stated time."],
+    "explicit-pending": ["这次公告尚未取得本账户的到账确认，按公告时间安排现有工作。", "Delivery of this announced reset is not yet confirmed for this account; plan existing work around its stated time."],
+    "cadence-awaiting-reset": ["这轮刷新已经执行，但公开预测还沿用刷新前的时间；暂按新周期安排，旧概率不参与加速。", "This reset has occurred, but the public forecast still uses the previous reset clock. Plan from the new cycle without applying those old probabilities."],
     "promise-dated": ["新的重置承诺仍有效，提前安排工作，但不把承诺当作已经到账。", "A timed reset promise remains active: bring work forward without treating it as delivered."],
     "promise-untimed": ["承诺还会重置，但时间未知；只提前安排少量工作，不制造截止时间。", "Another reset is promised, but timing is unknown; bring a limited amount of work forward without inventing a deadline."],
     "hint-reserve": ["消息只是可能重置的暗示；有限提前安排，不当成确定刷新。", "The message is only a possible-reset hint; make a bounded adjustment, not a certain-reset plan."],

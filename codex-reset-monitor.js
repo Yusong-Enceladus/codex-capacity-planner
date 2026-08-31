@@ -1597,6 +1597,42 @@ function rememberClosedEvent(state, id) {
   ].slice(-64);
 }
 
+// Message IDs identify posts; the quota episode they describe survives a
+// promotion from promise to announcement and a later completion post.
+function canonicalResetEventID(state, value) {
+  let id = eventID(value);
+  const aliases = object(state && state.events && state.events.resetEventAliases) || {};
+  const visited = new Set();
+  while (text(aliases[id]) && !visited.has(id)) {
+    visited.add(id);
+    id = text(aliases[id]);
+  }
+  return id;
+}
+
+function relatedResetEventIDs(state, value) {
+  const canonical = canonicalResetEventID(state, value);
+  if (!canonical) return [];
+  const aliases = object(state && state.events && state.events.resetEventAliases) || {};
+  return [...new Set([canonical, eventID(value), ...Object.keys(aliases).filter(
+    (id) => canonicalResetEventID(state, id) === canonical,
+  )])].filter(Boolean);
+}
+
+function resetRecordMatchesEvent(state, record, id) {
+  return record.cause === "global-manual" && Boolean(record.eventId) &&
+    canonicalResetEventID(state, record.eventId) === canonicalResetEventID(state, id);
+}
+
+function rememberResetEventAlias(state, messageID, episodeID) {
+  const canonical = canonicalResetEventID(state, episodeID);
+  if (!/^\d{15,22}$/.test(messageID) || !/^\d{15,22}$/.test(canonical) || messageID === canonical) return;
+  state.events.resetEventAliases = {
+    ...object(state.events.resetEventAliases), [messageID]: canonical,
+  };
+  state.events.resetEventAliases = Object.fromEntries(Object.entries(state.events.resetEventAliases).slice(-128));
+}
+
 function normalizedCompletedPublicEvents(value) {
   return (Array.isArray(value) ? value : [])
     .map((entry) => {
@@ -1611,7 +1647,7 @@ function normalizedCompletedPublicEvents(value) {
         localizedSummary: text(source.localizedSummary || source.localized_summary),
         url: /^https:\/\//.test(text(source.url)) ? text(source.url) : "",
         source: text(source.source) || "site-api",
-        status: "landed",
+        status: source.status === "completed" ? "completed" : "landed",
       };
     })
     .filter(Boolean)
@@ -1619,16 +1655,18 @@ function normalizedCompletedPublicEvents(value) {
     .slice(-12);
 }
 
-function rememberCompletedPublicEvent(stateValue, eventValue) {
+function rememberCompletedPublicEvent(stateValue, eventValue, delivered = true) {
   const state = object(stateValue);
   const event = object(eventValue);
   const id = explicitEventID(event);
   if (!state || !event || !id || eventAnnouncedAtMs(event) === null) return;
+  const previous = normalizedCompletedPublicEvents(state.events.completedPublicEvents);
   state.events.completedPublicEvents = normalizedCompletedPublicEvents([
-    ...normalizedCompletedPublicEvents(state.events.completedPublicEvents).filter(
+    ...previous.filter(
       (entry) => entry.id !== id,
     ),
-    { ...event, id },
+    { ...event, id, status: delivered || previous.some((entry) => entry.id === id && entry.status === "landed")
+      ? "landed" : "completed" },
   ]);
 }
 
@@ -1766,7 +1804,11 @@ function latestUnattributedGlobalEpisode(stateValue) {
   if (!state) return null;
   backfillLatestUnattributedGlobalEpisode(state);
   const episodes = normalizedLocalResetEpisodes(state.localResetEpisodes).filter(
-    (episode) => !episode.publicEventId,
+    (episode) => !episode.publicEventId && Object.entries(episode.accountGenerations).some(
+      ([accountID, generation]) => resetRecordsWithGenerations(
+        state.accountStates[accountID] && state.accountStates[accountID].personalResets,
+      ).some((record) => record.cause === "global-manual" &&
+        record.generation === generation && !record.eventId)),
   );
   return episodes[episodes.length - 1] || null;
 }
@@ -1777,13 +1819,13 @@ function invalidateEventPlanningState(stateValue, eventIDValue) {
   if (!state || !eventID) return;
   for (const account of Object.values(object(state.accountStates) || {})) {
     const trajectory = normalizedTargetTrajectory(account.targetTrajectory);
-    if (!trajectory || trajectory.signalId !== eventID) continue;
+    if (!trajectory || !relatedResetEventIDs(state, eventID).includes(trajectory.signalId)) continue;
     account.targetTrajectory = null;
     account.forecastNotification = {};
     account.behaviorNotification = {};
   }
   const rootTrajectory = normalizedTargetTrajectory(state.targetTrajectory);
-  if (rootTrajectory && rootTrajectory.signalId === eventID) {
+  if (rootTrajectory && relatedResetEventIDs(state, eventID).includes(rootTrajectory.signalId)) {
     state.targetTrajectory = null;
     state.forecastNotification = {};
     state.behaviorNotification = {};
@@ -1799,11 +1841,43 @@ function associateCompletedEventWithLocalEpisode(stateValue, eventValue) {
     (account) => account.present !== false,
   );
   const delivery = Object.fromEntries(trackedAccounts.map((account) => [account.id, "pending"]));
+  const phase = eventTemporalPhase(event);
+  const completed = phase === "completed";
+  const atMs = eventAnnouncedAtMs(event);
+  const window = object(event.official_window) || object(event.window) || {};
+  const scheduledAtMs = millis(event.windowStartAt || window.start_at || event.effective_at) ??
+    (text(event.timingKind || window.target_kind) === "scheduled"
+      ? millis(event.targetAt || window.target_at || event.deadlineAt) : null);
+  const canonicalID = canonicalResetEventID(state, eventID);
+  backfillLatestUnattributedGlobalEpisode(state);
   const recordedEpisodes = normalizedLocalResetEpisodes(state.localResetEpisodes);
-  const episode =
-    recordedEpisodes.find((candidate) => candidate.publicEventId === eventID) ||
-    latestUnattributedGlobalEpisode(state);
+  let episode = [...recordedEpisodes].reverse().find(
+    (candidate) => candidate.publicEventId && canonicalResetEventID(state, candidate.publicEventId) === canonicalID,
+  );
+  if (!episode) {
+    const candidate = latestUnattributedGlobalEpisode(state);
+    // A future promise can only match an observed cycle after its publication
+    // and stated start. A completion may arrive later than the local receipt.
+    if (candidate && (completed || (atMs !== null && millis(candidate.observedAt) >= atMs &&
+        (scheduledAtMs === null || millis(candidate.observedAt) >= scheduledAtMs)))) episode = candidate;
+  }
+  if (!episode && completed) {
+    const active = object(state.activeEpisode);
+    const activeID = active && canonicalResetEventID(state, active.id);
+    const candidate = [...recordedEpisodes].reverse().find((entry) =>
+      entry.publicEventId && canonicalResetEventID(state, entry.publicEventId) === activeID);
+    const firstReceiptMs = candidate ? Math.min(millis(candidate.observedAt),
+      ...Object.values(candidate.observedAtByAccount).map(millis).filter(Number.isFinite)) : null;
+    // Do not attach a new completion to an arbitrary old, already closed
+    // reset. Only the still-open episode with a receipt between its notice and
+    // this confirmation can establish that the two posts describe one reset.
+    if (candidate && eventAnnouncedAtMs(active) <= firstReceiptMs && firstReceiptMs <= atMs) {
+      episode = candidate;
+      rememberResetEventAlias(state, eventID, candidate.publicEventId);
+    }
+  }
   if (episode) {
+    const matchedID = canonicalResetEventID(state, episode.publicEventId || eventID);
     for (const account of trackedAccounts) {
       const generation = Number(episode.accountGenerations[account.id]);
       if (!Number.isInteger(generation) || generation <= 0) continue;
@@ -1812,17 +1886,19 @@ function associateCompletedEventWithLocalEpisode(stateValue, eventValue) {
         if (
           record.cause !== "global-manual" ||
           record.generation !== generation ||
-          (record.eventId && record.eventId !== eventID)
+          (!completed && (millis(record.at) < atMs ||
+            (scheduledAtMs !== null && millis(record.at) < scheduledAtMs))) ||
+          (record.eventId && canonicalResetEventID(state, record.eventId) !== matchedID)
         ) {
           return record;
         }
         associated = true;
-        return { ...record, eventId: eventID };
+        return { ...record, eventId: matchedID };
       });
       account.lastPersonalReset = account.personalResets[account.personalResets.length - 1] || null;
       if (associated) delivery[account.id] = "landed";
     }
-    episode.publicEventId = eventID;
+    episode.publicEventId = matchedID;
     episode.status = "matched";
     state.localResetEpisodes = normalizedLocalResetEpisodes([
       ...normalizedLocalResetEpisodes(state.localResetEpisodes).filter(
@@ -1834,7 +1910,7 @@ function associateCompletedEventWithLocalEpisode(stateValue, eventValue) {
   for (const account of trackedAccounts) {
     if (
       resetRecordsWithGenerations(account.personalResets).some(
-        (record) => record.cause === "global-manual" && record.eventId === eventID,
+        (record) => resetRecordMatchesEvent(state, record, eventID),
       )
     ) {
       delivery[account.id] = "landed";
@@ -1903,18 +1979,42 @@ function negativeVerification(value) {
 function resetCompletionLanguage(value) {
   const words = text(value).toLowerCase();
   return Boolean(
-    /\b(?:has|have|had)\s+(?:been\s+)?reset(?:ted|ed)?\b/.test(words) ||
+    /\b(?:has|have|had|'ve|’ve)\s+(?:(?:now|already|just|finally|actually)\s+)*(?:been\s+)?reset(?:ted|ed)?\b/.test(words) ||
       /\bfeeling\s+reset(?:ted|ed)?\b/.test(words) ||
       /\bbrand new usage\b/.test(words) ||
       /\breset\s+(?:has\s+)?landed\b/.test(words) ||
       /\b(?:just\s+)?(?:pressed|hit)\s+(?:the\s+)?reset button\b/.test(words) ||
       /(?:重置|额度)[^。]{0,24}(?:已经|已完成|已到账|已重建|已刷新)/.test(words) ||
-      /(?:全新|新的)(?:周)?额度/.test(words)
+      /(?:全新|新的)(?:周)?额度/.test(words) ||
+      /(?:已经|现在|刚刚|已)(?:为[^。\n]{0,24})?重置(?:了)?/.test(words)
   );
+}
+
+function resetFutureLanguage(value) {
+  const words = text(value).toLowerCase();
+  return /\b(?:will|shall|going to|plan to|promise to)\b[^.!?\n]{0,90}\breset\b/.test(words) ||
+    /\b(?:another|next|one more)\s+(?:usage\s+)?reset\b/.test(words) ||
+    /\breset\b[^.!?\n]{0,80}\b(?:will|tomorrow|tonight|next week|by monday)\b/.test(words) ||
+    /(?:还会|将会|将于|明天|下次|再一次)[^。\n]{0,40}重置/.test(words);
+}
+
+function completedResetClaim(eventValue) {
+  const event = object(eventValue) || {};
+  const words = [...new Set([text(event.summary), text(event.text)].filter(Boolean))].join("\n") ||
+    text(event.localizedSummary || event.localized_summary);
+  return resetCompletionLanguage(words) && !resetFutureLanguage(words) &&
+    !/\b(?:might|may|could|would|if)\b[^.!?\n]{0,35}\b(?:have|has|had)\b/i.test(words);
 }
 
 function eventTemporalPhase(value) {
   const event = object(value) || {};
+  if (["rejected", "failed"].includes(text(event.reset_verification_status || event.verificationStatus).toLowerCase())) {
+    return "terminal";
+  }
+  // A stale hosted window cannot turn an unambiguous completed action into a
+  // second future promise. A genuine additional reset in the same post stays
+  // future-facing and is never consumed with the completed action.
+  if (completedResetClaim(event)) return "completed";
   const declared = text(event.temporalPhase || event.temporal_phase).toLowerCase();
   if (["future", "in-progress", "completed", "terminal"].includes(declared)) {
     return declared;
@@ -1940,11 +2040,12 @@ function eventTemporalPhase(value) {
   ) {
     return "future";
   }
+  if (resetFutureLanguage(words)) return "future";
   if (
     ["confirmed", "verified", "completed", "landed"].includes(verification) ||
     ["confirmed", "reset_observed", "completed", "landed"].includes(observation) ||
     ["completed", "landed"].includes(kind) ||
-    resetCompletionLanguage(words)
+    completedResetClaim(event)
   ) {
     return "completed";
   }
@@ -1992,6 +2093,8 @@ function consolidatedResetTemporalPhase(feedValue, eventValue, forecastValue) {
     return "terminal";
   }
   const phases = records.map(eventTemporalPhase);
+  if (records.some(completedResetClaim) && !records.some((record) =>
+    resetFutureLanguage(text(record.summary) || text(record.text)))) return "completed";
   if (phases.includes("future")) return "future";
   if (forecastResetEventID(forecastValue) === eventID || phases.includes("completed")) {
     return "completed";
@@ -2015,7 +2118,10 @@ function clearActiveEpisode(state, reason, nowMs, preserveOrdering = true) {
   const active = object(state.activeEpisode);
   if (!active) return { cleared: false, reason: null, event: null };
   const id = eventID(active.id || active.url);
-  if (preserveOrdering && id) rememberClosedEvent(state, id);
+  if (preserveOrdering && id) {
+    for (const related of relatedResetEventIDs(state, id)) rememberClosedEvent(state, related);
+    invalidateEventPlanningState(state, id);
+  }
   if (!preserveOrdering && id && state.events.lastEventId === id) {
     state.events.lastEventId = null;
     state.events.lastEventAt = null;
@@ -2029,14 +2135,15 @@ function eventSettledByState(stateValue, eventValue) {
   const state = object(stateValue) || {};
   const id = explicitEventID(eventValue) || eventID(eventValue && eventValue.id);
   if (!id) return false;
-  if ((object(state.events) && state.events.closedIds || []).includes(id)) return true;
-  if (globalSettlementFromState(state).eventId === id) return true;
+  if ((object(state.events) && state.events.closedIds || []).some(
+    (closed) => canonicalResetEventID(state, closed) === canonicalResetEventID(state, id))) return true;
+  if (canonicalResetEventID(state, globalSettlementFromState(state).eventId) === canonicalResetEventID(state, id)) return true;
   const accounts = Object.values(object(state.accountStates) || {}).filter(
     (account) => account.present !== false,
   );
   return accounts.length > 0 && accounts.every((account) =>
     normalizedPersonalResets(account.personalResets).some(
-      (reset) => reset.cause === "global-manual" && reset.eventId === id,
+      (reset) => resetRecordMatchesEvent(state, reset, id),
     ),
   );
 }
@@ -2242,7 +2349,7 @@ function updateTargetTrajectory(previousValue, modelValue, nowMs) {
 
 function ensureState(value) {
   const state = object(value) || {};
-  state.version = 21;
+  state.version = 22;
   state.decisionHistory = normalizeDecisionHistory(state.decisionHistory);
   state.costMeter = {
     lastRowID: Number.isFinite(state.costMeter && state.costMeter.lastRowID)
@@ -2264,6 +2371,10 @@ function ensureState(value) {
   state.events.closedIds = Array.isArray(state.events.closedIds)
     ? state.events.closedIds.map(text).filter(Boolean).slice(-64)
     : [];
+  state.events.resetEventAliases = Object.fromEntries(
+    Object.entries(object(state.events.resetEventAliases) || {}).filter(([id, canonical]) =>
+      /^\d{15,22}$/.test(id) && /^\d{15,22}$/.test(text(canonical)) && id !== canonical).slice(-128),
+  );
   state.events.completedPublicEvents = normalizedCompletedPublicEvents(
     state.events.completedPublicEvents,
   );
@@ -3042,15 +3153,36 @@ function writeState(value) {
 function safePublicState(state, runtime, includeHistory = true) {
   syncActiveAccountState(state);
   const activeEpisode = object(state.activeEpisode);
-  const activeDeliveryValues = Object.values(
-    object(activeEpisode && activeEpisode.accountDelivery) || {},
-  );
-  const effectiveTemporalPhase =
-    activeEpisode &&
-    text(activeEpisode.temporalPhase) === "completed" &&
-    activeDeliveryValues.some((delivery) => delivery !== "landed")
-      ? "in-progress"
-      : text(activeEpisode && activeEpisode.temporalPhase) || "in-progress";
+  const effectiveTemporalPhase = text(activeEpisode && activeEpisode.temporalPhase) || "in-progress";
+  const completedEvents = normalizedCompletedPublicEvents(state.events.completedPublicEvents);
+  const completedResetEventIds = [...new Set(completedEvents.flatMap((event) =>
+    relatedResetEventIDs(state, event.id)))];
+  if (activeEpisode && effectiveTemporalPhase === "completed") {
+    completedResetEventIds.push(...relatedResetEventIDs(state, activeEpisode.id));
+  }
+  const receipt = (record) => record && {
+    ...record,
+    relatedEventIds: record.cause === "global-manual" && record.eventId
+      ? relatedResetEventIDs(state, record.eventId) : [],
+  };
+  // A recently fetched forecast can still use the pre-reset cadence clock.
+  // Keep those raw numbers inspectable, but do not apply them to a new cycle
+  // until its last-reset evidence catches up. Rollout delays alone do not
+  // invalidate a forecast that already names this same canonical event.
+  const receiptsByEpisode = new Map();
+  for (const account of Object.values(state.accountStates)) {
+    for (const record of account.personalResets) {
+      if (record.cause !== "global-manual" || !completedResetEventIds.includes(record.eventId)) continue;
+      const canonical = canonicalResetEventID(state, record.eventId);
+      receiptsByEpisode.set(canonical, Math.min(receiptsByEpisode.get(canonical) ?? Infinity, millis(record.at)));
+    }
+  }
+  const latestReceipt = [...receiptsByEpisode].sort((a, b) => b[1] - a[1])[0];
+  const forecastResetID = forecastResetEventID(state.cache.forecast);
+  const forecastResetAtMs = millis(state.cache.forecast && state.cache.forecast.last_reset_at);
+  const forecastResetMismatch = Boolean(latestReceipt && forecastResetAtMs !== null &&
+    forecastResetAtMs < latestReceipt[1] &&
+    canonicalResetEventID(state, forecastResetID) !== latestReceipt[0]);
   const settlement = globalSettlementFromState(state);
   const targetTrajectory = normalizedTargetTrajectory(state.targetTrajectory);
   const bankedCampaign = normalizedBankedCampaign(state.bankedCampaign);
@@ -3079,6 +3211,8 @@ function safePublicState(state, runtime, includeHistory = true) {
         delivery_state: "pending",
         temporal_phase: effectiveTemporalPhase,
         public_temporal_phase: text(activeEpisode.temporalPhase) || "in-progress",
+        related_event_ids: relatedResetEventIDs(state, activeEpisode.id),
+        completion_notice: object(activeEpisode.completionNotice) || null,
         account_delivery: object(activeEpisode.accountDelivery) || {},
         source: activeEpisode.source,
         firstSeenAt: activeEpisode.firstSeenAt,
@@ -3113,8 +3247,8 @@ function safePublicState(state, runtime, includeHistory = true) {
     usageBehavior: publicUsageBehavior(account.usage && account.usage.behavior),
     resetCredits: publicResetCreditInventory(account.resetCredits),
     cycleGeneration: Math.max(0, Math.floor(Number(account.cycleGeneration) || 0)),
-    personalResets: normalizedPersonalResets(account.personalResets),
-    lastPersonalReset: object(account.lastPersonalReset) || null,
+    personalResets: normalizedPersonalResets(account.personalResets).map(receipt),
+    lastPersonalReset: receipt(object(account.lastPersonalReset)) || null,
     deliveryState: activeEpisode
       ? (object(activeEpisode.accountDelivery) && activeEpisode.accountDelivery[account.id]) || "pending"
       : null,
@@ -3160,7 +3294,7 @@ function safePublicState(state, runtime, includeHistory = true) {
           eventId: lastPersonalReset.eventId || null,
         }
       : null,
-    personalResets: normalizedPersonalResets(state.personalResets),
+    personalResets: normalizedPersonalResets(state.personalResets).map(receipt),
     signalSettlement: settlement.throughAt
       ? {
           throughAt: settlement.throughAt,
@@ -3170,9 +3304,11 @@ function safePublicState(state, runtime, includeHistory = true) {
       : null,
     targetTrajectory,
     closedEventIds: state.events.closedIds.slice(),
-    completedPublicEvents: normalizedCompletedPublicEvents(
-      state.events.completedPublicEvents,
-    ),
+    completedPublicEvents: completedEvents.map((event) => ({
+      ...event, episodeId: canonicalResetEventID(state, event.id),
+    })),
+    completedResetEventIds: [...new Set(completedResetEventIds)],
+    forecastResetMismatch,
     activeAccountId: state.activeAccountId,
     selectedAccountId: state.selectedAccountId,
     accounts,
@@ -3333,6 +3469,34 @@ function inferDeadline(textValue, announcedAtMs) {
       ) - offsetHours * hour;
     }
   }
+  const clock = value.match(/\b(?:at|around|by)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(pst|pdt|pt|utc)\b/);
+  if (clock) {
+    let clockHour = Number(clock[1]);
+    const clockMinute = Number(clock[2] || 0);
+    if (clock[3] === "pm" && clockHour < 12) clockHour += 12;
+    if (clock[3] === "am" && clockHour === 12) clockHour = 0;
+    if (clockHour > 23 || clockMinute > 59) return null;
+    const tomorrow = /\btomorrow\b/.test(value) ? 1 : 0;
+    const zone = clock[4];
+    if (zone !== "pt") {
+      const offset = zone === "pst" ? -8 : zone === "pdt" ? -7 : 0;
+      const local = new Date(announcedAtMs + offset * hour);
+      return Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + tomorrow,
+        clockHour, clockMinute) - offset * hour;
+    }
+    const partsAt = (ms) => Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    }).formatToParts(new Date(ms)).filter((part) => part.type !== "literal").map((part) => [part.type, Number(part.value)]));
+    const local = partsAt(announcedAtMs);
+    const nominal = Date.UTC(local.year, local.month - 1, local.day + tomorrow, clockHour, clockMinute);
+    let candidate = nominal + 8 * hour;
+    for (let pass = 0; pass < 2; pass += 1) {
+      const parts = partsAt(candidate);
+      candidate += nominal - Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+    }
+    return candidate;
+  }
   return null;
 }
 
@@ -3344,6 +3508,7 @@ function inferredDeadlineLabel(textValue) {
     /next hour|within (?:the )?hour|hour or so/i,
     /(?:around\s+|at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:pst|pdt|utc)\s+tomorrow/i,
     /tomorrow\s+(?:around\s+|at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:pst|pdt|utc)/i,
+    /(?:at|around|by)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:pst|pdt|pt|utc)\b/i,
   ];
   for (const pattern of patterns) {
     const match = value.match(pattern);
@@ -3456,31 +3621,6 @@ function reconcileActiveEpisodeState(stateValue, feedValue, nowMs = Date.now(), 
     const temporalPhase = matching
       ? consolidatedResetTemporalPhase(feedValue, matching, options.forecast)
       : null;
-    if (matching && temporalPhase === "completed") {
-      const reconciliation = associateCompletedEventWithLocalEpisode(state, {
-        ...active,
-        ...matching,
-        id,
-        temporalPhase,
-      });
-      state.activeEpisode.temporalPhase = temporalPhase;
-      state.activeEpisode.accountDelivery = {
-        ...object(active.accountDelivery),
-        ...reconciliation.delivery,
-      };
-      if (reconciliation.tracked > 0 && reconciliation.matched === reconciliation.tracked) {
-        advanceGlobalSettlement(state, {
-          at: active.announcedAt,
-          cause: "global-manual",
-          eventId: id,
-        });
-        rememberClosedEvent(state, id);
-        rememberCompletedPublicEvent(state, { ...active, id });
-        invalidateEventPlanningState(state, id);
-        state.activeEpisode = null;
-        return { cleared: true, reason: "local-cycle-matched", event: active };
-      }
-    }
     if (matching && temporalPhase === "terminal") {
       return clearActiveEpisode(
         state,
@@ -3491,6 +3631,61 @@ function reconcileActiveEpisodeState(stateValue, feedValue, nowMs = Date.now(), 
         nowMs,
         true,
       );
+    }
+    const updated = matching && normalizeFeedEvent({ ...matching, temporalPhase });
+    if (updated) Object.assign(active, updated);
+    let reconciliation = associateCompletedEventWithLocalEpisode(state, active);
+    // Reconcile the original notice before its follow-up confirmation. Only a
+    // unique observed episode can establish an alias; chronology alone never
+    // settles a separate future promise.
+    const completions = (Array.isArray(feedValue && feedValue.events) ? feedValue.events : [])
+      .filter((record) => consolidatedResetTemporalPhase(feedValue, record, options.forecast) === "completed")
+      .map((record) => normalizeFeedEvent({ ...record, temporalPhase: "completed" }))
+      .filter((record) => record && record.forcedResetEffect !== "none" &&
+        eventAnnouncedAtMs(record) >= eventAtMs && eventAnnouncedAtMs(record) <= nowMs)
+      .sort((left, right) => eventAnnouncedAtMs(left) - eventAnnouncedAtMs(right));
+    for (const completion of completions) {
+      const result = associateCompletedEventWithLocalEpisode(state, completion);
+      rememberCompletedPublicEvent(state, completion, result.tracked > 0 && result.matched === result.tracked);
+      if (canonicalResetEventID(state, completion.id) === canonicalResetEventID(state, id)) {
+        active.completionNotice = completion;
+        active.temporalPhase = "completed";
+        reconciliation = result;
+      }
+    }
+    const knownCompletion = normalizedCompletedPublicEvents(state.events.completedPublicEvents)
+      .filter((record) => canonicalResetEventID(state, record.id) === canonicalResetEventID(state, id))
+      .at(-1);
+    if (knownCompletion) {
+      active.temporalPhase = "completed";
+      active.completionNotice = active.completionNotice || knownCompletion;
+    }
+    active.accountDelivery = {
+      ...object(active.accountDelivery), ...reconciliation.delivery,
+    };
+    if (active.temporalPhase === "completed") {
+      active.accountDelivery = Object.fromEntries(Object.entries(active.accountDelivery).map(
+        ([accountID, delivery]) => [accountID, delivery === "landed" ? "landed" : "unconfirmed"],
+      ));
+      invalidateEventPlanningState(state, id);
+    } else if (reconciliation.matched > 0) {
+      for (const account of Object.values(state.accountStates)) {
+        if (active.accountDelivery[account.id] === "landed" &&
+            relatedResetEventIDs(state, id).includes(account.targetTrajectory && account.targetTrajectory.signalId)) {
+          account.targetTrajectory = null;
+          account.forecastNotification = {};
+          account.behaviorNotification = {};
+        }
+      }
+      bindActiveAccountState(state);
+    }
+    if (reconciliation.tracked > 0 && reconciliation.matched === reconciliation.tracked) {
+      advanceGlobalSettlement(state, { at: active.announcedAt, cause: "global-manual", eventId: id });
+      for (const related of relatedResetEventIDs(state, id)) rememberClosedEvent(state, related);
+      rememberCompletedPublicEvent(state, active.completionNotice || active);
+      invalidateEventPlanningState(state, id);
+      state.activeEpisode = null;
+      return { cleared: true, reason: "local-cycle-matched", event: active };
     }
     if (options.feedSucceeded && !feedRecords.length && active.source === "site-api") {
       const firstSeenAtMs = millis(active.firstSeenAt) || eventAtMs;
@@ -3517,11 +3712,15 @@ function normalizeFeedEvent(value) {
   const localizedSummary = text(event.localized_summary);
   const summary = localizedSummary || originalSummary;
   const inferredDeadline = inferDeadline(`${originalSummary} ${localizedSummary}`, announcedAtMs);
+  const clockKind = /\b(?:at|around)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:pst|pdt|pt|utc)\b/i.test(originalSummary)
+    ? "scheduled" : /\bby\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:pst|pdt|pt|utc)\b/i.test(originalSummary)
+      ? "deadline" : null;
   const id = explicitEventID(event);
   const normalized = {
     id,
     announcedAt: iso(announcedAtMs),
-    windowStartAt: text(window.start_at) || text(event.effective_at) || null,
+    windowStartAt: text(window.start_at) || text(event.effective_at) ||
+      (clockKind === "scheduled" && inferredDeadline !== null ? iso(inferredDeadline) : null),
     deadlineAt:
       text(window.target_at) || text(window.end_at) ||
       text(event.deadline_at) ||
@@ -3530,8 +3729,8 @@ function normalizeFeedEvent(value) {
       text(window.localized_label) ||
       text(window.label) ||
       (inferredDeadline ? inferredDeadlineLabel(`${originalSummary} ${localizedSummary}`) : ""),
-    timingKind: text(window.target_kind) || null,
-    targetAt: text(window.target_at) || null,
+    timingKind: text(window.target_kind) || clockKind,
+    targetAt: text(window.target_at) || (clockKind && inferredDeadline !== null ? iso(inferredDeadline) : null),
     summary: text(event.summary) || summary,
     localizedSummary: text(event.localized_summary) || "",
     url: /^https:\/\//.test(text(event.url)) ? text(event.url) : "",
@@ -3566,7 +3765,7 @@ function latestExplicitFeedEvent(feed, forecastValue) {
   for (const event of events) {
     const item = object(event) || {};
     const hosted = object(object(forecastValue) && forecastValue.official_signal);
-    if (hosted && explicitEventID(hosted) === explicitEventID(item) &&
+    if (!completedResetClaim(item) && hosted && explicitEventID(hosted) === explicitEventID(item) &&
         (text(hosted.kind) === "signal" ||
          ["dated_commitment", "plain_promise", "promise"].includes(text(hosted.signal_type)))) {
       // Forecast owns the current Watch semantics. Raw reset-group entries
@@ -3584,7 +3783,7 @@ function latestExplicitFeedEvent(feed, forecastValue) {
     if (
       (text(item.announcement_state).toLowerCase() === "announced" ||
         isBankedLifecycle ||
-        localExplicit) &&
+        localExplicit || temporalPhase === "completed") &&
       temporalPhase !== "terminal" &&
       (text(item.type).toLowerCase() === "reset" ||
         text(item.group).toLowerCase() === "reset" ||
@@ -4206,6 +4405,8 @@ function createRuntime(logic, initialState) {
       currentEvent: previous.currentEvent,
       closedEventIds: previous.closedEventIds,
       completedPublicEvents: previous.completedPublicEvents,
+      completedResetEventIds: previous.completedResetEventIds,
+      forecastResetMismatch: previous.forecastResetMismatch,
       signalSettlement: previous.signalSettlement,
       // Preserve the same pre-update trajectory anchors in both branches.
       accounts: (facts.accounts || []).map((account) => ({
@@ -4540,6 +4741,7 @@ function createRuntime(logic, initialState) {
       !id ||
       runtime.state.events.notifiedForcedEventIds.includes(id) ||
       !trustedExplicitEvent(active) ||
+      eventTemporalPhase(active) === "completed" ||
       eventSettledByState(runtime.state, active)
     ) {
       return false;
@@ -4662,8 +4864,15 @@ function createRuntime(logic, initialState) {
       save();
       return { isNew: isNewBanked, event: bankedResult, kind: "banked" };
     }
+    const knownCompletion = normalizedCompletedPublicEvents(runtime.state.events.completedPublicEvents)
+      .filter((item) => canonicalResetEventID(runtime.state, item.id) === canonicalResetEventID(runtime.state, event.id))
+      .at(-1);
+    if (knownCompletion && event.temporalPhase !== "terminal") {
+      event.temporalPhase = "completed";
+      event.completionNotice = knownCompletion;
+    }
     const previous = object(runtime.state.activeEpisode);
-    const isSame = previous && previous.id === event.id;
+    let isSame = previous && canonicalResetEventID(runtime.state, previous.id) === canonicalResetEventID(runtime.state, event.id);
     const wasSeen = seen(event.id);
     if (event.temporalPhase === "terminal") {
       remember(event.id);
@@ -4673,10 +4882,22 @@ function createRuntime(logic, initialState) {
       save();
       return { isNew: false, event: null, kind: "terminal" };
     }
-    const completedReconciliation =
-      event.temporalPhase === "completed"
-        ? associateCompletedEventWithLocalEpisode(runtime.state, event)
-        : { delivery: {}, matched: 0, tracked: 0 };
+    const completedReconciliation = associateCompletedEventWithLocalEpisode(runtime.state, event);
+    isSame = previous && canonicalResetEventID(runtime.state, previous.id) === canonicalResetEventID(runtime.state, event.id);
+    if (event.temporalPhase === "completed") {
+      rememberCompletedPublicEvent(runtime.state, event,
+        completedReconciliation.tracked > 0 && completedReconciliation.matched === completedReconciliation.tracked);
+      invalidateEventPlanningState(runtime.state, event.id);
+      if (isSame && previous.id !== event.id) {
+        event = { ...previous, temporalPhase: "completed", completionNotice: event };
+      } else if (previous && previous.temporalPhase !== "completed" && !isSame) {
+        // A confirmation of an older execution cannot replace a distinct
+        // pending promise, even when it was published after that promise.
+        remember(event.id);
+        save();
+        return { isNew: !wasSeen, event: previous, kind: "completed" };
+      }
+    }
     if (
       completedReconciliation.tracked > 0 &&
       completedReconciliation.matched === completedReconciliation.tracked
@@ -4687,10 +4908,10 @@ function createRuntime(logic, initialState) {
         eventId: event.id,
       });
       remember(event.id);
-      rememberClosedEvent(runtime.state, event.id);
+      for (const related of relatedResetEventIDs(runtime.state, event.id)) rememberClosedEvent(runtime.state, related);
       rememberCompletedPublicEvent(runtime.state, event);
       invalidateEventPlanningState(runtime.state, event.id);
-      runtime.state.activeEpisode = null;
+      if (!previous || isSame) runtime.state.activeEpisode = null;
       runtime.state.events.lastEventId = event.id;
       runtime.state.events.lastEventAt = event.announcedAt;
       runtime.state.events.lastForcedEventId = event.id;
@@ -4742,7 +4963,9 @@ function createRuntime(logic, initialState) {
         globalNotifiedAt: previous.globalNotifiedAt,
       };
     } else {
-      if (previous && previous.id) rememberClosedEvent(runtime.state, previous.id);
+      if (previous && previous.id) {
+        for (const related of relatedResetEventIDs(runtime.state, previous.id)) rememberClosedEvent(runtime.state, related);
+      }
       const pendingPushAtMs = millis(runtime.state.events.pendingPushAt);
       const coveredByRecentPush =
         pendingPushAtMs !== null && nowMs - pendingPushAtMs >= 0 && nowMs - pendingPushAtMs <= 30 * minute;
@@ -4774,11 +4997,18 @@ function createRuntime(logic, initialState) {
       runtime.state.events.lastForcedEventAt = iso(eventAtMs);
       if (coveredByRecentPush) runtime.state.events.pendingPushAt = null;
     }
+    if (runtime.state.activeEpisode && event.temporalPhase === "completed") {
+      runtime.state.activeEpisode.accountDelivery = Object.fromEntries(
+        Object.entries(runtime.state.activeEpisode.accountDelivery).map(
+          ([accountID, delivery]) => [accountID, delivery === "landed" ? "landed" : "unconfirmed"],
+        ),
+      );
+    }
     if (externallyNotified) rememberForcedNotification(event.id);
     remember(event.id);
     save();
 
-    if (isNew && settings.notify && !settings.viaPush) {
+    if (isNew && settings.notify && !settings.viaPush && event.temporalPhase !== "completed") {
       const model = currentModel(nowMs);
       const copy = notificationCopy(model, "global");
       deliverNativeNotification("global", copy.subtitle, copy.body);
@@ -4850,7 +5080,7 @@ function createRuntime(logic, initialState) {
         if (event) {
           event.accountDelivery = object(event.accountDelivery) || {};
           const alreadyLinked = resetRecordsWithGenerations(account.personalResets).some(
-            (record) => record.cause === "global-manual" && record.eventId === event.id,
+            (record) => resetRecordMatchesEvent(runtime.state, record, event.id),
           );
           if (alreadyLinked) event.accountDelivery[id] = "landed";
           else if (!text(event.accountDelivery[id])) event.accountDelivery[id] = "pending";
@@ -4979,8 +5209,13 @@ function createRuntime(logic, initialState) {
             !restoringDuringOldCooldown &&
             (previousPlanRank > 0 || lapsedRank === 0 || planRank > lapsedRank),
         );
+        const eventStartMs = event && millis(event.windowStartAt);
+        const deliveryEvent = event && event.accountDelivery[id] !== "landed" &&
+          current.updatedAtMs >= eventAnnouncedAtMs(event) &&
+          (eventStartMs === null || current.updatedAtMs >= eventStartMs)
+          ? event : null;
         const reset = previous
-          ? resetCause(previous, current, event, consumedCredit, {
+          ? resetCause(previous, current, deliveryEvent, consumedCredit, {
               paidUpgrade,
               planTransition: `${previousPlanRank}->${planRank}`,
             })
@@ -4997,8 +5232,8 @@ function createRuntime(logic, initialState) {
             evidence: reset.evidence,
             generation: account.cycleGeneration,
             eventId:
-              cause === "global-manual" && event
-                ? event.id
+              cause === "global-manual" && deliveryEvent
+                ? canonicalResetEventID(runtime.state, deliveryEvent.id)
                 : cause === "banked-redeem" && consumedCredit
                   ? consumedCredit.id
                   : null,
@@ -5011,7 +5246,7 @@ function createRuntime(logic, initialState) {
           anyLanded = true;
           activeLanded = activeLanded || isLive;
           if (isLive) activeResetCause = cause;
-          if (cause === "global-manual" && event) {
+          if (cause === "global-manual" && deliveryEvent) {
             event.accountDelivery = object(event.accountDelivery) || {};
             event.accountDelivery[id] = "landed";
           }
@@ -5139,8 +5374,8 @@ function createRuntime(logic, initialState) {
             eventId: event.id,
           };
           advanceGlobalSettlement(runtime.state, record);
-          rememberClosedEvent(runtime.state, event.id);
-          rememberCompletedPublicEvent(runtime.state, event);
+          for (const related of relatedResetEventIDs(runtime.state, event.id)) rememberClosedEvent(runtime.state, related);
+          rememberCompletedPublicEvent(runtime.state, event.completionNotice || event);
           invalidateEventPlanningState(runtime.state, event.id);
           runtime.state.activeEpisode = null;
         }

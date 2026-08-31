@@ -3,6 +3,37 @@ import SwiftUI
 import Testing
 @testable import CodexReset
 
+@Test func `completion and personal confirmation remain independent in both languages`() throws {
+    let item = DetailTimelineItem(
+        id: "completed", kind: "confirmation", state: "unconfirmed",
+        title: "重置执行确认", badge: "个人到账未确认",
+        at: "2026-08-31T02:34:27Z")
+    #expect(ResetTimelinePresentation.title(for: item, language: .english) == "Reset completion notice")
+    #expect(ResetTimelinePresentation.badge(for: item, language: .english) == "Account reset unconfirmed")
+    #expect(ResetTimelinePresentation.badge(for: item, language: .simplifiedChinese) == "个人到账未确认")
+    #expect(ResetTimelinePresentation.timeText(for: item, language: .simplifiedChinese)?.contains("8月31日 10:34 UTC+8") == true)
+    #expect(ResetTimelinePresentation.timeText(for: item, language: .english)?.contains("Aug 30, 7:34 PM PT") == true)
+    let now = try #require(AlternatingDisplay.date(from: "2026-08-31T04:00:00Z"))
+    #expect(ResetTimelineLayout.futureItems([item], at: now).isEmpty)
+    #expect(ResetTimelineLayout.pastItems([item], at: now).map(\.id) == ["completed"])
+}
+
+@Test func `account receipt copy supports English without breaking old snapshots`() throws {
+    let row = try JSONDecoder().decode(DetailRow.self, from: Data(#"""
+    {"label":"重置","value":"本账号已刷新 · 1/2 个账号已确认",
+     "secondaryValue":"公布于 8月31日 10:34 UTC+8",
+     "labelEnglish":"Resets","valueEnglish":"This account has reset · 1/2 accounts confirmed",
+     "secondaryValueEnglish":"Published Aug 30, 7:34 PM PT"}
+    """#.utf8))
+    #expect(row.localizedLabel(.english) == "Resets")
+    #expect(row.localizedValue(.english) == "This account has reset · 1/2 accounts confirmed")
+    #expect(row.localizedSecondaryValue(.english)?.contains("PT") == true)
+    #expect(row.localizedValue(.simplifiedChinese) == "本账号已刷新 · 1/2 个账号已确认")
+    let legacy = DetailRow(label: "Original", value: "Value", secondaryValue: "Detail")
+    #expect(legacy.localizedValue(.english) == "Value")
+    #expect(legacy.localizedSecondaryValue(.english) == "Detail")
+}
+
 @Test func `hosted deadline remains a deadline in both languages`() throws {
     let item = try JSONDecoder().decode(DetailTimelineItem.self, from: Data(#"""
     {"id":"promise","kind":"commitment","state":"pending","title":"Promise",

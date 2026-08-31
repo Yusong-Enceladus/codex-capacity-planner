@@ -5,6 +5,30 @@ versioning once the first public release is tagged.
 
 ## Unreleased
 
+## 0.1.13 - 2026-08-30
+
+- Reconcile late promise-to-announcement promotions with existing forced-reset
+  receipts, using event identity, stated timing and quota-cycle generations.
+  Link a subsequent completion post to that same episode instead of inventing
+  another reset or reusing a post-refresh baseline. No fixed look-back window
+  and no fabricated receipt for a zero-to-zero account.
+- Recognize completed wording such as “have now reset” even when a public
+  source still labels that post as a future promise. Public execution and
+  personal confirmation remain separate; a genuine additional future reset
+  remains actionable. Replays and restarts cannot revive a completed notice.
+- Do not turn ordinary plan/limit explanations in the broad reset-related
+  corpus lane into reset hints when the completed official signal is excluded.
+  Contextual hints still use the source's structured interpretation.
+- Remove obsolete immediate-use trajectories and recompute work, account and
+  reset-credit advice. Preserve raw public probabilities but stop applying a
+  pre-reset cadence clock until the source catches up with the confirmed reset.
+  Saved historical decisions are not rewritten.
+- Show confirmed current-account delivery and per-account confirmation counts
+  consistently on the home card and timeline. Completed notices are historical
+  points, not future deadlines; unknown personal delivery is explicitly
+  “unconfirmed” in Chinese and English. Interpret stated PST/PDT/PT clock times
+  using their actual zone semantics, including Pacific daylight saving time.
+
 ## 0.1.12 - 2026-08-30
 
 - Give isolated history backfill a bounded background processing budget rather

@@ -240,6 +240,7 @@ struct DetailDecisionProgress: View {
 }
 
 private struct ResetDecisionContent: View {
+    @Environment(\.resetPresentationLanguage) private var presentationLanguage
     let sections: [DetailSection]
     let tint: Color
     let highlighted: Bool
@@ -252,17 +253,17 @@ private struct ResetDecisionContent: View {
         if let action = self.rows.first {
             VStack(alignment: .leading, spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(action.label)
+                    Text(action.localizedLabel(self.presentationLanguage))
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(self.highlighted ? .white.opacity(0.78) : self.tint)
                     AlternatingTimeText(
-                        primary: action.value,
+                        primary: action.localizedValue(self.presentationLanguage),
                         alternate: action.alternateValue,
                         relativeTimeAt: action.relativeTimeAt,
                         relativeTimePrefix: action.relativeTimePrefix)
                         .font(.subheadline.weight(.semibold))
                         .fixedSize(horizontal: false, vertical: true)
-                    if let secondary = action.secondaryValue {
+                    if let secondary = action.localizedSecondaryValue(self.presentationLanguage) {
                         Text(secondary)
                             .font(.caption2)
                             .foregroundStyle(self.highlighted ? .white.opacity(0.78) : .secondary)
@@ -285,17 +286,17 @@ private struct ResetDecisionContent: View {
                     {
                         ForEach(Array(self.rows.dropFirst())) { row in
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(row.label)
+                                Text(row.localizedLabel(self.presentationLanguage))
                                     .font(.caption2)
                                     .foregroundStyle(self.highlighted ? .white.opacity(0.7) : .secondary)
                                 AlternatingTimeText(
-                                    primary: row.value,
+                                    primary: row.localizedValue(self.presentationLanguage),
                                     alternate: row.alternateValue,
                                     relativeTimeAt: row.relativeTimeAt,
                                     relativeTimePrefix: row.relativeTimePrefix)
                                     .font(.caption.weight(.medium))
                                     .fixedSize(horizontal: false, vertical: true)
-                                if let secondary = row.secondaryValue {
+                                if let secondary = row.localizedSecondaryValue(self.presentationLanguage) {
                                     Text(secondary)
                                         .font(.caption2)
                                         .foregroundStyle(self.highlighted ? .white.opacity(0.7) : .secondary)
@@ -329,6 +330,7 @@ enum ResetTimelinePresentation {
         switch item.kind {
         case "candidate": language.text("可能重置的时间范围", "Possible reset window")
         case "announcement": language.text("明确重置公告", "Confirmed reset announcement")
+        case "confirmation": language.text("重置执行确认", "Reset completion notice")
         case "commitment":
             item.at == nil
                 ? language.text("重置承诺 · 时间未定", "Reset promised · Timing unknown")
@@ -353,10 +355,11 @@ enum ResetTimelinePresentation {
     {
         switch item.state {
         case "inferred": language.text("未确认", "Unconfirmed")
+        case "unconfirmed": language.text("个人到账未确认", "Account reset unconfirmed")
         case "pending":
             item.kind == "commitment"
                 ? language.text("承诺待兑现", "Awaiting reset")
-                : language.text("等待到账", "Pending")
+                : language.text("等待本机确认", "Awaiting local confirmation")
         case "confirmed": language.text("已确认", "Confirmed")
         case "scheduled": language.text("计划", "Scheduled")
         default: item.badge
@@ -768,6 +771,7 @@ private struct ResetEventTimeline: View {
         switch item.kind {
         case "candidate": "quote.bubble"
         case "announcement": "megaphone.fill"
+        case "confirmation": "checkmark.bubble"
         case "commitment": "calendar.badge.clock"
         case "natural": "calendar.badge.clock"
         case "upgrade": "arrow.up"
@@ -1374,6 +1378,7 @@ private struct CreditAccountGroup: Identifiable {
 }
 
 struct ResetDetailsView: View {
+    @Environment(\.resetPresentationLanguage) private var presentationLanguage
     let sections: [DetailSection]
     let width: CGFloat
     var onAction: MainlineActionHandler?
@@ -1416,7 +1421,9 @@ struct ResetDetailsView: View {
                         ResetHistoryCalendar(events: events)
                     } else {
                     if self.onAction == nil {
-                        Text(section.title)
+                        Text(DetailMenuLayout.isReset(section.title)
+                            ? self.presentationLanguage.text("重置", "Resets")
+                            : section.title)
                             .font(PlannerTypography.title)
                     }
                     if let visualizations = section.visualizations {
@@ -1435,7 +1442,7 @@ struct ResetDetailsView: View {
                         if rowIndex > 0 { Divider().opacity(0.55) }
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 5) {
-                                Text(row.label)
+                                Text(row.localizedLabel(self.presentationLanguage))
                                     .font(PlannerTypography.heading)
                                     .foregroundStyle(.secondary)
                                 if row.link != nil {
@@ -1445,7 +1452,7 @@ struct ResetDetailsView: View {
                                 }
                             }
                             AlternatingTimeText(
-                                primary: row.value,
+                                primary: row.localizedValue(self.presentationLanguage),
                                 alternate: row.alternateValue,
                                 relativeTimeAt: row.relativeTimeAt,
                                 relativeTimePrefix: row.relativeTimePrefix)
@@ -1455,7 +1462,7 @@ struct ResetDetailsView: View {
                                 DetailDecisionProgress(progress: progress)
                                     .padding(.top, 3)
                             }
-                            if let secondary = row.secondaryValue {
+                            if let secondary = row.localizedSecondaryValue(self.presentationLanguage) {
                                 Text(secondary)
                                     .font(PlannerTypography.detail)
                                     .foregroundStyle(.secondary)
