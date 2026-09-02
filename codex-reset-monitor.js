@@ -5829,9 +5829,6 @@ function createRuntime(logic, initialState) {
     const settings = object(optionsValue) || {};
     const work = (async () => {
       await refreshUsage({ startup: true }).catch(() => null);
-      // Local cost indexing is independent of quota collection and public
-      // signals. Keep the HTTP service responsive during first-run catch-up.
-      if (runtime.usageHistoryEngine) void runtime.usageHistoryEngine.refresh().catch(() => null);
       await Promise.resolve().then(refreshSessions).catch(() => null);
       await Promise.resolve().then(() => refreshShortLoad(Date.now())).catch(() => null);
       await Promise.all([
@@ -5884,18 +5881,22 @@ function createRuntime(logic, initialState) {
     // Codex's local SQLite database. It never scans rollout transcripts,
     // retains the excerpts, or contacts a website for mainline inference.
     scheduleLoop("sessions", sessionRefreshInterval, refreshSessions);
-    if (runtime.usageHistoryEngine) {
-      scheduleLoop("usageHistory", 5 * minute, () => runtime.usageHistoryEngine.refresh());
-    }
   }
 
-  async function usageHistory(days, timeZone) {
+  async function usageHistory(days, timeZone, optionsValue = {}) {
     historyRange(days, timeZone);
     if (!runtime.usageHistoryEngine) throw new Error("usage_history_unavailable");
-    return runtime.usageHistoryEngine.query({ days, timeZone, accounts:
+    const snapshot = await runtime.usageHistoryEngine.query({ days, timeZone, accounts:
       Object.values(runtime.state.accountStates).filter((account) => account.present !== false)
         .map((account) => ({ id: account.id, historyAccountKey: account.historyAccountKey })),
     });
+    if (optionsValue.refresh !== false) {
+      // Collection is deliberately page-driven. Return the last committed
+      // snapshot immediately while one low-priority, single-calendar refresh
+      // is coalesced in the worker.
+      void runtime.usageHistoryEngine.refresh({ timeZone, days }).catch(() => null);
+    }
+    return snapshot;
   }
 
   return {
@@ -5955,9 +5956,10 @@ function createServer(service) {
       if (request.method === "GET" && requestURL.pathname === "/api/usage-history") {
         const days = Number(requestURL.searchParams.get("days") || 30);
         const timeZone = requestURL.searchParams.get("tz") || "Asia/Shanghai";
+        const refresh = requestURL.searchParams.get("refresh") !== "0";
         try { historyRange(days, timeZone); }
         catch { jsonResponse(response, 400, { error: "invalid_history_range" }); return; }
-        try { jsonResponse(response, 200, await service.usageHistory(days, timeZone)); }
+        try { jsonResponse(response, 200, await service.usageHistory(days, timeZone, { refresh })); }
         catch { jsonResponse(response, 503, { error: "usage_history_unavailable" }); }
         return;
       }
@@ -6079,6 +6081,12 @@ async function main() {
     seedDatabase: codexCostDatabase,
     cacheRoot: path.join(path.dirname(stateFile), "usage-collector"),
     stateDatabase: codexStateDatabase,
+    sessionRoots: [
+      path.join(codexDirectory, "sessions"),
+      path.join(codexDirectory, "archived_sessions"),
+    ],
+    probeIntervalMs: 5 * minute,
+    refreshIntervalMs: 30 * minute,
     cli: standaloneCodexBarCLI,
   });
   const service = createRuntime(logic, readState());

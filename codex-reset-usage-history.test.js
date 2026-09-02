@@ -8,8 +8,8 @@ const path = require("node:path");
 const http = require("node:http");
 const { DatabaseSync } = require("node:sqlite");
 const { createUsageHistoryStore, createUsageHistoryWorker, prepareCollectorRoot,
-  historyRange, dayKey, ownerResolver, identityRefs, historyRefreshZones } = require("./codex-reset-usage-history.js");
-const { createServer } = require("./codex-reset-monitor.js");
+  historyRange, dayKey, ownerResolver, identityRefs } = require("./codex-reset-usage-history.js");
+const { createRuntime, createServer } = require("./codex-reset-monitor.js");
 
 const nowMs = Date.parse("2026-08-30T18:00:00Z");
 const zones = ["Asia/Shanghai", "America/Los_Angeles"];
@@ -178,6 +178,8 @@ test("retention survives narrower reports, source eviction, reopening and quota 
   f.ingest([source("session", [row({ date: "2026-07-15" }), row()])]);
   f.ingest([source("session", [row()])], { startDay: "2026-08-29" });
   assert.equal(f.read({ days: 90 }).accounts[0].totalTokens, 220);
+  assert.equal(f.read({ days: 90 }).sourceComplete, false);
+  assert.equal(f.read({ days: 1 }).sourceComplete, true);
   f.ingest([]);
   const reopened = createUsageHistoryStore({ historyDatabase: f.historyDatabase });
   try {
@@ -205,42 +207,73 @@ test("a lagging calendar backfills June and July into a ninety-day view and repo
   }
 });
 
-test("catch-up prioritizes the lagging calendar and skips completed calendars until a regular refresh", () => {
-  const states = {[zones[0]]:{complete:false,processedBytes:20,totalBytes:100},
-    [zones[1]]:{complete:true,processedBytes:100,totalBytes:100}};
-  assert.deepEqual(historyRefreshZones(states,true),[zones[0]]);
-  assert.deepEqual(historyRefreshZones(states,false),zones);
-  states[zones[1]].complete=false;
-  assert.deepEqual(historyRefreshZones(states,true),zones);
-  states[zones[0]].complete=true;
-  states[zones[1]].complete=true;
-  assert.deepEqual(historyRefreshZones(states,true),[]);
-  assert.equal(historyRefreshZones(states,false).length,2);
-});
-
-test("automatic catch-up actually resumes old dates without rescanning a completed calendar", async (t) => {
+test("an incomplete collection never self-retries and only scans the requested calendar", async (t) => {
   const f = fixture(t);
   const cli = path.join(f.directory,"collector");
+  const calls = path.join(f.directory, "calls");
+  const revision = path.join(f.directory, "source.jsonl");
+  fs.writeFileSync(revision, "{}\n");
   fs.writeFileSync(cli, `#!/usr/bin/env node\nconst fs=require('node:fs');
-const args=process.argv.slice(2), zone=args[args.indexOf('--history-time-zone')+1], out=args[args.indexOf('--history-output')+1];
-const countFile=out+'.calls';let count=fs.existsSync(countFile)?Number(fs.readFileSync(countFile)):0;count++;fs.writeFileSync(countFile,String(count));
-const complete=zone==='America/Los_Angeles'||count>1;
-fs.writeFileSync(out,JSON.stringify({...${JSON.stringify(snapshot([]))},timeZone:zone,complete,
-processedBytes:complete?100:20,totalBytes:100,sources:[${JSON.stringify(source("june",[row({date:"2026-06-15"})]))}]}));\n`, {mode:0o700});
-  const worker = createUsageHistoryWorker({historyDatabase:f.historyDatabase,cacheRoot:path.join(f.directory,"cache"),cli,nowMs});
+const args=process.argv.slice(2), zone=args[args.indexOf('--history-time-zone')+1], days=args[args.indexOf('--days')+1], out=args[args.indexOf('--history-output')+1];
+fs.appendFileSync(${JSON.stringify(calls)},zone+'|'+days+'\\n');
+fs.writeFileSync(out,JSON.stringify({...${JSON.stringify(snapshot([]))},timeZone:zone,complete:false,
+processedBytes:20,totalBytes:100,sources:[${JSON.stringify(source("june",[row({date:"2026-06-15"})]))}]}));\n`, {mode:0o700});
+  const worker = createUsageHistoryWorker({historyDatabase:f.historyDatabase,
+    cacheRoot:path.join(f.directory,"cache"),cli,nowMs,sourceRevisionFile:revision,
+    probeIntervalMs:0,refreshIntervalMs:0});
   t.after(()=>worker.close());
-  await worker.refresh();
-  const deadline=Date.now()+12000;
-  let value;
-  do {
-    value=await worker.query({days:90,timeZone:zones[0],accounts,nowMs});
-    if(value.sourceComplete)break;
-    await new Promise(resolve=>setTimeout(resolve,100));
-  } while(Date.now()<deadline);
-  assert.equal(value.sourceComplete,true);
+  await worker.refresh({timeZone:zones[0],days:90});
+  await new Promise(resolve=>setTimeout(resolve,2300));
+  const value=await worker.query({days:90,timeZone:zones[0],accounts,nowMs});
+  assert.equal(value.sourceComplete,false);
   assert.equal(value.accounts[0].days.find(day=>day.date==='2026-06-15').totalTokens,110);
-  const calls = path.join(f.directory,"cache","reports-v2","pacific","planner-history.json.calls");
-  assert.equal(Number(fs.readFileSync(calls)),1);
+  assert.deepEqual(fs.readFileSync(calls,"utf8").trim().split("\n"),[zones[0]+"|90"]);
+  assert.equal(fs.existsSync(path.join(f.directory,"cache","reports-v2","pacific")),false);
+});
+
+test("the collector skips unchanged coverage and scans only the requested range when it grows or changes", async (t) => {
+  const f = fixture(t);
+  const cli = path.join(f.directory,"collector");
+  const calls = path.join(f.directory, "calls");
+  const revision = path.join(f.directory, "source.jsonl");
+  fs.writeFileSync(revision, "{}\n");
+  fs.writeFileSync(cli, `#!/usr/bin/env node\nconst fs=require('node:fs');
+const args=process.argv.slice(2), zone=args[args.indexOf('--history-time-zone')+1], days=args[args.indexOf('--days')+1], out=args[args.indexOf('--history-output')+1];
+fs.appendFileSync(${JSON.stringify(calls)},zone+'|'+days+'\\n');
+fs.writeFileSync(out,JSON.stringify({...${JSON.stringify(snapshot([source("session",[row()])]))},timeZone:zone}));\n`, {mode:0o700});
+  const worker = createUsageHistoryWorker({historyDatabase:f.historyDatabase,
+    cacheRoot:path.join(f.directory,"cache"),cli,nowMs,sourceRevisionFile:revision,
+    probeIntervalMs:0,refreshIntervalMs:0});
+  t.after(()=>worker.close());
+  await worker.refresh({timeZone:zones[1],days:30});
+  await worker.refresh({timeZone:zones[1],days:30});
+  assert.deepEqual(fs.readFileSync(calls,"utf8").trim().split("\n"),[zones[1]+"|30"]);
+  await worker.refresh({timeZone:zones[1],days:90});
+  await worker.refresh({timeZone:zones[1],days:90});
+  assert.deepEqual(fs.readFileSync(calls,"utf8").trim().split("\n"),[zones[1]+"|30",zones[1]+"|90"]);
+  fs.appendFileSync(revision,"{}\n");
+  await worker.refresh({timeZone:zones[1],days:90});
+  assert.deepEqual(fs.readFileSync(calls,"utf8").trim().split("\n"),
+    [zones[1]+"|30",zones[1]+"|90",zones[1]+"|90"]);
+  assert.equal(fs.existsSync(path.join(f.directory,"cache","reports-v2","utc8")),false);
+});
+
+test("the runtime collects history only on demand for the requested calendar", async (t) => {
+  const calls = [];
+  const history = {
+    query: async (input) => { calls.push({ action: "query", input }); return { ok: true }; },
+    refresh: async (input) => { calls.push({ action: "refresh", input }); },
+  };
+  const service = createRuntime({ usageHistoryEngine: history,
+    buildModel: () => null, pickUsage: () => null }, {});
+  await service.usageHistory(7, zones[0], { refresh: false });
+  assert.deepEqual(calls.map((item) => item.action), ["query"]);
+  await service.usageHistory(30, zones[1]);
+  assert.deepEqual(calls.map((item) => item.action), ["query", "query", "refresh"]);
+  assert.deepEqual(calls.at(-1).input, { timeZone: zones[1], days: 30 });
+  service.startLoops();
+  t.after(() => Object.values(service.runtime.timers).forEach(clearTimeout));
+  assert.equal(Object.hasOwn(service.runtime.schedule, "usageHistory"), false);
 });
 
 test("known zero, incomplete coverage, unassigned usage and unknown prices remain different", (t) => {
@@ -304,7 +337,11 @@ test("background worker and read-only API serve canonical history with bounded r
   const worker = createUsageHistoryWorker({ historyDatabase: f.historyDatabase, reportFiles, nowMs });
   t.after(() => worker.close());
   await worker.refresh();
-  const server = createServer({ usageHistory: (days, timeZone) => worker.query({ days, timeZone, accounts, nowMs }) });
+  const routed = [];
+  const server = createServer({ usageHistory: (days, timeZone, options) => {
+    routed.push({ days, timeZone, options });
+    return worker.query({ days, timeZone, accounts, nowMs });
+  } });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const request = (url) => new Promise((resolve, reject) => {
@@ -319,6 +356,10 @@ test("background worker and read-only API serve canonical history with bounded r
   assert.equal(valid.status, 200);
   assert.equal(valid.body.timeZone, zones[1]);
   assert.equal(valid.body.accounts[0].totalTokens, 110);
+  assert.equal(routed.at(-1).options.refresh, true);
+  const readOnly = await request("/api/usage-history?days=7&tz=Asia%2FShanghai&refresh=0");
+  assert.equal(readOnly.status, 200);
+  assert.equal(routed.at(-1).options.refresh, false);
   assert.equal((await request("/api/usage-history?days=999")).status, 400);
   assert.equal((await request("/api/usage-history?tz=arbitrary")).status, 400);
   worker.close();

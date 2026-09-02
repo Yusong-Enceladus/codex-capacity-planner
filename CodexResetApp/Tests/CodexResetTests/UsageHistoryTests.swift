@@ -62,7 +62,7 @@ private final class HistoryCanonicalProtocol: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         let json = #"""
         {"version":2,"days":30,"timeZone":"America/Los_Angeles","startDay":"2026-08-01","endDay":"2026-08-30",
-        "updatedAt":"2026-08-30T12:00:00Z","collectorStatus":"indexing","sourceComplete":false,
+        "updatedAt":"2026-08-30T12:00:00Z","collectorStatus":"updating","sourceComplete":false,
         "skippedEvents":0,"pricingSource":"codexbar-report","completedFiles":8,"totalFiles":20,
         "processedBytes":250,"totalBytes":1000,"accounts":[],
         "unassigned":{"id":"unassigned","days":[],"projects":[],"sessions":[],"coverage":"partial","recordedDays":0,
@@ -76,6 +76,21 @@ private final class HistoryCanonicalProtocol: URLProtocol, @unchecked Sendable {
         }
     }
     override func stopLoading() {}
+}
+
+@MainActor @Test func `history collection follows power mode and requests only the presentation calendar`() throws {
+    let pluggedIn = UsageHistoryStore(language: .simplifiedChinese, allowsCollection: { true })
+    let pluggedQuery = try #require(URLComponents(url: pluggedIn.requestURL(for: 90), resolvingAgainstBaseURL: false))
+    #expect(pluggedQuery.queryItems?.first { $0.name == "days" }?.value == "90")
+    #expect(pluggedQuery.queryItems?.first { $0.name == "tz" }?.value == "Asia/Shanghai")
+    #expect(pluggedQuery.queryItems?.first { $0.name == "refresh" }?.value == "1")
+
+    let lowPower = UsageHistoryStore(language: .english, allowsCollection: { false })
+    let lowPowerQuery = try #require(URLComponents(url: lowPower.requestURL(for: 30), resolvingAgainstBaseURL: false))
+    #expect(lowPowerQuery.queryItems?.first { $0.name == "tz" }?.value == "America/Los_Angeles")
+    #expect(lowPowerQuery.queryItems?.first { $0.name == "refresh" }?.value == "0")
+    #expect(!lowPower.canCollect)
+    #expect(!lowPower.isCollectionActive)
 }
 
 @MainActor @Test func `the native store accepts canonical v2 reports and keeps index progress`() async throws {

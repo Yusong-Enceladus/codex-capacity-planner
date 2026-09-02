@@ -93,6 +93,8 @@ final class MenuController: NSObject, NSMenuDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var menuOpen = false
     private var rebuildPending = false
+    private weak var usageHistoryMenu: NSMenu?
+    private var usageHistoryTask: Task<Void, Never>?
 
     init(
         store: SnapshotStore,
@@ -120,7 +122,6 @@ final class MenuController: NSObject, NSMenuDelegate {
                 guard let self else { return }
                 if self.menuOpen { self.rebuildPending = true }
                 else { self.rebuildMenu() }
-                Task { await self.usageHistory.refresh() }
             }
             .store(in: &self.cancellables)
 
@@ -157,6 +158,15 @@ final class MenuController: NSObject, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        if menu === self.usageHistoryMenu {
+            self.usageHistoryTask?.cancel()
+            self.usageHistoryTask = Task { [weak self] in
+                guard let self else { return }
+                await self.usageHistory.refreshWhileVisible()
+            }
+            return
+        }
+        guard menu === self.menu else { return }
         self.menuOpen = true
         if self.allowsRefresh {
             Task { await self.store.refresh() }
@@ -164,11 +174,20 @@ final class MenuController: NSObject, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === self.menu else { return }
         if self.menuOpen { self.rebuildPending = true }
         else { self.rebuildMenu() }
     }
 
     func menuDidClose(_ menu: NSMenu) {
+        if menu === self.usageHistoryMenu {
+            self.usageHistoryTask?.cancel()
+            self.usageHistoryTask = nil
+            return
+        }
+        guard menu === self.menu else { return }
+        self.usageHistoryTask?.cancel()
+        self.usageHistoryTask = nil
         self.menuOpen = false
         if self.rebuildPending {
             self.rebuildPending = false
@@ -346,6 +365,10 @@ final class MenuController: NSObject, NSMenuDelegate {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         submenu.minimumWidth = Self.detailsWidth
+        if DetailMenuLayout.isUsage(section.title) {
+            submenu.delegate = self
+            self.usageHistoryMenu = submenu
+        }
         // Results, Method and Raw Data are in-page controls, not a third menu.
         submenu.addItem(self.makeDetailContentItem(section, width: Self.calculationDetailsWidth))
         return submenu

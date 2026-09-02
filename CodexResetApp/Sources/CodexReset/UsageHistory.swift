@@ -139,16 +139,19 @@ final class UsageHistoryStore: ObservableObject {
     private let isDemo: Bool
     private let defaults: UserDefaults
     private let session: URLSession
+    private let allowsCollection: () -> Bool
     private var generation = 0
     private var fetchedAt: Date?
     private var cache: [Int: UsageHistorySnapshot] = [:]
 
     init(language: ResetPresentationLanguage, isDemo: Bool = false,
-         defaults: UserDefaults = .standard, session: URLSession = .shared) {
+         defaults: UserDefaults = .standard, session: URLSession = .shared,
+         allowsCollection: @escaping () -> Bool = { !ProcessInfo.processInfo.isLowPowerModeEnabled }) {
         self.language = language
         self.isDemo = isDemo
         self.defaults = defaults
         self.session = session
+        self.allowsCollection = allowsCollection
         let saved = defaults.integer(forKey: "usageHistoryDays")
         self.days = isDemo ? 30 : (1...365).contains(saved) ? saved : 30
         self.metric = isDemo ? .cost : UsageHistoryMetric(rawValue: defaults.string(forKey: "usageHistoryMetric") ?? "") ?? .cost
@@ -166,12 +169,32 @@ final class UsageHistoryStore: ObservableObject {
 
     func refreshWhileVisible() async {
         while !Task.isCancelled {
-            await self.refresh(force: self.snapshot?.sourceComplete == false)
+            await self.refresh(force: self.isCollectionActive)
             if self.isDemo { return }
             do {
-                try await Task.sleep(for: .seconds(self.snapshot?.sourceComplete == false ? 5 : 30))
+                try await Task.sleep(for: .seconds(self.canCollect ? (self.isCollectionActive ? 10 : 60) : 120))
             } catch { return }
         }
+    }
+
+    var canCollect: Bool { self.allowsCollection() }
+
+    var isCollectionActive: Bool {
+        guard self.canCollect, let status = self.snapshot?.collectorStatus else { return false }
+        return status == "correcting" || status == "updating"
+    }
+
+    func requestURL(for days: Int) -> URL {
+        var components = URLComponents(
+            url: LocalMonitorEndpoint.baseURL.appendingPathComponent("api/usage-history"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "days", value: String(days)),
+            URLQueryItem(name: "tz", value: self.language.timeZone.identifier),
+            URLQueryItem(name: "refresh", value: self.canCollect ? "1" : "0"),
+        ]
+        return components.url!
     }
 
     func refresh(force: Bool = false) async {
@@ -187,10 +210,7 @@ final class UsageHistoryStore: ObservableObject {
         self.isLoading = true
         defer { if generation == self.generation { self.isLoading = false } }
         do {
-            var components = URLComponents(url: LocalMonitorEndpoint.baseURL.appendingPathComponent("api/usage-history"), resolvingAgainstBaseURL: false)!
-            components.queryItems = [URLQueryItem(name: "days", value: String(days)),
-                                    URLQueryItem(name: "tz", value: self.language.timeZone.identifier)]
-            var request = URLRequest(url: components.url!)
+            var request = URLRequest(url: self.requestURL(for: days))
             request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
             request.timeoutInterval = 22
             let (data, response) = try await self.session.data(for: request)
