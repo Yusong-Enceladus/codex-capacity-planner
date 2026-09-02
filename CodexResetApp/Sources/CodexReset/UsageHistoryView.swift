@@ -60,7 +60,6 @@ struct UsageTargetsView: View {
             self.sourceNote
         }
         .font(PlannerTypography.body)
-        .task { await self.store.refreshWhileVisible() }
     }
 
     private var emptyAccountText: String {
@@ -125,7 +124,7 @@ struct UsageTargetsView: View {
     }
 
     @ViewBuilder private var indexingStatus: some View {
-        if let snapshot = self.store.snapshot, !snapshot.sourceComplete {
+        if let snapshot = self.store.snapshot, self.store.isCollectionActive {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text(self.language.text("正在更新用量记录", "Updating usage records"))
@@ -161,8 +160,17 @@ struct UsageTargetsView: View {
             if let snapshot = self.store.snapshot, snapshot.skippedEvents > 0 {
                 Text(self.language.text("部分旧记录没有逐笔时间，未混入按日统计。", "Some older records lack event timestamps and cannot be included in daily totals."))
             }
+            if !self.store.canCollect {
+                Text(self.language.text(
+                    "低电量模式下已暂停整理；仍可查看上次确认的记录，接通电源后会按需更新。",
+                    "Collection is paused in Low Power Mode. Confirmed history remains available and updates on demand after power is restored."))
+            } else if let snapshot = self.store.snapshot, !snapshot.sourceComplete, !self.store.isCollectionActive {
+                Text(self.language.text(
+                    "已保留当前可确认的记录；仍在写入的本机记录会在检测到变化后继续更新。",
+                    "Confirmed records are preserved; active local records update after a source change is detected."))
+            }
             if self.store.failed || self.store.snapshot?.collectorStatus == "stale" {
-                Text(self.language.text("暂时保留上次读取的历史，稍后自动重试。", "Showing the last available history; a retry is scheduled."))
+                Text(self.language.text("暂时保留上次读取的历史，稍后重新检查。", "Showing the last available history; it will be checked again later."))
             }
         }
         .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

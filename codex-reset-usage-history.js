@@ -19,6 +19,50 @@ const parse = (value, fallback = null) => {
 const label = (value, maximum = 160) => String(value || "").replace(/[\r\n\t]+/g, " ").slice(0, maximum);
 const integer = (value) => Number.isSafeInteger(value) && value >= 0;
 const dateKey = (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+const collectorCheckpointKey = (zone) => "collector-v1:" + zone;
+
+function usageSourceFingerprint(options) {
+  const files = new Set();
+  const addFile = (file) => {
+    if (typeof file === "string" && file) files.add(path.resolve(file));
+  };
+  const walk = (root) => {
+    const pending = [root];
+    while (pending.length) {
+      const directory = pending.pop();
+      let entries;
+      try { entries = fs.readdirSync(directory, { withFileTypes: true }); }
+      catch { continue; }
+      for (const entry of entries) {
+        const file = path.join(directory, entry.name);
+        if (entry.isDirectory()) pending.push(file);
+        else if (entry.isFile() && (entry.name.endsWith(".jsonl") || entry.name === "session_index.jsonl")) addFile(file);
+      }
+    }
+  };
+  if (options.sourceRevisionFile) addFile(options.sourceRevisionFile);
+  for (const root of options.sessionRoots || []) walk(root);
+  if (options.stateDatabase && fs.existsSync(options.stateDatabase)) {
+    let state;
+    try {
+      state = new DatabaseSync(options.stateDatabase, { readOnly: true });
+      for (const row of state.prepare("SELECT rollout_path FROM threads WHERE rollout_path IS NOT NULL").all()) {
+        addFile(row.rollout_path);
+      }
+    } catch { /* State schemas can vary; filesystem discovery remains sufficient. */ }
+    finally { state?.close(); }
+  }
+  const digest = crypto.createHash("sha256");
+  for (const file of [...files].sort()) {
+    try {
+      const stat = fs.statSync(file);
+      if (!stat.isFile()) continue;
+      digest.update(file).update("\0").update(String(stat.size)).update("\0")
+        .update(String(Math.trunc(stat.mtimeMs))).update("\0");
+    } catch { /* A concurrently moved rollout will be picked up by the next probe. */ }
+  }
+  return digest.digest("hex");
+}
 
 function dayKey(at, timeZone) {
   const parts = formatters.get(timeZone).formatToParts(new Date(at));
@@ -126,6 +170,10 @@ function createUsageHistoryStore(options) {
   // They must be replaced by canonical CodexBar reports before being shown.
   const readMeta = (zone) => parse(db.prepare("SELECT value FROM metadata WHERE key=?")
     .get("report-v2:" + zone)?.value, {});
+  const readCollectorCheckpoint = (zone) => parse(db.prepare("SELECT value FROM metadata WHERE key=?")
+    .get(collectorCheckpointKey(zone))?.value, {});
+  const writeCollectorCheckpoint = (zone, value) => db.prepare("INSERT OR REPLACE INTO metadata VALUES (?,?)")
+    .run(collectorCheckpointKey(zone), JSON.stringify(value));
   const statuses = new Map();
   const queryCache = new Map();
   let revision = 0;
@@ -220,7 +268,10 @@ function createUsageHistoryStore(options) {
   function query({ days = 30, timeZone = timeZones[0], accounts = [], nowMs = Date.now() } = {}) {
     const range = historyRange(days, timeZone, nowMs);
     const source = readMeta(timeZone);
-    const status = statuses.get(timeZone) || (source.scannedAt ? "cache-only" : "correcting");
+    const sourceComplete = source.complete === true && source.sinceDay <= range.start && source.untilDay >= range.end;
+    let status = statuses.get(timeZone)
+      || (source.scannedAt ? (sourceComplete ? "ready" : "partial") : "correcting");
+    if (!sourceComplete && ["ready", "partial", "cache-only"].includes(status)) status = "partial";
     const key = JSON.stringify([revision, days, timeZone, range.end, accounts]);
     if (queryCache.has(key)) return { ...queryCache.get(key), collectorStatus: status };
     const resolve = ownerResolver(accounts);
@@ -269,7 +320,7 @@ function createUsageHistoryStore(options) {
     });
     const result = {
       version: 2, days: range.days, timeZone, startDay: range.start, endDay: range.end,
-      updatedAt: source.scannedAt || null, collectorStatus: status, sourceComplete: source.complete === true,
+      updatedAt: source.scannedAt || null, collectorStatus: status, sourceComplete,
       skippedEvents: 0, pricingSource: "codexbar-report",
       completedFiles: source.completedFiles || 0, totalFiles: source.totalFiles || 0,
       processedBytes: source.processedBytes || 0, totalBytes: source.totalBytes || 0,
@@ -281,24 +332,17 @@ function createUsageHistoryStore(options) {
     return result;
   }
   return { ingest, query, source: readMeta, close: () => db.close(),
+    collectorCheckpoint: readCollectorCheckpoint,
+    setCollectorCheckpoint: writeCollectorCheckpoint,
     setCollectorStatus: (status, zone) => {
       for (const timeZone of zone ? [zone] : timeZones) statuses.set(timeZone, status);
     } };
 }
 
-function historyRefreshZones(sources, catchUpOnly = false) {
-  const progress = (zone) => {
-    const value = sources[zone] || {};
-    if (value.complete) return 1;
-    return value.totalBytes > 0 ? Math.min(0.999, (value.processedBytes || 0) / value.totalBytes) : 0;
-  };
-  return [...timeZones].filter((zone) => !catchUpOnly || sources[zone]?.complete !== true)
-    .sort((a, b) => progress(a) - progress(b));
-}
-
 function createUsageHistoryWorker(options) {
   let worker = null;
   const pending = new Map();
+  const queuedRefreshes = new Map();
   let sequence = 0;
   let refreshPromise = null;
   let closed = false;
@@ -331,7 +375,7 @@ function createUsageHistoryWorker(options) {
       const id = ++sequence;
       const instance = start();
       instance.ref();
-      const timer = setTimeout(() => { fail(instance); void instance.terminate(); }, action === "refresh" ? 240000 : 20000);
+      const timer = setTimeout(() => { fail(instance); void instance.terminate(); }, action === "refresh" ? 90000 : 20000);
       timer.unref();
       pending.set(id, { resolve, reject, timer });
       instance.postMessage({ id, action, input });
@@ -339,8 +383,24 @@ function createUsageHistoryWorker(options) {
   }
   return {
     query: (input) => call("query", input),
-    refresh: () => {
-      if (!refreshPromise) refreshPromise = call("refresh").finally(() => { refreshPromise = null; });
+    refresh: (input = {}) => {
+      const requested = timeZones.includes(input.timeZone) ? [input.timeZone]
+        : Array.isArray(input.zones) ? input.zones.filter((zone) => timeZones.includes(zone)) : timeZones;
+      const days = Number.isInteger(input.days) && input.days >= 1 && input.days <= 365 ? input.days : 365;
+      for (const zone of requested) {
+        const queued = queuedRefreshes.get(zone);
+        queuedRefreshes.set(zone, {
+          force: queued?.force === true || input.force === true,
+          days: Math.max(queued?.days || 0, days),
+        });
+      }
+      if (!refreshPromise) refreshPromise = (async () => {
+        while (queuedRefreshes.size) {
+          const [zone, settings] = queuedRefreshes.entries().next().value;
+          queuedRefreshes.delete(zone);
+          await call("refresh", { zones: [zone], force: settings.force, days: settings.days });
+        }
+      })().finally(() => { refreshPromise = null; });
       return refreshPromise;
     },
     close: () => {
@@ -410,61 +470,111 @@ if (!isMainThread && workerData?.usageHistory) {
   const options = workerData.usageHistory;
   const store = createUsageHistoryStore(options);
   let refreshing = null;
-  let timer = null;
   let child = null;
   let stopping = false;
-  let previousProgress = null;
-  let stalledPasses = 0;
+  const lastProbeAt = new Map();
+  const lastAttemptAt = new Map();
+  const probeInterval = Number.isFinite(options.probeIntervalMs) ? Math.max(0, options.probeIntervalMs) : 5 * 60000;
+  const refreshInterval = Number.isFinite(options.refreshIntervalMs) ? Math.max(0, options.refreshIntervalMs) : 30 * 60000;
 
-  async function refresh(catchUpOnly = false) {
-    clearTimeout(timer);
-    const states = [];
-    const sources = Object.fromEntries(timeZones.map((zone) => [zone, store.source(zone)]));
-    for (const zone of historyRefreshZones(sources, catchUpOnly)) {
+  async function refresh(request = {}) {
+    const zones = Array.isArray(request.zones)
+      ? request.zones.filter((zone) => timeZones.includes(zone)) : timeZones;
+    const requestedDays = Number.isInteger(request.days) && request.days >= 1 && request.days <= 365
+      ? request.days : 365;
+    const result = { requestedZones: zones, scannedZones: [], unchangedZones: [], deferredZones: [] };
+    for (const zone of zones) {
       if (stopping) break;
+      const now = Date.now();
+      const source = store.source(zone);
+      const checkpoint = store.collectorCheckpoint(zone);
+      if (request.force !== true && now - (lastProbeAt.get(zone) || 0) < probeInterval) {
+        result.deferredZones.push(zone);
+        continue;
+      }
+      lastProbeAt.set(zone, now);
+      const fingerprint = usageSourceFingerprint(options);
+      const requestedEndDay = dayKey(Number.isFinite(options.nowMs) ? options.nowMs : now, zone);
+      const successfulCoverage = checkpoint.coverageDays || 0;
+      const attemptedCoverage = checkpoint.attemptedCoverageDays || successfulCoverage;
+      const expandsCoverage = Boolean(source.scannedAt) && successfulCoverage < requestedDays;
+      const hasChanged = !source.scannedAt || !checkpoint.fingerprint
+        || expandsCoverage
+        || checkpoint.endDay !== requestedEndDay
+        || checkpoint.fingerprint !== fingerprint || checkpoint.catchUpPending === true;
+      if (request.force !== true && !hasChanged) {
+        store.setCollectorStatus(source.complete ? "ready" : "partial", zone);
+        result.unchangedZones.push(zone);
+        continue;
+      }
+      const persistedAttemptAt = Date.parse(checkpoint.attemptedAt || "") || 0;
+      const newCoverageRequest = expandsCoverage && attemptedCoverage < requestedDays;
+      if (request.force !== true && !newCoverageRequest
+        && now - (lastAttemptAt.get(zone) || persistedAttemptAt) < refreshInterval) {
+        store.setCollectorStatus(source.scannedAt ? (source.complete ? "ready" : "partial") : "deferred", zone);
+        result.deferredZones.push(zone);
+        continue;
+      }
+      lastAttemptAt.set(zone, now);
       if (!options.cli || !options.cacheRoot) {
         const file = options.reportFiles?.[zone];
         if (file && fs.existsSync(file)) store.ingest(parse(fs.readFileSync(file)), options.nowMs);
         store.setCollectorStatus("cache-only", zone);
+        result.scannedZones.push(zone);
         continue;
       }
-      store.setCollectorStatus(store.source(zone).scannedAt ? "updating" : "correcting", zone);
+      store.setCollectorStatus(source.scannedAt ? "updating" : "correcting", zone);
       try {
         const root = await prepareCollectorRoot(options, zone);
         const output = path.join(root, "planner-history.json");
+        const cliArguments = ["cost", "--provider", "codex", "--days", String(requestedDays),
+          "--format", "json", "--cache-root", root, "--history-output", output, "--history-time-zone", zone];
+        const lowerPriority = process.platform === "darwin" && fs.existsSync("/usr/bin/nice");
         await new Promise((resolve, reject) => {
-          child = execFile(options.cli, ["cost", "--provider", "codex", "--days", "365",
-            "--format", "json", "--cache-root", root, "--history-output", output, "--history-time-zone", zone],
-          { timeout: 100000, maxBuffer: 1024 * 1024, env: process.env },
+          child = execFile(lowerPriority ? "/usr/bin/nice" : options.cli,
+            lowerPriority ? ["-n", "15", options.cli, ...cliArguments] : cliArguments,
+          { timeout: 60000, maxBuffer: 1024 * 1024, env: process.env },
           (error) => { child = null; error ? reject(error) : resolve(); });
         });
         if (stopping) break;
         const state = store.ingest(parse(fs.readFileSync(output)), options.nowMs);
-        states.push(state);
-        store.setCollectorStatus(state.complete ? "ready" : "indexing", zone);
+        const progressed = !source.scannedAt || (state.completedFiles || 0) > (source.completedFiles || 0)
+          || (state.processedBytes || 0) > (source.processedBytes || 0);
+        store.setCollectorCheckpoint(zone, {
+          fingerprint: usageSourceFingerprint(options) || fingerprint,
+          catchUpPending: state.complete !== true && progressed,
+          coverageDays: requestedDays,
+          attemptedCoverageDays: requestedDays,
+          endDay: requestedEndDay,
+          completedFiles: state.completedFiles || 0,
+          totalFiles: state.totalFiles || 0,
+          processedBytes: state.processedBytes || 0,
+          totalBytes: state.totalBytes || 0,
+          attemptedAt: new Date(now).toISOString(),
+        });
+        store.setCollectorStatus(state.complete ? "ready" : "partial", zone);
+        result.scannedZones.push(zone);
       } catch {
-        states.push({ complete: false });
+        store.setCollectorCheckpoint(zone, {
+          ...checkpoint,
+          fingerprint: checkpoint.fingerprint || fingerprint,
+          catchUpPending: true,
+          coverageDays: checkpoint.coverageDays || 0,
+          attemptedCoverageDays: Math.max(checkpoint.attemptedCoverageDays || 0, requestedDays),
+          attemptedAt: new Date(now).toISOString(),
+        });
         store.setCollectorStatus("stale", zone);
       }
     }
-    if (!stopping && states.some((state) => !state.complete)) {
-      const progress = JSON.stringify(states.map((state) =>
-        [state.completedFiles, state.totalFiles, state.processedBytes, state.totalBytes]));
-      stalledPasses = progress === previousProgress ? stalledPasses + 1 : 0;
-      previousProgress = progress;
-      timer = setTimeout(() => { void refreshOnce(true); }, stalledPasses >= 2 ? 60000 : 2000);
-      timer.unref();
-    }
-    return true;
+    return result;
   }
-  function refreshOnce(catchUpOnly = false) {
-    if (!refreshing) refreshing = refresh(catchUpOnly).finally(() => { refreshing = null; });
+  function refreshOnce(request = {}) {
+    if (!refreshing) refreshing = refresh(request).finally(() => { refreshing = null; });
     return refreshing;
   }
   parentPort.on("message", async ({ id, action, input }) => {
     if (action === "close") {
       stopping = true;
-      clearTimeout(timer);
       child?.kill();
       try { await refreshing; } catch { /* Preserve last committed report. */ }
       store.close();
@@ -472,11 +582,11 @@ if (!isMainThread && workerData?.usageHistory) {
       return;
     }
     try {
-      const result = action === "refresh" ? await refreshOnce() : store.query(input);
+      const result = action === "refresh" ? await refreshOnce(input) : store.query(input);
       parentPort.postMessage({ id, result });
     } catch { parentPort.postMessage({ id, error: true }); }
   });
 }
 
 module.exports = { createUsageHistoryStore, createUsageHistoryWorker, historyRange, dayKey, identityRefs, ownerResolver,
-  prepareCollectorRoot, historyRefreshZones };
+  prepareCollectorRoot, usageSourceFingerprint };
